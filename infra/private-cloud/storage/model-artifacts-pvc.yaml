@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-artifacts
+  namespace: model-build
+  labels:
+    app.kubernetes.io/name: model-artifacts
+    app.kubernetes.io/part-of: hybrid-ai-serving-platform
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: private-nfs-rwx
+  resources:
+    requests:
+      storage: 500Gi

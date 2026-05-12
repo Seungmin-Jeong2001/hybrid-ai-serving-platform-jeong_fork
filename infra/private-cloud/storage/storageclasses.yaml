@@ -1,0 +1,15 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: private-nfs-rwx
+  labels:
+    app.kubernetes.io/part-of: hybrid-ai-serving-platform
+provisioner: nfs.csi.k8s.io
+parameters:
+  server: replace-with-nfs-server
+  share: replace-with-nfs-export
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+mountOptions:
+  - nfsvers=4.1

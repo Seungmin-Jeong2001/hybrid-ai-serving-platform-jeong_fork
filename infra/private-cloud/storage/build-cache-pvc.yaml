@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-build-cache
+  namespace: model-build
+  labels:
+    app.kubernetes.io/name: model-build-cache
+    app.kubernetes.io/part-of: hybrid-ai-serving-platform
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: private-nfs-rwx
+  resources:
+    requests:
+      storage: 200Gi

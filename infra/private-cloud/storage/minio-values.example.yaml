@@ -1,0 +1,26 @@
+mode: distributed
+replicas: 4
+
+rootUser: replace-through-secret
+rootPassword: replace-through-secret
+
+persistence:
+  enabled: true
+  storageClass: private-nfs-rwx
+  size: 500Gi
+
+resources:
+  requests:
+    cpu: "1"
+    memory: 2Gi
+  limits:
+    cpu: "2"
+    memory: 4Gi
+
+buckets:
+  - name: model-artifacts
+    policy: none
+    purge: false
+  - name: build-cache
+    policy: none
+    purge: false
