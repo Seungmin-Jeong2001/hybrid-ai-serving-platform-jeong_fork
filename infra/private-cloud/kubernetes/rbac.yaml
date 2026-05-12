@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: private-foundation-runner
+  namespace: private-infra
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: model-build-runner
+  namespace: model-build
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: model-build-runner
+  namespace: model-build
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "pods", "pods/log", "persistentvolumeclaims", "secrets", "services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: model-build-runner
+  namespace: model-build
+subjects:
+  - kind: ServiceAccount
+    name: model-build-runner
+    namespace: model-build
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: model-build-runner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: private-foundation-readonly
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces", "persistentvolumes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: private-foundation-readonly
+subjects:
+  - kind: ServiceAccount
+    name: private-foundation-runner
+    namespace: private-infra
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: private-foundation-readonly

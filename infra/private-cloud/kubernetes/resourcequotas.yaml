@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: private-infra-quota
+  namespace: private-infra
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    pods: "30"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: private-storage-quota
+  namespace: private-storage
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    requests.storage: 500Gi
+    persistentvolumeclaims: "20"
+    pods: "30"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: model-build-quota
+  namespace: model-build
+spec:
+  hard:
+    requests.cpu: "16"
+    requests.memory: 64Gi
+    limits.cpu: "32"
+    limits.memory: 128Gi
+    requests.storage: 1Ti
+    persistentvolumeclaims: "30"
+    pods: "60"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: gpu-workload-quota
+  namespace: gpu-workload
+spec:
+  hard:
+    requests.cpu: "32"
+    requests.memory: 128Gi
+    limits.cpu: "64"
+    limits.memory: 256Gi
+    requests.nvidia.com/gpu: "4"
+    pods: "40"
