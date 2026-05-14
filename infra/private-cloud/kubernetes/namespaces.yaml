@@ -5,6 +5,9 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hybrid-ai-serving-platform
     foundation.hybrid-ai.io/scope: private-cloud
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
 ---
 apiVersion: v1
 kind: Namespace
@@ -13,6 +16,9 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hybrid-ai-serving-platform
     foundation.hybrid-ai.io/scope: private-cloud
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
 ---
 apiVersion: v1
 kind: Namespace
@@ -21,6 +27,9 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hybrid-ai-serving-platform
     foundation.hybrid-ai.io/scope: private-cloud
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
 ---
 apiVersion: v1
 kind: Namespace
@@ -29,3 +38,6 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hybrid-ai-serving-platform
     foundation.hybrid-ai.io/scope: private-cloud
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

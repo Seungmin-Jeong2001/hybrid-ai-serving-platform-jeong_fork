@@ -13,7 +13,9 @@ kubectl apply -k infra/private-cloud/kubernetes
 포함된 리소스:
 
 - `private-infra`, `private-storage`, `model-build`, `gpu-workload` namespace
+- namespace별 Pod Security Admission label
 - namespace별 ResourceQuota
+- namespace별 LimitRange 기본 request/limit
 - model build 작업용 ServiceAccount/RBAC
 - 기본 ingress 차단 NetworkPolicy
 
