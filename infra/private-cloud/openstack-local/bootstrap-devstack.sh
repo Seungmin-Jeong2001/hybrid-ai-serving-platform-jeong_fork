@@ -57,6 +57,7 @@ ensure_container() {
       -c security.privileged=true \
       -c raw.lxc="$raw_lxc"
     lxc config device add "$CONTAINER" kmsg unix-char source=/dev/kmsg path=/dev/kmsg >/dev/null 2>&1 || true
+    lxc config device add "$CONTAINER" host-kernel-modules disk source=/lib/modules path=/lib/modules readonly=true >/dev/null 2>&1 || true
     if [[ -e /dev/kvm ]]; then
       lxc config device add "$CONTAINER" kvm unix-char source=/dev/kvm path=/dev/kvm >/dev/null 2>&1 || true
     fi
@@ -67,6 +68,7 @@ ensure_container() {
     lxc config set "$CONTAINER" security.privileged true
     lxc config set "$CONTAINER" raw.lxc "$raw_lxc"
     lxc config device add "$CONTAINER" kmsg unix-char source=/dev/kmsg path=/dev/kmsg >/dev/null 2>&1 || true
+    lxc config device add "$CONTAINER" host-kernel-modules disk source=/lib/modules path=/lib/modules readonly=true >/dev/null 2>&1 || true
     if [[ -e /dev/kvm ]]; then
       lxc config device add "$CONTAINER" kvm unix-char source=/dev/kvm path=/dev/kvm >/dev/null 2>&1 || true
     fi
@@ -78,6 +80,16 @@ ensure_container() {
   lxc exec "$CONTAINER" -- cloud-init status --wait >/dev/null 2>&1 || true
 }
 
+ensure_kernel_modules() {
+  info "Loading Open vSwitch kernel modules"
+  lxc exec "$CONTAINER" -- bash -lc '
+    set -euo pipefail
+    modprobe openvswitch
+    modprobe vport-geneve
+    modprobe vport-vxlan
+  ' || die "failed to load Open vSwitch kernel modules; make sure linux-modules-extra-$(uname -r) is installed on the host"
+}
+
 openstack_ready() {
   lxc exec "$CONTAINER" -- sudo -u stack -H bash -lc '
     set -e
@@ -85,6 +97,10 @@ openstack_ready() {
     [ -f openrc ] || exit 1
     source openrc admin admin
     openstack token issue -f value -c id >/dev/null
+    openstack compute service list -f value >/dev/null
+    openstack network list -f value >/dev/null
+    openstack image list -f value >/dev/null
+    openstack volume service list -f value >/dev/null
   ' >/dev/null 2>&1
 }
 
@@ -94,7 +110,7 @@ prepare_container() {
     set -euo pipefail
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y git sudo curl ca-certificates iproute2 net-tools python3-openstackclient
+    apt-get install -y git sudo curl ca-certificates iproute2 net-tools kmod python3-openstackclient
     if ! id stack >/dev/null 2>&1; then
       useradd -s /bin/bash -d /opt/stack -m stack
     fi
@@ -196,6 +212,7 @@ main() {
   prepare_container
   clone_devstack
   write_local_conf "$host_ip"
+  ensure_kernel_modules
   run_devstack
 
   if ! openstack_ready; then

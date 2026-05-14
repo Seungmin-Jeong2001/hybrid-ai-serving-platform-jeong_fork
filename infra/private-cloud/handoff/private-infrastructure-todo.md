@@ -1,11 +1,13 @@
 # Private Infrastructure TODO
 
 현재 구현은 local/LXD 기반 검증 가능한 Private Cloud Foundation MVP입니다.
+DevStack 기반 로컬 OpenStack control plane과 Terraform smoke provisioning까지 검증합니다.
 아래 항목을 끝내야 `Private Cloud Infrastructure Engineer` 역할을 production 수준으로 말할 수 있습니다.
 
-## 1. OpenStack 실제 프로비저닝
+## 1. Production OpenStack 프로비저닝
 
-- 실제 OpenStack Keystone endpoint, project, user credential로 `ha up openstack --auto-approve` 실행
+- 운영용 OpenStack 배포 방식 선택: Kolla-Ansible, Sunbeam, OpenStack-Ansible 등
+- 운영 Keystone endpoint, project, user credential로 `ha up openstack --auto-approve` 실행
 - Terraform state를 원격 backend로 이전
 - network, subnet, router, security group, key pair, VM 생성 결과 검증
 - Terraform output 기반 node inventory handoff 파일 정리

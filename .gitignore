@@ -3,3 +3,12 @@
 .env.*
 !.env.example
 !.env.secret.example
+
+# Terraform local state and provider cache.
+**/.terraform/
+**/.terraform.lock.hcl
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfplan
+**/backend.generated.tf
+**/backend.hcl

@@ -1231,6 +1231,7 @@ export HA_K3S_CHANNEL="${HA_K3S_CHANNEL:-stable}"
 export HA_K3S_EXEC="${HA_K3S_EXEC:-server --write-kubeconfig-mode 644 --disable traefik}"
 
 # Local OpenStack control plane settings for ha up openstack-local.
+export HA_OPENSTACK_LXD_IMAGE="${HA_OPENSTACK_LXD_IMAGE:-ubuntu:24.04}"
 export HA_DEVSTACK_BRANCH="${HA_DEVSTACK_BRANCH:-master}"
 export HA_DEVSTACK_PASSWORD="${HA_DEVSTACK_PASSWORD:-hybrid-ai-devstack}"
 
@@ -2075,6 +2076,7 @@ ensure_openstack_lxd_container() {
       -c security.privileged=true \
       -c raw.lxc="$raw_lxc"
     lxc config device add "$name" kmsg unix-char source=/dev/kmsg path=/dev/kmsg >/dev/null 2>&1 || true
+    lxc config device add "$name" host-kernel-modules disk source=/lib/modules path=/lib/modules readonly=true >/dev/null 2>&1 || true
     if [[ -e /dev/kvm ]]; then
       lxc config device add "$name" kvm unix-char source=/dev/kvm path=/dev/kvm >/dev/null 2>&1 || true
     fi
@@ -2084,6 +2086,7 @@ ensure_openstack_lxd_container() {
     lxc config set "$name" security.privileged true
     lxc config set "$name" raw.lxc "$raw_lxc"
     lxc config device add "$name" kmsg unix-char source=/dev/kmsg path=/dev/kmsg >/dev/null 2>&1 || true
+    lxc config device add "$name" host-kernel-modules disk source=/lib/modules path=/lib/modules readonly=true >/dev/null 2>&1 || true
     if [[ -e /dev/kvm ]]; then
       lxc config device add "$name" kvm unix-char source=/dev/kvm path=/dev/kvm >/dev/null 2>&1 || true
     fi
@@ -2093,6 +2096,17 @@ ensure_openstack_lxd_container() {
   fi
 
   lxc exec "$name" -- cloud-init status --wait >/dev/null 2>&1 || true
+}
+
+ensure_openstack_lxd_kernel_modules() {
+  local name="$1"
+
+  lxc exec "$name" -- bash -lc '
+    set -euo pipefail
+    modprobe openvswitch
+    modprobe vport-geneve
+    modprobe vport-vxlan
+  ' || die "failed to load Open vSwitch kernel modules in ${name}; make sure linux-modules-extra-$(uname -r) is installed on the host"
 }
 
 write_devstack_local_conf() {
@@ -2134,6 +2148,10 @@ devstack_openstack_ready() {
     [ -f openrc ] || exit 1
     source openrc admin admin
     openstack token issue -f value -c id >/dev/null
+    openstack compute service list -f value >/dev/null
+    openstack network list -f value >/dev/null
+    openstack image list -f value >/dev/null
+    openstack volume service list -f value >/dev/null
   ' >/dev/null 2>&1
 }
 
@@ -2156,7 +2174,7 @@ install_lxd_devstack() {
     set -euo pipefail
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y git sudo curl ca-certificates iproute2 net-tools python3-openstackclient
+    apt-get install -y git sudo curl ca-certificates iproute2 net-tools kmod python3-openstackclient
     if ! id stack >/dev/null 2>&1; then
       useradd -s /bin/bash -d /opt/stack -m stack
     fi
@@ -2172,6 +2190,7 @@ install_lxd_devstack() {
   fi
 
   write_devstack_local_conf "$name" "$host_ip" "$password"
+  ensure_openstack_lxd_kernel_modules "$name"
   lxc exec "$name" -- sudo -u stack -H bash -lc 'cd /opt/stack/devstack && ./stack.sh'
 }
 
