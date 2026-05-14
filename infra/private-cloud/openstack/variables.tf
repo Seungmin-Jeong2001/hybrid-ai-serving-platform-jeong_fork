@@ -22,6 +22,18 @@ variable "external_network_id" {
   default     = ""
 }
 
+variable "floating_ip_pool" {
+  description = "External network name used to allocate floating IPs. Required when assign_floating_ips is true."
+  type        = string
+  default     = ""
+}
+
+variable "assign_floating_ips" {
+  description = "Whether to assign floating IPs to provisioned nodes for SSH/bootstrap access."
+  type        = bool
+  default     = false
+}
+
 variable "private_network_cidr" {
   description = "CIDR block for the private foundation network."
   type        = string

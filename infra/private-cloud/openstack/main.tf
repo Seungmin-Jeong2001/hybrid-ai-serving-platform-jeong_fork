@@ -106,6 +106,13 @@ resource "openstack_compute_instance_v2" "control_plane" {
   }
 }
 
+resource "openstack_networking_floatingip_v2" "control_plane" {
+  count = var.assign_floating_ips ? var.control_plane_count : 0
+
+  pool    = var.floating_ip_pool
+  port_id = openstack_compute_instance_v2.control_plane[count.index].network[0].port
+}
+
 resource "openstack_compute_instance_v2" "build_worker" {
   count = var.build_worker_count
 
@@ -126,6 +133,13 @@ resource "openstack_compute_instance_v2" "build_worker" {
   }
 }
 
+resource "openstack_networking_floatingip_v2" "build_worker" {
+  count = var.assign_floating_ips ? var.build_worker_count : 0
+
+  pool    = var.floating_ip_pool
+  port_id = openstack_compute_instance_v2.build_worker[count.index].network[0].port
+}
+
 resource "openstack_compute_instance_v2" "gpu_worker" {
   count = var.gpu_worker_count
 
@@ -144,4 +158,11 @@ resource "openstack_compute_instance_v2" "gpu_worker" {
   network {
     uuid = openstack_networking_network_v2.private.id
   }
+}
+
+resource "openstack_networking_floatingip_v2" "gpu_worker" {
+  count = var.assign_floating_ips ? var.gpu_worker_count : 0
+
+  pool    = var.floating_ip_pool
+  port_id = openstack_compute_instance_v2.gpu_worker[count.index].network[0].port
 }

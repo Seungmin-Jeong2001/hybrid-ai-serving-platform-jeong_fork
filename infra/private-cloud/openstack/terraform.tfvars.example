@@ -7,6 +7,10 @@ ssh_allowed_cidrs    = ["203.0.113.0/24"]
 # Set this only when the private network must egress through an OpenStack router.
 external_network_id = ""
 
+# Set these when bootstrap automation needs SSH access from outside the private subnet.
+floating_ip_pool    = ""
+assign_floating_ips = false
+
 key_pair_name  = "hybrid-ai-private-admin"
 ssh_public_key = "ssh-ed25519 REPLACE_WITH_PUBLIC_KEY_ONLY"
 

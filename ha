@@ -29,6 +29,7 @@ script_dir() {
 
 HA_PROJECT_ROOT="$(script_dir)"
 HA_OPENSTACK_DIR="${HA_PROJECT_ROOT}/infra/private-cloud/openstack"
+HA_OPENSTACK_BOOTSTRAP_DIR="${HA_PROJECT_ROOT}/infra/private-cloud/kubernetes-bootstrap"
 HA_DEPS_DIR="${HA_DEPS_DIR:-${HA_PROJECT_ROOT}/.ha/bin}"
 HA_COMPLETION_DIR="${HA_COMPLETION_DIR:-${HA_PROJECT_ROOT}/.ha/completions}"
 HA_HANDOFF_DIR="${HA_HANDOFF_DIR:-${HA_PROJECT_ROOT}/.ha/handoff}"
@@ -68,7 +69,7 @@ Usage:
   ./ha install [--bin-dir DIR] [--force] [--no-shell-config] [--with-deps]
   ha doctor
   ha test [--strict] [--terraform-init] [--integration]
-  ha up local|lxd|openstack-local|openstack|kubernetes|storage|gpu|all [--auto-approve]
+  ha up local|lxd|openstack-local|openstack|openstack-kubernetes|kubernetes|storage|gpu|all [--auto-approve]
   ha prod check
   ha env init|check|path|example|secret-example
   ha explain
@@ -164,6 +165,7 @@ ha는 이 repository 전용 helper입니다.
   - ha up openstack-local은 LXD 컨테이너 안에 DevStack 기반 로컬 OpenStack control plane을 설치합니다.
   - ha up all은 provider가 local/LXD이면 k3s provisioning 후 Kubernetes baseline manifest를 적용합니다.
   - ha up openstack은 HA_PROVIDER=openstack일 때 Terraform apply로 OpenStack 리소스를 생성/변경합니다.
+  - ha up openstack-kubernetes는 Terraform output node inventory를 기준으로 k3s를 bootstrap합니다.
   - ha up kubernetes|storage|gpu는 현재 kubeconfig 대상 cluster에 manifest를 적용합니다.
   - storage/gpu는 기본 all에 포함하지 않습니다. HA_APPLY_STORAGE=1, HA_APPLY_GPU=1일 때 local all에 포함합니다.
   - ha prod check는 현재 kubeconfig 대상이 production 기준을 만족하는지 검사합니다.
@@ -186,6 +188,7 @@ ha는 이 repository 전용 helper입니다.
 
   OpenStack mode에서 SSH public key는 없으면 .ha/ssh 아래에 자동 생성해서 Terraform에 전달합니다.
   로컬 OpenStack control plane은 HA_OPENSTACK_CONTAINER, HA_DEVSTACK_BRANCH, HA_DEVSTACK_PASSWORD로 조정합니다.
+  OpenStack VM bootstrap은 HA_OPENSTACK_SSH_USER, HA_OPENSTACK_SSH_TARGET, HA_OPENSTACK_SSH_PROXY_CONTAINER로 조정합니다.
 
 5. 자주 쓰는 순서
 
@@ -214,6 +217,7 @@ required_project_paths() {
   printf '%s\n' \
     "${HA_OPENSTACK_DIR}/main.tf" \
     "${HA_OPENSTACK_DIR}/variables.tf" \
+    "${HA_OPENSTACK_BOOTSTRAP_DIR}/bootstrap-k3s.sh" \
     "${HA_PROJECT_ROOT}/infra/private-cloud/kubernetes/kustomization.yaml" \
     "${HA_PROJECT_ROOT}/infra/private-cloud/storage/kustomization.yaml" \
     "${HA_PROJECT_ROOT}/infra/private-cloud/gpu-worker/kustomization.yaml" \
@@ -326,7 +330,7 @@ _ha_completion() {
       if [[ "$cur" == --* ]]; then
         COMPREPLY=($(compgen -W "--auto-approve" -- "$cur"))
       elif [[ "$COMP_CWORD" -eq 2 ]]; then
-        COMPREPLY=($(compgen -W "local lxd server openstack-local devstack openstack terraform kubernetes foundation base storage gpu gpu-worker k8s all" -- "$cur"))
+        COMPREPLY=($(compgen -W "local lxd server openstack-local devstack openstack openstack-kubernetes openstack-k8s terraform kubernetes foundation base storage gpu gpu-worker k8s all" -- "$cur"))
       else
         COMPREPLY=($(compgen -W "--auto-approve" -- "$cur"))
       fi
@@ -407,7 +411,7 @@ _ha() {
     '--terraform-init:download providers and run terraform validate'
     '--integration:run terraform plan and Kubernetes server dry-run'
   )
-  up_targets=(local lxd server openstack-local devstack openstack terraform kubernetes foundation base storage gpu gpu-worker k8s all)
+  up_targets=(local lxd server openstack-local devstack openstack openstack-kubernetes openstack-k8s terraform kubernetes foundation base storage gpu gpu-worker k8s all)
   up_opts=('--auto-approve:apply OpenStack Terraform without prompting')
   prod_actions=(check)
   k8s_actions=(render diff apply)
@@ -1235,6 +1239,12 @@ export HA_OPENSTACK_LXD_IMAGE="${HA_OPENSTACK_LXD_IMAGE:-ubuntu:24.04}"
 export HA_DEVSTACK_BRANCH="${HA_DEVSTACK_BRANCH:-master}"
 export HA_DEVSTACK_PASSWORD="${HA_DEVSTACK_PASSWORD:-hybrid-ai-devstack}"
 
+# OpenStack VM Kubernetes bootstrap settings.
+export HA_OPENSTACK_KUBECONFIG="${HA_OPENSTACK_KUBECONFIG:-.ha/openstack/kubeconfig}"
+export HA_OPENSTACK_SSH_USER="${HA_OPENSTACK_SSH_USER:-ubuntu}"
+export HA_OPENSTACK_SSH_TARGET="${HA_OPENSTACK_SSH_TARGET:-auto}"
+# export HA_OPENSTACK_SSH_PROXY_CONTAINER="ha-openstack"
+
 # Baseline Kubernetes manifests are applied by default after provisioning.
 # Storage and GPU examples need real NFS/GPU backing, so keep them opt-in.
 export HA_APPLY_STORAGE="${HA_APPLY_STORAGE:-0}"
@@ -1441,6 +1451,14 @@ current_provider() {
 
 local_kubeconfig_path() {
   local path="${HA_LOCAL_KUBECONFIG:-${HA_LOCAL_KUBECONFIG_DEFAULT}}"
+  if [[ "$path" != /* ]]; then
+    path="${HA_PROJECT_ROOT}/${path}"
+  fi
+  printf '%s\n' "$path"
+}
+
+openstack_kubeconfig_path() {
+  local path="${HA_OPENSTACK_KUBECONFIG:-${HA_PROJECT_ROOT}/.ha/openstack/kubeconfig}"
   if [[ "$path" != /* ]]; then
     path="${HA_PROJECT_ROOT}/${path}"
   fi
@@ -1690,6 +1708,11 @@ configure_kubeconfig_from_env() {
     return 0
   fi
 
+  if [[ -f "$(openstack_kubeconfig_path)" ]]; then
+    export KUBECONFIG="$(openstack_kubeconfig_path)"
+    return 0
+  fi
+
   if [[ -z "${PRIVATE_KUBECONFIG_B64:-}" ]]; then
     return 0
   fi
@@ -1720,6 +1743,9 @@ prepare_kubeconfig() {
       if configure_kubeconfig_from_env; then
         if [[ "$HA_KUBECONFIG_DECODED" -eq 1 ]]; then
           test_ok "decoded PRIVATE_KUBECONFIG_B64"
+        fi
+        if [[ -z "${KUBECONFIG:-}" ]]; then
+          test_fail "OpenStack kubeconfig not found; run ha up openstack-kubernetes --auto-approve or set KUBECONFIG"
         fi
       else
         test_fail "decode PRIVATE_KUBECONFIG_B64"
@@ -2419,6 +2445,17 @@ run_openstack_up() {
   write_openstack_handoff
 }
 
+run_openstack_kubernetes_bootstrap() {
+  local auto_approve="$1"
+  local bootstrap_script="${HA_OPENSTACK_BOOTSTRAP_DIR}/bootstrap-k3s.sh"
+
+  [[ "$auto_approve" -eq 1 ]] || die "ha up openstack-kubernetes bootstraps nodes over SSH; pass --auto-approve"
+  [[ -x "$bootstrap_script" ]] || die "bootstrap script not executable: ${bootstrap_script#${HA_PROJECT_ROOT}/}"
+
+  ensure_openstack_ssh_public_key
+  "$bootstrap_script"
+}
+
 run_kubernetes_up() {
   local target="$1"
 
@@ -2436,6 +2473,7 @@ run_kubernetes_up() {
       if [[ "$HA_KUBECONFIG_DECODED" -eq 1 ]]; then
         info "Decoded PRIVATE_KUBECONFIG_B64"
       fi
+      [[ -n "${KUBECONFIG:-}" ]] || die "OpenStack kubeconfig not found; run ha up openstack-kubernetes --auto-approve or set KUBECONFIG"
       ;;
   esac
 
@@ -2491,6 +2529,9 @@ run_up() {
     openstack|terraform)
       run_openstack_up "$auto_approve"
       ;;
+    openstack-kubernetes|openstack-k8s)
+      run_openstack_kubernetes_bootstrap "$auto_approve"
+      ;;
     kubernetes|foundation|base|storage|gpu|gpu-worker)
       run_kubernetes_up "$target"
       ;;
@@ -2521,7 +2562,18 @@ run_up() {
           ;;
         openstack)
           run_openstack_up "$auto_approve"
-          run_kubernetes_up all
+          if [[ "${HA_OPENSTACK_BOOTSTRAP_K3S:-0}" == "1" ]]; then
+            run_openstack_kubernetes_bootstrap "$auto_approve"
+            run_kubernetes_up kubernetes
+            if [[ "${HA_APPLY_STORAGE:-0}" == "1" ]]; then
+              run_kubernetes_up storage
+            fi
+            if [[ "${HA_APPLY_GPU:-0}" == "1" ]]; then
+              run_kubernetes_up gpu
+            fi
+          else
+            info "OpenStack resources applied. Set HA_OPENSTACK_BOOTSTRAP_K3S=1 or run ha up openstack-kubernetes --auto-approve to bootstrap Kubernetes."
+          fi
           ;;
         *)
           die "unknown HA_PROVIDER=$(current_provider)"
@@ -2638,7 +2690,7 @@ configure_prod_kubeconfig() {
       fi
       ;;
     *)
-      configure_kubeconfig_from_env
+      configure_kubeconfig_from_env && [[ -n "${KUBECONFIG:-}" ]]
       ;;
   esac
 }
