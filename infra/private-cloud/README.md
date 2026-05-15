@@ -13,6 +13,7 @@ infra/private-cloud/
   kubernetes/      # Namespace, RBAC, ResourceQuota 기준
   gpu-worker/      # GPU Node, Device Plugin, nvidia-smi 검증 기준
   storage/         # NFS, MinIO, Build Cache 기준
+  reverse-proxy/   # Caddy, Cloudflare DNS, 관리자 진입점 기준
   handoff/         # 다른 역할에 전달할 인프라 기준
 ```
 
@@ -39,6 +40,7 @@ ha test --integration
 ha prod check
 ha env init
 ha env check
+ha proxy validate
 ha up all --auto-approve
 ha up openstack --auto-approve
 ha up openstack-kubernetes --auto-approve
@@ -53,6 +55,7 @@ ha up openstack-kubernetes --auto-approve
 - `ha prod check`: 현재 kubeconfig 대상이 운영 기준을 만족하는지 검사합니다.
 - `ha env init`: `.env`, `.env.secret` 템플릿을 생성합니다.
 - `ha env check`: provider와 로컬 프로비저닝 가능 상태를 확인합니다.
+- `ha proxy validate`: Caddy reverse proxy 설정을 검증합니다.
 - `ha up all --auto-approve`: 기본값으로 현재 서버 또는 LXD 컨테이너에 k3s Kubernetes를 프로비저닝하고 baseline manifest를 적용합니다.
 - `ha up openstack --auto-approve`: `HA_PROVIDER=openstack`일 때만 OpenStack Terraform 리소스를 생성/변경합니다.
 - `ha up openstack-kubernetes --auto-approve`: Terraform output node inventory를 기준으로 OpenStack VM에 k3s를 설치합니다.
@@ -145,6 +148,24 @@ ha tf destroy
 | `model-build` | 모델 빌드 작업 공간 |
 | `gpu-workload` | GPU Runtime 검증 작업 공간 |
 
+## 관리자 Reverse Proxy
+
+`ssh.intp.me`는 물리 서버의 Tailscale SSH 진입점으로 유지하고, Caddy는 HTTP/HTTPS 관리자 UI만 분기합니다.
+
+| 대상 | 기본 도메인 | 기본 upstream |
+| --- | --- | --- |
+| OpenStack Horizon | `openstack.intp.me` | `127.0.0.1:18081` |
+| Kubernetes UI | `k8s.intp.me` | `127.0.0.1:18082` |
+| Grafana | `grafana.intp.me` | `127.0.0.1:3000` |
+| ArgoCD | `argocd.intp.me` | `127.0.0.1:8080` |
+
+설정 파일:
+
+- `infra/private-cloud/reverse-proxy/Caddyfile`: 내부 HTTP 검증용
+- `infra/private-cloud/reverse-proxy/Caddyfile.cloudflare`: Cloudflare DNS-01 HTTPS용
+- `infra/private-cloud/reverse-proxy/cloudflare_dns.py`: Cloudflare DNS record dry-run/apply
+- `infra/private-cloud/handoff/github-actions-env.md`: GitHub Secrets/Variables 이관표
+
 ## 작성 기준
 
 - 공개 가능한 예시와 구조만 작성합니다.
@@ -182,3 +203,20 @@ Workflow 경로: `.github/workflows/private-cloud-foundation.yml`
 선택 GitHub Variable:
 
 - `OPENSTACK_REGION`
+
+DNS workflow 경로: `.github/workflows/private-cloud-dns.yml`
+
+필수 GitHub Secret:
+
+- `CLOUDFLARE_API_TOKEN`
+
+필수 GitHub Variables:
+
+- `CLOUDFLARE_ZONE_ID`
+- `PRIVATE_CLOUD_BASE_DOMAIN`
+- `PRIVATE_CLOUD_TAILSCALE_IP`
+
+선택 GitHub Variables:
+
+- `PRIVATE_CLOUD_DNS_TTL`
+- `PRIVATE_CLOUD_DNS_SERVICES`

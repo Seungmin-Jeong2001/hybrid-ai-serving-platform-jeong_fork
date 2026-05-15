@@ -1,0 +1,33 @@
+{
+	email {$HA_CADDY_ACME_EMAIL:admin@intp.me}
+}
+
+(cloudflare_tls) {
+	tls {
+		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+	}
+}
+
+{$HA_OPENSTACK_DOMAIN:openstack.intp.me} {
+	import cloudflare_tls
+	encode zstd gzip
+	reverse_proxy {$HA_OPENSTACK_HORIZON_UPSTREAM:127.0.0.1:18081}
+}
+
+{$HA_K8S_DOMAIN:k8s.intp.me} {
+	import cloudflare_tls
+	encode zstd gzip
+	reverse_proxy {$HA_K8S_DASHBOARD_UPSTREAM:127.0.0.1:18082}
+}
+
+{$HA_GRAFANA_DOMAIN:grafana.intp.me} {
+	import cloudflare_tls
+	encode zstd gzip
+	reverse_proxy {$HA_GRAFANA_UPSTREAM:127.0.0.1:3000}
+}
+
+{$HA_ARGOCD_DOMAIN:argocd.intp.me} {
+	import cloudflare_tls
+	encode zstd gzip
+	reverse_proxy {$HA_ARGOCD_UPSTREAM:127.0.0.1:8080}
+}

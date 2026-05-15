@@ -1,0 +1,23 @@
+{
+	email {$HA_CADDY_ACME_EMAIL:admin@intp.me}
+}
+
+http://{$HA_OPENSTACK_DOMAIN:openstack.intp.me} {
+	encode zstd gzip
+	reverse_proxy {$HA_OPENSTACK_HORIZON_UPSTREAM:127.0.0.1:18081}
+}
+
+http://{$HA_K8S_DOMAIN:k8s.intp.me} {
+	encode zstd gzip
+	reverse_proxy {$HA_K8S_DASHBOARD_UPSTREAM:127.0.0.1:18082}
+}
+
+http://{$HA_GRAFANA_DOMAIN:grafana.intp.me} {
+	encode zstd gzip
+	reverse_proxy {$HA_GRAFANA_UPSTREAM:127.0.0.1:3000}
+}
+
+http://{$HA_ARGOCD_DOMAIN:argocd.intp.me} {
+	encode zstd gzip
+	reverse_proxy {$HA_ARGOCD_UPSTREAM:127.0.0.1:8080}
+}

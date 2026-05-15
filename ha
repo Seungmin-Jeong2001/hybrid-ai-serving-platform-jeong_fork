@@ -30,6 +30,7 @@ script_dir() {
 HA_PROJECT_ROOT="$(script_dir)"
 HA_OPENSTACK_DIR="${HA_PROJECT_ROOT}/infra/private-cloud/openstack"
 HA_OPENSTACK_BOOTSTRAP_DIR="${HA_PROJECT_ROOT}/infra/private-cloud/kubernetes-bootstrap"
+HA_REVERSE_PROXY_DIR="${HA_PROJECT_ROOT}/infra/private-cloud/reverse-proxy"
 HA_DEPS_DIR="${HA_DEPS_DIR:-${HA_PROJECT_ROOT}/.ha/bin}"
 HA_COMPLETION_DIR="${HA_COMPLETION_DIR:-${HA_PROJECT_ROOT}/.ha/completions}"
 HA_HANDOFF_DIR="${HA_HANDOFF_DIR:-${HA_PROJECT_ROOT}/.ha/handoff}"
@@ -72,6 +73,7 @@ Usage:
   ha up local|lxd|openstack-local|openstack|openstack-kubernetes|kubernetes|storage|gpu|all [--auto-approve]
   ha prod check
   ha env init|check|path|example|secret-example
+  ha proxy validate|path [local|cloudflare]
   ha explain
   ha completion bash|zsh
   ha status
@@ -87,6 +89,7 @@ Commands:
   up         Provision local Kubernetes or apply OpenStack/Kubernetes targets
   prod       Check production readiness of the active Kubernetes target
   env        Create or check the local private-cloud env file
+  proxy      Validate or locate Caddy reverse proxy config
   explain    Show the local workflow and required environment variables
   completion Print shell completion script for bash or zsh
   status     Show git branch status for this repository
@@ -104,6 +107,7 @@ Examples:
   ha env init
   vi .env
   ha env check
+  ha proxy validate
   ha test --integration
   ha prod check
   ha explain
@@ -116,6 +120,7 @@ Examples:
   ha tf init
   ha k8s render kubernetes
   ha k8s apply storage
+  ha proxy path cloudflare
 EOF
 }
 
@@ -211,6 +216,16 @@ HA_* 환경 변수는 이 프로젝트 전용 prefix이며, High Availability �
   - zsh/bash 모두 ambiguous completion은 후보를 아래에 보여주는 방식으로 설정합니다.
   - 현재 shell에서 바로 적용하려면 zsh에서는 source .ha/completions/ha.zsh를 실행합니다.
   - bash에서는 source .ha/completions/ha.bash를 실행합니다.
+
+7. Reverse proxy
+
+  ha proxy validate
+  ha proxy path cloudflare
+
+  - Caddy 설정은 infra/private-cloud/reverse-proxy에 있습니다.
+  - ssh.intp.me는 Caddy가 아니라 Tailscale SSH 진입점으로 둡니다.
+  - openstack.intp.me, k8s.intp.me, grafana.intp.me, argocd.intp.me는 Caddy가 Host header로 분기합니다.
+  - Cloudflare token은 .env.secret 또는 GitHub Secret에만 둡니다.
 EOF
 }
 
@@ -219,10 +234,13 @@ required_project_paths() {
     "${HA_OPENSTACK_DIR}/main.tf" \
     "${HA_OPENSTACK_DIR}/variables.tf" \
     "${HA_OPENSTACK_BOOTSTRAP_DIR}/bootstrap-k3s.sh" \
+    "${HA_REVERSE_PROXY_DIR}/Caddyfile" \
+    "${HA_REVERSE_PROXY_DIR}/cloudflare_dns.py" \
     "${HA_PROJECT_ROOT}/infra/private-cloud/kubernetes/kustomization.yaml" \
     "${HA_PROJECT_ROOT}/infra/private-cloud/storage/kustomization.yaml" \
     "${HA_PROJECT_ROOT}/infra/private-cloud/gpu-worker/kustomization.yaml" \
-    "${HA_PROJECT_ROOT}/.github/workflows/private-cloud-foundation.yml"
+    "${HA_PROJECT_ROOT}/.github/workflows/private-cloud-foundation.yml" \
+    "${HA_PROJECT_ROOT}/.github/workflows/private-cloud-dns.yml"
 }
 
 default_launcher_locations() {
@@ -303,7 +321,7 @@ _ha_completion() {
   command="${COMP_WORDS[1]:-}"
 
   if [[ "$COMP_CWORD" -eq 1 ]]; then
-    COMPREPLY=($(compgen -W "install uninstall doctor test up prod production env explain guide completion status tf terraform k8s kubectl path help" -- "$cur"))
+    COMPREPLY=($(compgen -W "install uninstall doctor test up prod production env proxy caddy explain guide completion status tf terraform k8s kubectl path help" -- "$cur"))
     return
   fi
 
@@ -357,6 +375,13 @@ _ha_completion() {
     env)
       COMPREPLY=($(compgen -W "init check path example secret-example" -- "$cur"))
       ;;
+    proxy|caddy)
+      if [[ "$COMP_CWORD" -eq 2 ]]; then
+        COMPREPLY=($(compgen -W "validate path" -- "$cur"))
+      elif [[ "$COMP_CWORD" -eq 3 ]]; then
+        COMPREPLY=($(compgen -W "local cloudflare http https" -- "$cur"))
+      fi
+      ;;
   esac
 }
 
@@ -376,7 +401,7 @@ zstyle ':completion:*' verbose yes
 bindkey '^I' complete-word 2>/dev/null || true
 
 _ha() {
-  local -a commands install_opts uninstall_opts test_opts up_targets up_opts prod_actions k8s_actions k8s_targets completion_shells env_actions terraform_commands
+  local -a commands install_opts uninstall_opts test_opts up_targets up_opts prod_actions k8s_actions k8s_targets completion_shells env_actions proxy_actions proxy_profiles terraform_commands
 
   commands=(
     'install:install launcher and optional dependencies'
@@ -387,6 +412,8 @@ _ha() {
     'prod:check production readiness'
     'production:alias for prod'
     'env:create or check the local private-cloud env file'
+    'proxy:validate or locate Caddy reverse proxy config'
+    'caddy:alias for proxy'
     'explain:show local workflow and required environment variables'
     'guide:alias for explain'
     'completion:print shell completion script'
@@ -419,6 +446,8 @@ _ha() {
   k8s_targets=(kubernetes foundation base storage gpu gpu-worker all)
   completion_shells=(bash zsh)
   env_actions=(init check path example secret-example)
+  proxy_actions=(validate path)
+  proxy_profiles=(local cloudflare http https)
   terraform_commands=(init validate fmt plan apply destroy output providers state version workspace)
 
   if (( CURRENT == 2 )); then
@@ -480,6 +509,13 @@ _ha() {
     env)
       if (( CURRENT == 3 )); then
         _values 'action' $env_actions
+      fi
+      ;;
+    proxy|caddy)
+      if (( CURRENT == 3 )); then
+        _values 'action' $proxy_actions
+      elif (( CURRENT == 4 )); then
+        _values 'profile' $proxy_profiles
       fi
       ;;
   esac
@@ -1031,6 +1067,22 @@ test_bash_syntax() {
   fi
 }
 
+test_caddy_config() {
+  local output
+
+  if ! command -v caddy >/dev/null 2>&1; then
+    test_skip "Caddy config validation (caddy not installed)"
+    return
+  fi
+
+  if output="$(caddy validate --config "$(caddy_config_path local)" --adapter caddyfile 2>&1)"; then
+    test_ok "Caddy local config"
+  else
+    [[ -z "$output" ]] || info "$output"
+    test_fail "Caddy local config"
+  fi
+}
+
 kustomize_dirs() {
   printf '%s\n' \
     "${HA_PROJECT_ROOT}/infra/private-cloud/kubernetes" \
@@ -1251,6 +1303,25 @@ export HA_OPENSTACK_SSH_TARGET="${HA_OPENSTACK_SSH_TARGET:-auto}"
 export HA_APPLY_STORAGE="${HA_APPLY_STORAGE:-0}"
 export HA_APPLY_GPU="${HA_APPLY_GPU:-0}"
 
+# DNS and Caddy reverse proxy settings.
+# DNS names are configuration, not secrets. Keep tokens in .env.secret.
+export HA_BASE_DOMAIN="${HA_BASE_DOMAIN:-intp.me}"
+export HA_TAILSCALE_IP="${HA_TAILSCALE_IP:-100.64.0.10}"
+export HA_SSH_DOMAIN="${HA_SSH_DOMAIN:-ssh.${HA_BASE_DOMAIN}}"
+export HA_OPENSTACK_DOMAIN="${HA_OPENSTACK_DOMAIN:-openstack.${HA_BASE_DOMAIN}}"
+export HA_K8S_DOMAIN="${HA_K8S_DOMAIN:-k8s.${HA_BASE_DOMAIN}}"
+export HA_GRAFANA_DOMAIN="${HA_GRAFANA_DOMAIN:-grafana.${HA_BASE_DOMAIN}}"
+export HA_ARGOCD_DOMAIN="${HA_ARGOCD_DOMAIN:-argocd.${HA_BASE_DOMAIN}}"
+export HA_CADDY_ACME_EMAIL="${HA_CADDY_ACME_EMAIL:-admin@${HA_BASE_DOMAIN}}"
+export HA_OPENSTACK_HORIZON_UPSTREAM="${HA_OPENSTACK_HORIZON_UPSTREAM:-127.0.0.1:18081}"
+export HA_K8S_DASHBOARD_UPSTREAM="${HA_K8S_DASHBOARD_UPSTREAM:-127.0.0.1:18082}"
+export HA_GRAFANA_UPSTREAM="${HA_GRAFANA_UPSTREAM:-127.0.0.1:3000}"
+export HA_ARGOCD_UPSTREAM="${HA_ARGOCD_UPSTREAM:-127.0.0.1:8080}"
+export HA_CLOUDFLARE_DNS_TTL="${HA_CLOUDFLARE_DNS_TTL:-120}"
+export HA_DNS_SERVICES="${HA_DNS_SERVICES:-openstack,k8s,grafana,argocd}"
+# Cloudflare zone ID is not a secret. Put the API token in .env.secret.
+# export CLOUDFLARE_ZONE_ID=""
+
 # OpenStack is an optional provider now. Only set these when using:
 #   HA_PROVIDER=openstack ha up all --auto-approve
 # export HA_PROVIDER="openstack"
@@ -1277,6 +1348,10 @@ secret_env_template() {
 # Existing Kubernetes access, only needed when applying to an already-created cluster.
 # export KUBECONFIG="/path/to/private-cluster-kubeconfig"
 # export PRIVATE_KUBECONFIG_B64="base64-encoded-kubeconfig"
+
+# Cloudflare DNS automation and Caddy DNS-01 certificate issuance.
+# Required permissions: Zone:Read and DNS:Edit scoped to the intp.me zone.
+# export CLOUDFLARE_API_TOKEN=""
 
 # Optional Terraform remote state backend for shared apply/destroy workflows.
 # export TF_BACKEND_CONFIG='bucket="REPLACE"
@@ -1599,6 +1674,54 @@ run_env() {
       ;;
     *)
       die "usage: ha env init|check|path|example|secret-example"
+      ;;
+  esac
+}
+
+caddy_config_path() {
+  local profile="${1:-local}"
+
+  case "$profile" in
+    local|http)
+      printf '%s\n' "${HA_REVERSE_PROXY_DIR}/Caddyfile"
+      ;;
+    cloudflare|https)
+      printf '%s\n' "${HA_REVERSE_PROXY_DIR}/Caddyfile.cloudflare"
+      ;;
+    *)
+      die "unknown proxy profile: ${profile}"
+      ;;
+  esac
+}
+
+run_proxy() {
+  local action="${1:-validate}"
+  local profile="${2:-local}"
+  local config
+  local output
+
+  load_env_file
+  config="$(caddy_config_path "$profile")"
+
+  case "$action" in
+    path)
+      info "$config"
+      ;;
+    validate)
+      require_tool caddy
+      if [[ "$profile" == "cloudflare" || "$profile" == "https" ]] && [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+        die "CLOUDFLARE_API_TOKEN is required to validate the cloudflare Caddy profile"
+      fi
+
+      if output="$(caddy validate --config "$config" --adapter caddyfile 2>&1)"; then
+        info "ok: Caddy config ${config#${HA_PROJECT_ROOT}/}"
+      else
+        [[ -z "$output" ]] || info "$output"
+        die "Caddy config validation failed"
+      fi
+      ;;
+    *)
+      die "usage: ha proxy validate|path [local|cloudflare]"
       ;;
   esac
 }
@@ -2321,6 +2444,7 @@ run_tests() {
 
   test_project_layout
   test_bash_syntax
+  test_caddy_config
   test_yaml_syntax
   test_kustomization_references
   test_terraform_static "$terraform_init"
@@ -2962,6 +3086,9 @@ main() {
       ;;
     env)
       run_env "$@"
+      ;;
+    proxy|caddy)
+      run_proxy "$@"
       ;;
     status)
       git_status

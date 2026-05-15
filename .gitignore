@@ -3,6 +3,8 @@
 .env.*
 !.env.example
 !.env.secret.example
+__pycache__/
+*.pyc
 
 # Terraform local state and provider cache.
 **/.terraform/
@@ -12,3 +14,7 @@
 **/*.tfplan
 **/backend.generated.tf
 **/backend.hcl
+
+# Local reverse proxy runtime overrides.
+**/Caddyfile.local
+**/caddy.env

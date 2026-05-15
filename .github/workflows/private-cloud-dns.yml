@@ -1,0 +1,64 @@
+name: Private Cloud DNS
+
+on:
+  push:
+    branches:
+      - feature/private
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Apply DNS changes to Cloudflare. Leave false for dry-run.
+        required: true
+        type: boolean
+        default: false
+      base_domain:
+        description: Base domain managed in Cloudflare.
+        required: true
+        type: string
+        default: intp.me
+      tailscale_ip:
+        description: Physical server Tailscale IPv4. Empty uses PRIVATE_CLOUD_TAILSCALE_IP variable.
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-cloud-dns
+  cancel-in-progress: false
+
+jobs:
+  cloudflare:
+    name: Cloudflare DNS
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
+      PRIVATE_CLOUD_BASE_DOMAIN: ${{ github.event.inputs.base_domain || vars.PRIVATE_CLOUD_BASE_DOMAIN || 'intp.me' }}
+      PRIVATE_CLOUD_TAILSCALE_IP: ${{ github.event.inputs.tailscale_ip || vars.PRIVATE_CLOUD_TAILSCALE_IP }}
+      PRIVATE_CLOUD_DNS_TTL: ${{ vars.PRIVATE_CLOUD_DNS_TTL || '120' }}
+      PRIVATE_CLOUD_DNS_SERVICES: ${{ vars.PRIVATE_CLOUD_DNS_SERVICES || 'openstack,k8s,grafana,argocd' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Verify required inputs
+        run: |
+          missing=0
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ZONE_ID PRIVATE_CLOUD_BASE_DOMAIN PRIVATE_CLOUD_TAILSCALE_IP; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing required secret or variable: ${name}"
+              missing=1
+            fi
+          done
+          exit "${missing}"
+
+      - name: Preview DNS records
+        if: ${{ github.event_name == 'push' || github.event.inputs.apply != 'true' }}
+        run: python3 infra/private-cloud/reverse-proxy/cloudflare_dns.py
+
+      - name: Apply DNS records
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply == 'true' }}
+        run: python3 infra/private-cloud/reverse-proxy/cloudflare_dns.py --apply
