@@ -1,3 +1,4 @@
+# ECR 리포지토리
 resource "aws_ecr_repository" "repos" {
   for_each = toset(var.ecr_repositories)
 

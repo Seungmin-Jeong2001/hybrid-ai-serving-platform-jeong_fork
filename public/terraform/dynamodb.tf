@@ -1,3 +1,4 @@
+# DynamoDB 테이블
 resource "aws_dynamodb_table" "inference_jobs" {
   name         = "${var.project_name}-inference-jobs"
   billing_mode = "PAY_PER_REQUEST"

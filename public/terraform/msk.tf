@@ -1,3 +1,4 @@
+# MSK 보안 그룹
 resource "aws_security_group" "msk" {
   name        = "${var.project_name}-msk-sg"
   description = "Security group for the MSK cluster"
@@ -23,6 +24,7 @@ resource "aws_security_group" "msk" {
   })
 }
 
+# MSK 클러스터
 resource "aws_msk_cluster" "main" {
   cluster_name           = "${var.project_name}-msk"
   kafka_version          = var.msk_kafka_version
@@ -30,7 +32,7 @@ resource "aws_msk_cluster" "main" {
 
   broker_node_group_info {
     instance_type   = var.msk_broker_instance_type
-    client_subnets  = aws_subnet.private[*].id
+    client_subnets  = aws_subnet.msk_private[*].id
     security_groups = [aws_security_group.msk.id]
 
     storage_info {
