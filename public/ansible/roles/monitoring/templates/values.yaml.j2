@@ -1,0 +1,84 @@
+grafana:
+  adminUser: "{{ grafana_admin_user }}"
+  adminPassword: "{{ grafana_admin_password }}"
+  defaultDashboardsTimezone: "{{ grafana_default_timezone }}"
+  service:
+    type: "{{ grafana_service_type }}"
+  persistence:
+    enabled: {{ grafana_persistence_enabled | bool | to_json }}
+    size: "{{ grafana_persistence_size }}"
+{% if grafana_storage_class_name %}
+    storageClassName: "{{ grafana_storage_class_name }}"
+{% endif %}
+  resources:
+    requests:
+      cpu: "{{ grafana_resources_requests_cpu }}"
+      memory: "{{ grafana_resources_requests_memory }}"
+    limits:
+      cpu: "{{ grafana_resources_limits_cpu }}"
+      memory: "{{ grafana_resources_limits_memory }}"
+  grafana.ini:
+    users:
+      viewers_can_edit: false
+    auth.anonymous:
+      enabled: false
+  sidecar:
+    dashboards:
+      enabled: true
+    datasources:
+      enabled: true
+
+prometheus:
+  prometheusSpec:
+    retention: "{{ prometheus_retention }}"
+    scrapeInterval: "{{ prometheus_scrape_interval }}"
+    evaluationInterval: "{{ prometheus_evaluation_interval }}"
+    resources:
+      requests:
+        cpu: "{{ prometheus_resources_requests_cpu }}"
+        memory: "{{ prometheus_resources_requests_memory }}"
+      limits:
+        cpu: "{{ prometheus_resources_limits_cpu }}"
+        memory: "{{ prometheus_resources_limits_memory }}"
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: "{{ prometheus_storage_size }}"
+{% if prometheus_storage_class_name %}
+          storageClassName: "{{ prometheus_storage_class_name }}"
+{% endif %}
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: "{{ alertmanager_resources_requests_cpu }}"
+        memory: "{{ alertmanager_resources_requests_memory }}"
+      limits:
+        cpu: "{{ alertmanager_resources_limits_cpu }}"
+        memory: "{{ alertmanager_resources_limits_memory }}"
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      cpu: 300m
+      memory: 384Mi

@@ -1,0 +1,34 @@
+---
+monitoring_namespace: monitoring
+monitoring_release_name: kube-prometheus-stack
+monitoring_chart_ref: prometheus-community/kube-prometheus-stack
+monitoring_chart_version: ""
+monitoring_helm_timeout: 10m0s
+monitoring_aws_region: ap-northeast-2
+grafana_admin_password_ssm_name: /sgs-hasp/monitoring/grafana_admin_password
+
+grafana_admin_user: admin
+grafana_default_timezone: Asia/Seoul
+grafana_service_type: ClusterIP
+grafana_persistence_enabled: true
+grafana_persistence_size: 10Gi
+grafana_storage_class_name: ""
+grafana_resources_requests_cpu: 100m
+grafana_resources_requests_memory: 256Mi
+grafana_resources_limits_cpu: 300m
+grafana_resources_limits_memory: 512Mi
+
+prometheus_retention: 10d
+prometheus_scrape_interval: 30s
+prometheus_evaluation_interval: 30s
+prometheus_storage_size: 20Gi
+prometheus_storage_class_name: ""
+prometheus_resources_requests_cpu: 200m
+prometheus_resources_requests_memory: 512Mi
+prometheus_resources_limits_cpu: 500m
+prometheus_resources_limits_memory: 1Gi
+
+alertmanager_resources_requests_cpu: 100m
+alertmanager_resources_requests_memory: 256Mi
+alertmanager_resources_limits_cpu: 300m
+alertmanager_resources_limits_memory: 512Mi
