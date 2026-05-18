@@ -1,0 +1,142 @@
+grafana:
+  adminUser: "{{ grafana_admin_user }}"
+  adminPassword: "{{ grafana_admin_password }}"
+  defaultDashboardsTimezone: "{{ grafana_default_timezone }}"
+  service:
+    type: "{{ grafana_service_type }}"
+  persistence:
+    enabled: {{ grafana_persistence_enabled | bool | to_json }}
+    size: "{{ grafana_persistence_size }}"
+{% if grafana_storage_class_name %}
+    storageClassName: "{{ grafana_storage_class_name }}"
+{% endif %}
+  resources:
+    requests:
+      cpu: "{{ grafana_resources_requests_cpu }}"
+      memory: "{{ grafana_resources_requests_memory }}"
+    limits:
+      cpu: "{{ grafana_resources_limits_cpu }}"
+      memory: "{{ grafana_resources_limits_memory }}"
+  grafana.ini:
+    users:
+      viewers_can_edit: false
+    auth.anonymous:
+      enabled: false
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        - name: Prometheus-Public
+          type: prometheus
+          url: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
+          access: proxy
+          isDefault: true
+          editable: true
+        - name: Loki
+          type: loki
+          url: http://loki.monitoring.svc.cluster.local:3100
+          access: proxy
+          editable: true
+  sidecar:
+    dashboards:
+      enabled: true
+    datasources:
+      enabled: true
+
+prometheus:
+  prometheusSpec:
+    retention: "{{ prometheus_retention }}"
+    scrapeInterval: "{{ prometheus_scrape_interval }}"
+    evaluationInterval: "{{ prometheus_evaluation_interval }}"
+    resources:
+      requests:
+        cpu: "{{ prometheus_resources_requests_cpu }}"
+        memory: "{{ prometheus_resources_requests_memory }}"
+      limits:
+        cpu: "{{ prometheus_resources_limits_cpu }}"
+        memory: "{{ prometheus_resources_limits_memory }}"
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: "{{ prometheus_storage_size }}"
+{% if prometheus_storage_class_name %}
+          storageClassName: "{{ prometheus_storage_class_name }}"
+{% endif %}
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: "{{ alertmanager_resources_requests_cpu }}"
+        memory: "{{ alertmanager_resources_requests_memory }}"
+      limits:
+        cpu: "{{ alertmanager_resources_limits_cpu }}"
+        memory: "{{ alertmanager_resources_limits_memory }}"
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ["alertname", "namespace", "severity"]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      receiver: "discord-warning"
+      routes:
+        - matchers:
+            - severity = "critical"
+          receiver: "discord-critical"
+        - matchers:
+            - severity = "warning"
+          receiver: "discord-warning"
+    receivers:
+      - name: "discord-critical"
+        slack_configs:
+          - api_url: "{{ discord_critical_webhook }}"
+            channel: "#sre-alerts-critical"
+            title: "{% raw %}🚨 [CRITICAL] {{ .GroupLabels.alertname }}{% endraw %}"
+            text: |
+              {% raw %}{{ range .Alerts }}*Summary:* {{ .Annotations.summary }}
+              {{ end }}{% endraw %}
+            send_resolved: true
+      - name: "discord-warning"
+        slack_configs:
+          - api_url: "{{ discord_warning_webhook }}"
+            channel: "#sre-alerts-warning"
+            title: "{% raw %}⚠️ [WARNING] {{ .GroupLabels.alertname }}{% endraw %}"
+            text: |
+              {% raw %}{{ range .Alerts }}*Summary:* {{ .Annotations.summary }}
+              {{ end }}{% endraw %}
+            send_resolved: true
+
+# EKS Managed Control Plane — 관리형 컴포넌트 비활성화
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      cpu: 300m
+      memory: 384Mi

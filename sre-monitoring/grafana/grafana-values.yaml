@@ -26,7 +26,7 @@ adminUser: admin
 # adminPassword는 Kubernetes Secret으로 관리 권장:
 #   kubectl create secret generic grafana-credentials \
 #     --from-literal=admin-password=YOUR_PASSWORD -n monitoring
-adminPassword: "sre-platform-2024"  # TODO(통합 #1): 운영 비밀번호로 반드시 교체
+adminPassword: "admin"
 
 persistence:
   enabled: true
