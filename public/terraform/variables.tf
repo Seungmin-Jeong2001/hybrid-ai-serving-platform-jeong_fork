@@ -10,6 +10,12 @@ variable "project_name" {
   default     = "sgs-hasp"
 }
 
+variable "environment" {
+  description = "Deployment environment name"
+  type        = string
+  default     = ""
+}
+
 variable "vpc_cidr" {
   description = "CIDR block for the VPC"
   type        = string
@@ -97,4 +103,16 @@ variable "msk_ebs_volume_size" {
   description = "Broker EBS volume size in GiB for the MSK cluster"
   type        = number
   default     = 1000
+}
+
+variable "artifacts_s3_bucket_name" {
+  description = "Optional override for the shared artifacts S3 bucket name"
+  type        = string
+  default     = ""
+}
+
+variable "artifacts_s3_force_destroy" {
+  description = "Whether to allow Terraform to delete the shared artifacts S3 bucket even when it contains objects"
+  type        = bool
+  default     = false
 }

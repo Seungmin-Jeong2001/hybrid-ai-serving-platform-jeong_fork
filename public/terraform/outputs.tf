@@ -47,3 +47,8 @@ output "msk_cluster_arn" {
   description = "MSK cluster ARN"
   value       = aws_msk_cluster.main.arn
 }
+
+output "artifacts_s3_bucket_name" {
+  description = "Shared artifacts S3 bucket name"
+  value       = aws_s3_bucket.artifacts.bucket
+}
