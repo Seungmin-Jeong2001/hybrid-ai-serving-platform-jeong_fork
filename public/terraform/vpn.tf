@@ -1,4 +1,6 @@
-# 가상 프라이빗 게이트웨이
+# 현재 전부 비활성화
+
+# Virtual Private Gateway
 resource "aws_vpn_gateway" "main" {
   count = var.enable_site_to_site_vpn ? 1 : 0
 
@@ -9,7 +11,7 @@ resource "aws_vpn_gateway" "main" {
   })
 }
 
-# 고객 게이트웨이
+# Customer Gateway
 resource "aws_customer_gateway" "main" {
   count = var.enable_site_to_site_vpn ? 1 : 0
 

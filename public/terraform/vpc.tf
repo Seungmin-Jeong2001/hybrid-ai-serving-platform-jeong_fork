@@ -20,7 +20,7 @@ resource "aws_vpc" "main" {
   })
 }
 
-# 인터넷 게이트웨이
+# Internet Gateway
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
 
@@ -29,7 +29,7 @@ resource "aws_internet_gateway" "main" {
   })
 }
 
-# 퍼블릭 서브넷
+# Public Subnet
 resource "aws_subnet" "public" {
   count = length(var.public_subnet_cidrs)
 
@@ -45,7 +45,7 @@ resource "aws_subnet" "public" {
   })
 }
 
-# EKS 프라이빗 서브넷
+# EKS Private Subnet
 resource "aws_subnet" "eks_private" {
   count = length(var.eks_private_subnet_cidrs)
 
@@ -60,7 +60,7 @@ resource "aws_subnet" "eks_private" {
   })
 }
 
-# MSK 프라이빗 서브넷
+# MSK Private Subnet
 resource "aws_subnet" "msk_private" {
   count = length(var.msk_private_subnet_cidrs)
 
@@ -73,7 +73,7 @@ resource "aws_subnet" "msk_private" {
   })
 }
 
-# 퍼블릭 라우팅 테이블
+# Public 라우팅 테이블
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
 
@@ -98,7 +98,7 @@ resource "aws_eip" "nat" {
   })
 }
 
-# NAT 게이트웨이
+# NAT Gateway
 resource "aws_nat_gateway" "main" {
   count = length(aws_subnet.public)
 
@@ -112,7 +112,7 @@ resource "aws_nat_gateway" "main" {
   depends_on = [aws_internet_gateway.main]
 }
 
-# 프라이빗 라우팅 테이블
+# Private 라우팅 테이블
 resource "aws_route_table" "private" {
   count = length(aws_subnet.public)
 
@@ -128,7 +128,7 @@ resource "aws_route_table" "private" {
   })
 }
 
-# 퍼블릭 서브넷 연결
+# Public Subnet 연결
 resource "aws_route_table_association" "public" {
   count = length(aws_subnet.public)
 
@@ -136,7 +136,7 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# EKS 서브넷 연결
+# EKS Subnet 연결
 resource "aws_route_table_association" "private" {
   count = length(aws_subnet.eks_private)
 
@@ -144,7 +144,7 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private[count.index].id
 }
 
-# MSK 서브넷 연결
+# MSK Subnet 연결
 resource "aws_route_table_association" "msk_private" {
   count = length(aws_subnet.msk_private)
 
