@@ -1,0 +1,111 @@
+name: Private Cloud CI
+
+on:
+  pull_request:
+    paths:
+      - .env.example
+      - .env.secret.example
+      - .github/workflows/private-cloud-*.yml
+      - ha
+      - infra/private-cloud/**
+  push:
+    branches:
+      - feature/private
+    paths:
+      - .env.example
+      - .env.secret.example
+      - .github/workflows/private-cloud-*.yml
+      - ha
+      - infra/private-cloud/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-cloud-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate Private Cloud
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Install validation dependencies
+        run: python -m pip install --upgrade PyYAML
+
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+        run: |
+          curl -fsSL \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            -o "${RUNNER_TEMP}/actionlint.tar.gz"
+          tar -xzf "${RUNNER_TEMP}/actionlint.tar.gz" -C "${RUNNER_TEMP}" actionlint
+          install -m 755 "${RUNNER_TEMP}/actionlint" "${RUNNER_TEMP}/actionlint-bin"
+
+      - name: Lint GitHub Actions workflows
+        run: "${RUNNER_TEMP}/actionlint-bin"
+
+      - name: Guard local-only secret files
+        run: |
+          tracked="$(git ls-files -- .env .env.secret '**/backend.hcl' '**/caddy.env' || true)"
+          if [[ -n "${tracked}" ]]; then
+            echo "::error::Local secret/runtime files must not be committed:"
+            printf '%s\n' "${tracked}"
+            exit 1
+          fi
+
+      - name: Scan private examples and workflows for obvious secrets
+        run: |
+          python - <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          root = pathlib.Path(".")
+          paths = [
+              pathlib.Path(".env.example"),
+              pathlib.Path(".env.secret.example"),
+          ]
+          paths.extend(pathlib.Path("infra/private-cloud").rglob("*.example*"))
+          paths.extend(pathlib.Path(".github/workflows").glob("private-cloud-*.yml"))
+
+          patterns = {
+              "private key": re.compile(r"-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----"),
+              "github token": re.compile(r"\b(?:ghp|github_pat)_[A-Za-z0-9_]{20,}\b"),
+              "aws access key": re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+              "openai key": re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"),
+              "slack token": re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b"),
+          }
+
+          failed = False
+          for path in sorted({p for p in paths if p.exists()}):
+              text = path.read_text(encoding="utf-8", errors="ignore")
+              for lineno, line in enumerate(text.splitlines(), 1):
+                  for label, pattern in patterns.items():
+                      if pattern.search(line):
+                          print(f"{path}:{lineno}: possible {label}", file=sys.stderr)
+                          failed = True
+
+          sys.exit(1 if failed else 0)
+          PY
+
+      - name: Run private cloud smoke tests
+        run: ./ha test --terraform-init
