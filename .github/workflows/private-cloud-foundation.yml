@@ -6,7 +6,7 @@ on:
       - feature/private
     paths:
       - .github/workflows/private-cloud-foundation.yml
-      - infra/private-cloud/openstack/**
+      - private/openstack/**
   workflow_dispatch:
     inputs:
       terraform_action:
@@ -59,7 +59,7 @@ jobs:
     runs-on: ${{ vars.PRIVATE_CLOUD_RUNNER || 'self-hosted' }}
     defaults:
       run:
-        working-directory: infra/private-cloud/openstack
+        working-directory: private/openstack
     env:
       OS_AUTH_URL: ${{ vars.OPENSTACK_AUTH_URL || secrets.OPENSTACK_AUTH_URL }}
       OS_USERNAME: ${{ vars.OPENSTACK_USERNAME || secrets.OPENSTACK_USERNAME }}
@@ -335,7 +335,7 @@ jobs:
           APPLY_STORAGE: ${{ inputs.apply_storage }}
           APPLY_GPU: ${{ inputs.apply_gpu }}
         run: |
-          handoff_file="../../../.ha/handoff/openstack-kubernetes.env"
+          handoff_file="../../.ha/handoff/openstack-kubernetes.env"
           if [[ ! -f "${handoff_file}" ]]; then
             echo "::error::Missing Kubernetes bootstrap handoff: ${handoff_file}"
             exit 1
@@ -406,12 +406,12 @@ jobs:
 
       - name: Apply Kubernetes foundation
         if: ${{ inputs.apply_kubernetes || inputs.apply_storage || inputs.apply_gpu }}
-        run: kubectl apply -k infra/private-cloud/kubernetes
+        run: kubectl apply -k private/kubernetes
 
       - name: Apply storage foundation
         if: ${{ inputs.apply_storage }}
-        run: kubectl apply -k infra/private-cloud/storage
+        run: kubectl apply -k private/storage
 
       - name: Apply GPU foundation
         if: ${{ inputs.apply_gpu }}
-        run: kubectl apply -k infra/private-cloud/gpu-worker
+        run: kubectl apply -k private/gpu-worker

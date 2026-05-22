@@ -15,8 +15,8 @@ script_dir() {
   cd -P "$(dirname "$source")" && pwd
 }
 
-ROOT="$(cd "$(script_dir)/../../.." && pwd)"
-OPENSTACK_DIR="${ROOT}/infra/private-cloud/openstack"
+ROOT="$(cd "$(script_dir)/../.." && pwd)"
+OPENSTACK_DIR="${ROOT}/private/openstack"
 OPENSTACK_TFSTATE="${HA_OPENSTACK_TFSTATE:-}"
 if [[ -n "$OPENSTACK_TFSTATE" && "$OPENSTACK_TFSTATE" != /* ]]; then
   OPENSTACK_TFSTATE="${ROOT}/${OPENSTACK_TFSTATE}"

@@ -7,7 +7,7 @@ storage 기본 리소스를 관리합니다. 현재는 NFS CSI 기반 RWX Storag
 ## 적용 순서
 
 ```sh
-kubectl apply -k infra/private-cloud/storage
+kubectl apply -k private/storage
 ```
 
 적용 전 확인할 것:

@@ -72,8 +72,8 @@ CLOUDFLARE_ZONE_ID=...
 내부 HTTP 검증만 할 때는 기본 Caddyfile을 씁니다.
 
 ```sh
-caddy validate --config infra/private-cloud/reverse-proxy/Caddyfile
-caddy run --config infra/private-cloud/reverse-proxy/Caddyfile
+caddy validate --config private/reverse-proxy/Caddyfile
+caddy run --config private/reverse-proxy/Caddyfile
 ```
 
 Cloudflare DNS-01로 HTTPS 인증서를 자동 발급하려면 Cloudflare DNS provider가 포함된
@@ -85,7 +85,7 @@ sudo install -m 755 caddy /usr/local/bin/caddy
 source .env
 source .env.secret
 sudo --preserve-env=HA_CADDY_ACME_EMAIL,HA_OPENSTACK_DOMAIN,HA_K8S_DOMAIN,HA_GRAFANA_DOMAIN,HA_ARGOCD_DOMAIN,HA_OPENSTACK_HORIZON_UPSTREAM,HA_K8S_DASHBOARD_UPSTREAM,HA_GRAFANA_UPSTREAM,HA_ARGOCD_UPSTREAM,CLOUDFLARE_API_TOKEN \
-  caddy run --config infra/private-cloud/reverse-proxy/Caddyfile.cloudflare
+  caddy run --config private/reverse-proxy/Caddyfile.cloudflare
 ```
 
 ## Cloudflare DNS 동기화
@@ -95,13 +95,13 @@ sudo --preserve-env=HA_CADDY_ACME_EMAIL,HA_OPENSTACK_DOMAIN,HA_K8S_DOMAIN,HA_GRA
 ```sh
 source .env
 source .env.secret
-python3 infra/private-cloud/reverse-proxy/cloudflare_dns.py
+python3 private/reverse-proxy/cloudflare_dns.py
 ```
 
 실제 적용:
 
 ```sh
-python3 infra/private-cloud/reverse-proxy/cloudflare_dns.py --apply
+python3 private/reverse-proxy/cloudflare_dns.py --apply
 ```
 
 GitHub Actions에서는 `.github/workflows/private-cloud-dns.yml`을 수동 실행합니다.

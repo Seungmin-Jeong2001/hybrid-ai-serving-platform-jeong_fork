@@ -57,8 +57,8 @@ jobs:
 
       - name: Preview DNS records
         if: ${{ github.event_name == 'push' || github.event.inputs.apply != 'true' }}
-        run: python3 infra/private-cloud/reverse-proxy/cloudflare_dns.py
+        run: python3 private/reverse-proxy/cloudflare_dns.py
 
       - name: Apply DNS records
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply == 'true' }}
-        run: python3 infra/private-cloud/reverse-proxy/cloudflare_dns.py --apply
+        run: python3 private/reverse-proxy/cloudflare_dns.py --apply

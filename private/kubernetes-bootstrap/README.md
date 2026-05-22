@@ -1,6 +1,6 @@
 # OpenStack Kubernetes Bootstrap
 
-이 디렉터리는 `infra/private-cloud/openstack` Terraform output을 읽어서
+이 디렉터리는 `private/openstack` Terraform output을 읽어서
 OpenStack VM에 k3s Kubernetes를 설치하는 bootstrap 도구를 제공합니다.
 
 ## 전제 조건
@@ -40,7 +40,7 @@ export TF_VAR_control_plane_flavor_name=m1.medium
 먼저 inventory가 맞는지 확인합니다.
 
 ```sh
-infra/private-cloud/kubernetes-bootstrap/bootstrap-k3s.sh --dry-run
+private/kubernetes-bootstrap/bootstrap-k3s.sh --dry-run
 ```
 
 문제가 없으면 `ha`에서 실행합니다.
@@ -70,7 +70,7 @@ KUBECONFIG=.ha/openstack/kubeconfig ./ha up kubernetes
 SSH proxy를 통해 control-plane에서 적용합니다.
 
 ```sh
-kubectl kustomize infra/private-cloud/kubernetes \
+kubectl kustomize private/kubernetes \
   | ssh -o ProxyCommand='lxc exec ha-openstack -- nc %h %p' \
       -i .ha/ssh/hybrid-ai-private-admin \
       ubuntu@<floating-ip> \

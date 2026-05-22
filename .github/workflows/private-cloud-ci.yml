@@ -7,7 +7,7 @@ on:
       - .env.secret.example
       - .github/workflows/private-cloud-*.yml
       - ha
-      - infra/private-cloud/**
+      - private/**
   push:
     branches:
       - feature/private
@@ -16,7 +16,7 @@ on:
       - .env.secret.example
       - .github/workflows/private-cloud-*.yml
       - ha
-      - infra/private-cloud/**
+      - private/**
   workflow_dispatch:
 
 permissions:
@@ -84,7 +84,7 @@ jobs:
               pathlib.Path(".env.example"),
               pathlib.Path(".env.secret.example"),
           ]
-          paths.extend(pathlib.Path("infra/private-cloud").rglob("*.example*"))
+          paths.extend(pathlib.Path("private").rglob("*.example*"))
           paths.extend(pathlib.Path(".github/workflows").glob("private-cloud-*.yml"))
 
           patterns = {

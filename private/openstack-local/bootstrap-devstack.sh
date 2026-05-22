@@ -2,7 +2,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CONTAINER="${HA_OPENSTACK_CONTAINER:-ha-openstack}"
 IMAGE="${HA_OPENSTACK_LXD_IMAGE:-ubuntu:24.04}"
 BRANCH="${HA_DEVSTACK_BRANCH:-master}"

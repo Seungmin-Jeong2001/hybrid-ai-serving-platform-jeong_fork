@@ -28,9 +28,9 @@ script_dir() {
 }
 
 HA_PROJECT_ROOT="$(script_dir)"
-HA_OPENSTACK_DIR="${HA_PROJECT_ROOT}/infra/private-cloud/openstack"
-HA_OPENSTACK_BOOTSTRAP_DIR="${HA_PROJECT_ROOT}/infra/private-cloud/kubernetes-bootstrap"
-HA_REVERSE_PROXY_DIR="${HA_PROJECT_ROOT}/infra/private-cloud/reverse-proxy"
+HA_OPENSTACK_DIR="${HA_PROJECT_ROOT}/private/openstack"
+HA_OPENSTACK_BOOTSTRAP_DIR="${HA_PROJECT_ROOT}/private/kubernetes-bootstrap"
+HA_REVERSE_PROXY_DIR="${HA_PROJECT_ROOT}/private/reverse-proxy"
 HA_DEPS_DIR="${HA_DEPS_DIR:-${HA_PROJECT_ROOT}/.ha/bin}"
 HA_COMPLETION_DIR="${HA_COMPLETION_DIR:-${HA_PROJECT_ROOT}/.ha/completions}"
 HA_HANDOFF_DIR="${HA_HANDOFF_DIR:-${HA_PROJECT_ROOT}/.ha/handoff}"
@@ -93,7 +93,7 @@ Commands:
   explain    Show the local workflow and required environment variables
   completion Print shell completion script for bash or zsh
   status     Show git branch status for this repository
-  tf         Run terraform inside infra/private-cloud/openstack
+  tf         Run terraform inside private/openstack
   k8s        Run kubectl against private-cloud kustomize directories
   path       Print this project root
   help       Show this help
@@ -222,7 +222,7 @@ HA_* 환경 변수는 이 프로젝트 전용 prefix이며, High Availability �
   ha proxy validate
   ha proxy path cloudflare
 
-  - Caddy 설정은 infra/private-cloud/reverse-proxy에 있습니다.
+  - Caddy 설정은 private/reverse-proxy에 있습니다.
   - ssh.intp.me는 Caddy가 아니라 Tailscale SSH 진입점으로 둡니다.
   - openstack.intp.me, k8s.intp.me, grafana.intp.me, argocd.intp.me는 Caddy가 Host header로 분기합니다.
   - Cloudflare token은 .env.secret 또는 GitHub Secret에만 둡니다.
@@ -236,9 +236,9 @@ required_project_paths() {
     "${HA_OPENSTACK_BOOTSTRAP_DIR}/bootstrap-k3s.sh" \
     "${HA_REVERSE_PROXY_DIR}/Caddyfile" \
     "${HA_REVERSE_PROXY_DIR}/cloudflare_dns.py" \
-    "${HA_PROJECT_ROOT}/infra/private-cloud/kubernetes/kustomization.yaml" \
-    "${HA_PROJECT_ROOT}/infra/private-cloud/storage/kustomization.yaml" \
-    "${HA_PROJECT_ROOT}/infra/private-cloud/gpu-worker/kustomization.yaml" \
+    "${HA_PROJECT_ROOT}/private/kubernetes/kustomization.yaml" \
+    "${HA_PROJECT_ROOT}/private/storage/kustomization.yaml" \
+    "${HA_PROJECT_ROOT}/private/gpu-worker/kustomization.yaml" \
     "${HA_PROJECT_ROOT}/.github/workflows/private-cloud-foundation.yml" \
     "${HA_PROJECT_ROOT}/.github/workflows/private-cloud-dns.yml"
 }
@@ -418,7 +418,7 @@ _ha() {
     'guide:alias for explain'
     'completion:print shell completion script'
     'status:show git status'
-    'tf:run terraform in infra/private-cloud/openstack'
+    'tf:run terraform in private/openstack'
     'terraform:alias for tf'
     'k8s:run kubectl against private-cloud kustomize directories'
     'kubectl:alias for k8s'
@@ -1009,7 +1009,7 @@ doctor() {
   if command -v kubectl >/dev/null 2>&1; then
     info "ok: kubectl"
     for target in kubernetes storage gpu-worker; do
-      kubectl kustomize "${HA_PROJECT_ROOT}/infra/private-cloud/${target}" >/dev/null || failed=1
+      kubectl kustomize "${HA_PROJECT_ROOT}/private/${target}" >/dev/null || failed=1
     done
   else
     info "warn: kubectl is not installed"
@@ -1085,9 +1085,9 @@ test_caddy_config() {
 
 kustomize_dirs() {
   printf '%s\n' \
-    "${HA_PROJECT_ROOT}/infra/private-cloud/kubernetes" \
-    "${HA_PROJECT_ROOT}/infra/private-cloud/storage" \
-    "${HA_PROJECT_ROOT}/infra/private-cloud/gpu-worker"
+    "${HA_PROJECT_ROOT}/private/kubernetes" \
+    "${HA_PROJECT_ROOT}/private/storage" \
+    "${HA_PROJECT_ROOT}/private/gpu-worker"
 }
 
 kustomization_resources() {
@@ -2725,19 +2725,19 @@ k8s_paths() {
   local target="${1:-kubernetes}"
   case "$target" in
     kubernetes|foundation|base)
-      printf '%s\n' "${HA_PROJECT_ROOT}/infra/private-cloud/kubernetes"
+      printf '%s\n' "${HA_PROJECT_ROOT}/private/kubernetes"
       ;;
     storage)
-      printf '%s\n' "${HA_PROJECT_ROOT}/infra/private-cloud/storage"
+      printf '%s\n' "${HA_PROJECT_ROOT}/private/storage"
       ;;
     gpu|gpu-worker)
-      printf '%s\n' "${HA_PROJECT_ROOT}/infra/private-cloud/gpu-worker"
+      printf '%s\n' "${HA_PROJECT_ROOT}/private/gpu-worker"
       ;;
     all)
       printf '%s\n' \
-        "${HA_PROJECT_ROOT}/infra/private-cloud/kubernetes" \
-        "${HA_PROJECT_ROOT}/infra/private-cloud/storage" \
-        "${HA_PROJECT_ROOT}/infra/private-cloud/gpu-worker"
+        "${HA_PROJECT_ROOT}/private/kubernetes" \
+        "${HA_PROJECT_ROOT}/private/storage" \
+        "${HA_PROJECT_ROOT}/private/gpu-worker"
       ;;
     *)
       die "unknown k8s target: ${target}"

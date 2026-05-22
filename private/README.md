@@ -1,13 +1,13 @@
 # Private Cloud Infrastructure
 
-`infra/private-cloud`는 ① Private Cloud Infrastructure 작업 영역입니다.
+`private`는 ① Private Cloud Infrastructure 작업 영역입니다.
 
 OpenStack 기반 VM, Private Kubernetes, GPU Worker, Storage 구성 기준을 관리합니다.
 
 ## 구조
 
 ```txt
-infra/private-cloud/
+private/
   openstack/       # VM, Network, Security Group 기준
   kubernetes-bootstrap/ # OpenStack VM k3s bootstrap
   kubernetes/      # Namespace, RBAC, ResourceQuota 기준
@@ -161,10 +161,10 @@ ha tf destroy
 
 설정 파일:
 
-- `infra/private-cloud/reverse-proxy/Caddyfile`: 내부 HTTP 검증용
-- `infra/private-cloud/reverse-proxy/Caddyfile.cloudflare`: Cloudflare DNS-01 HTTPS용
-- `infra/private-cloud/reverse-proxy/cloudflare_dns.py`: Cloudflare DNS record dry-run/apply
-- `infra/private-cloud/handoff/github-actions-env.md`: GitHub Secrets/Variables 이관표
+- `private/reverse-proxy/Caddyfile`: 내부 HTTP 검증용
+- `private/reverse-proxy/Caddyfile.cloudflare`: Cloudflare DNS-01 HTTPS용
+- `private/reverse-proxy/cloudflare_dns.py`: Cloudflare DNS record dry-run/apply
+- `private/handoff/github-actions-env.md`: GitHub Secrets/Variables 이관표
 
 ## 작성 기준
 

@@ -11,7 +11,7 @@ GPU worker cloud-init은 NVIDIA Container Toolkit을 설치하고, NVIDIA PCI de
 ## 적용 순서
 
 ```sh
-kubectl apply -k infra/private-cloud/gpu-worker
+kubectl apply -k private/gpu-worker
 ```
 
 적용 전 확인할 것:

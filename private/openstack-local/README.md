@@ -3,7 +3,7 @@
 이 디렉터리는 외부 OpenStack tenant가 없을 때, 로컬 LXD 컨테이너 안에 DevStack 기반
 OpenStack control plane을 올리는 bootstrap 스크립트를 제공합니다.
 
-이 단계가 성공하면 이후 `infra/private-cloud/openstack` Terraform은 생성된 OpenStack API에
+이 단계가 성공하면 이후 `private/openstack` Terraform은 생성된 OpenStack API에
 붙어서 network, subnet, security group, key pair, VM node group을 만들 수 있습니다.
 
 ## 실행
@@ -17,7 +17,7 @@ OpenStack control plane을 올리는 bootstrap 스크립트를 제공합니다.
 스크립트를 직접 실행할 수도 있습니다.
 
 ```sh
-infra/private-cloud/openstack-local/bootstrap-devstack.sh
+private/openstack-local/bootstrap-devstack.sh
 ```
 
 기본값:
@@ -34,7 +34,7 @@ HA_OPENSTACK_CONTAINER=ha-openstack \
 HA_OPENSTACK_LXD_IMAGE=ubuntu:24.04 \
 HA_DEVSTACK_BRANCH=master \
 HA_DEVSTACK_PASSWORD=hybrid-ai-devstack \
-infra/private-cloud/openstack-local/bootstrap-devstack.sh
+private/openstack-local/bootstrap-devstack.sh
 ```
 
 ## 호스트 요구사항

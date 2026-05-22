@@ -7,7 +7,7 @@ namespace와 권한 기준을 먼저 맞추는 용도입니다.
 ## 적용 순서
 
 ```sh
-kubectl apply -k infra/private-cloud/kubernetes
+kubectl apply -k private/kubernetes
 ```
 
 포함된 리소스:

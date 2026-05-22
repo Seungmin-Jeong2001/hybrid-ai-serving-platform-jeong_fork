@@ -18,7 +18,7 @@
 | OpenStack CLI/API | `source .ha/openstack-local/openrc.sh` | VM, 네트워크, 이미지, 보안그룹 확인 | `openstack server list` 등 |
 | Kubernetes Admin | OpenStack VM SSH 접속 | k3s cluster 관리 | `ubuntu@<CONTROL_PLANE_FLOATING_IP>` via LXD proxy |
 | k3s kubectl | VM 내부 | Kubernetes node, pod, namespace 확인 | `sudo k3s kubectl ...` |
-| Terraform | `infra/private-cloud/openstack` | OpenStack 리소스 IaC 관리 | `./ha tf output`, `./ha up openstack` |
+| Terraform | `private/openstack` | OpenStack 리소스 IaC 관리 | `./ha tf output`, `./ha up openstack` |
 | Hybrid AI CLI | `./ha` 또는 설치 후 `ha` | 테스트, 프로비저닝, 검증 자동화 | 프로젝트 전용 CLI |
 
 ## OpenStack Horizon 접속
