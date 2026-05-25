@@ -9,11 +9,6 @@ output "public_subnet_ids" {
   value       = aws_subnet.public[*].id
 }
 
-output "private_subnet_ids" {
-  description = "IDs of the EKS private subnets"
-  value       = aws_subnet.eks_private[*].id
-}
-
 output "eks_private_subnet_ids" {
   description = "IDs of the EKS private subnets"
   value       = aws_subnet.eks_private[*].id
@@ -22,6 +17,16 @@ output "eks_private_subnet_ids" {
 output "msk_private_subnet_ids" {
   description = "IDs of the MSK private subnets"
   value       = aws_subnet.msk_private[*].id
+}
+
+output "mgmt_private_subnet_id" {
+  description = "ID of the management/CI-CD private subnet"
+  value       = aws_subnet.mgmt_private.id
+}
+
+output "nat_gateway_id" {
+  description = "ID of the single NAT gateway"
+  value       = aws_nat_gateway.main.id
 }
 
 # 데이터 저장소 출력
@@ -56,6 +61,11 @@ output "eks_oidc_issuer" {
   value       = aws_eks_cluster.main.identity[0].oidc[0].issuer
 }
 
+output "eks_node_group_names" {
+  description = "EKS managed node group names keyed by workload"
+  value       = { for k, ng in aws_eks_node_group.workloads : k => ng.node_group_name }
+}
+
 # MSK 출력
 output "msk_cluster_arn" {
   description = "MSK cluster ARN"
@@ -82,6 +92,17 @@ output "internal_alb_dns_name" {
 output "internal_alb_target_group_arn" {
   description = "Internal ALB target group ARN"
   value       = aws_lb_target_group.internal.arn
+}
+
+# VPC 엔드포인트 출력
+output "s3_gateway_endpoint_id" {
+  description = "S3 gateway VPC endpoint ID"
+  value       = aws_vpc_endpoint.s3.id
+}
+
+output "s3_interface_endpoint_id" {
+  description = "S3 interface VPC endpoint ID (used by on-premise traffic over VPN)"
+  value       = aws_vpc_endpoint.s3_interface.id
 }
 
 # VPN 출력

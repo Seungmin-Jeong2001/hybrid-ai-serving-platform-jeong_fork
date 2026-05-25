@@ -12,6 +12,37 @@ resource "aws_security_group" "internal_alb" {
     cidr_blocks = [var.vpc_cidr]
   }
 
+  ingress {
+    description = "Allow HTTPS from within the VPC"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  # 엣지(공장 시뮬레이터) → VPN → Internal ALB
+  dynamic "ingress" {
+    for_each = length(var.edge_network_cidrs) > 0 ? [1] : []
+    content {
+      description = "Allow HTTP from edge / on-premise networks over VPN"
+      from_port   = 80
+      to_port     = 80
+      protocol    = "tcp"
+      cidr_blocks = var.edge_network_cidrs
+    }
+  }
+
+  dynamic "ingress" {
+    for_each = length(var.edge_network_cidrs) > 0 ? [1] : []
+    content {
+      description = "Allow HTTPS from edge / on-premise networks over VPN"
+      from_port   = 443
+      to_port     = 443
+      protocol    = "tcp"
+      cidr_blocks = var.edge_network_cidrs
+    }
+  }
+
   egress {
     from_port   = 0
     to_port     = 0

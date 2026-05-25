@@ -54,13 +54,30 @@ variable "msk_private_subnet_cidrs" {
   ]
 }
 
+variable "mgmt_private_subnet_cidr" {
+  description = "CIDR block for the single-AZ management/CI-CD private subnet"
+  type        = string
+  default     = "10.0.30.0/24"
+}
+
+variable "mgmt_subnet_az_index" {
+  description = "Availability zone index (0=AZ-a, 1=AZ-b, 2=AZ-c) for the management subnet"
+  type        = number
+  default     = 2
+}
+
+variable "nat_gateway_az_index" {
+  description = "Availability zone index (0=AZ-a, 1=AZ-b, 2=AZ-c) for the single NAT gateway"
+  type        = number
+  default     = 1
+}
+
 # ECR 변수
 variable "ecr_repositories" {
   description = "ECR repository names"
   type        = list(string)
   default = [
-    "factory-simulator",
-    "operation-simulator",
+    "dnn-model"
   ]
 }
 
@@ -71,28 +88,74 @@ variable "eks_cluster_version" {
   default     = "1.31"
 }
 
-variable "eks_node_instance_types" {
-  description = "Instance types for the EKS managed node group"
-  type        = list(string)
-  default     = ["t3.medium"]
-}
-
-variable "eks_node_desired_size" {
-  description = "Desired number of nodes in the EKS managed node group"
-  type        = number
-  default     = 2
-}
-
-variable "eks_node_min_size" {
-  description = "Minimum number of nodes in the EKS managed node group"
-  type        = number
-  default     = 1
-}
-
-variable "eks_node_max_size" {
-  description = "Maximum number of nodes in the EKS managed node group"
-  type        = number
-  default     = 3
+variable "eks_node_groups" {
+  description = "Per-workload EKS managed node group configuration"
+  type = map(object({
+    instance_types = list(string)
+    az_count       = number # how many AZs to span (1..3); subnets are taken from eks_private in order
+    desired_size   = number
+    min_size       = number
+    max_size       = number
+    labels         = map(string)
+    taints = list(object({
+      key    = string
+      value  = string
+      effect = string
+    }))
+    use_mgmt_subnet = bool # if true, ignore az_count and place in the management subnet
+  }))
+  default = {
+    inference = {
+      instance_types  = ["c6i.xlarge"]
+      az_count        = 3
+      desired_size    = 2
+      min_size        = 1
+      max_size        = 10
+      labels          = { workload = "inference" }
+      taints          = []
+      use_mgmt_subnet = false
+    }
+    app = {
+      instance_types  = ["t3.medium"]
+      az_count        = 3
+      desired_size    = 2
+      min_size        = 1
+      max_size        = 10
+      labels          = { workload = "app" }
+      taints          = []
+      use_mgmt_subnet = false
+    }
+    system = {
+      instance_types  = ["t3.medium"]
+      az_count        = 2
+      desired_size    = 2
+      min_size        = 2
+      max_size        = 3
+      labels          = { workload = "system" }
+      taints          = []
+      use_mgmt_subnet = false
+    }
+    monitoring = {
+      instance_types  = ["t3.large"]
+      az_count        = 1
+      desired_size    = 1
+      min_size        = 1
+      max_size        = 2
+      labels          = { workload = "monitoring" }
+      taints          = []
+      use_mgmt_subnet = false
+    }
+    management = {
+      instance_types  = ["t3.medium"]
+      az_count        = 1
+      desired_size    = 1
+      min_size        = 1
+      max_size        = 2
+      labels          = { workload = "management" }
+      taints          = []
+      use_mgmt_subnet = true
+    }
+  }
 }
 
 # MSK 변수
@@ -105,7 +168,9 @@ variable "msk_kafka_version" {
 variable "msk_broker_instance_type" {
   description = "Broker instance type for the MSK cluster"
   type        = string
-  default     = "kafka.t3.small"
+  # NOTE: AWS MSK는 t3 계열 중 kafka.t3.small만 지원 (kafka.t3.medium 등 없음).
+  # 더 안정적인 네트워크가 필요하면 kafka.m5.large 이상으로 상향할 것.
+  default = "kafka.t3.small"
 }
 
 variable "msk_number_of_broker_nodes" {
@@ -156,6 +221,12 @@ variable "internal_alb_health_check_path" {
   description = "Health check path for the internal ALB target group"
   type        = string
   default     = "/"
+}
+
+variable "edge_network_cidrs" {
+  description = "On-premise / edge (factory) CIDR blocks allowed to reach the internal ALB over VPN"
+  type        = list(string)
+  default     = []
 }
 
 # VPN 변수
