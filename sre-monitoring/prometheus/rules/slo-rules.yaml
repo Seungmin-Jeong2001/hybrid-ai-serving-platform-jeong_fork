@@ -1,0 +1,200 @@
+# ============================================================
+# SLO Recording Rules
+# 담당: 신민석 (⑥ Reliability & Chaos Engineering)
+#
+# 배포:
+#   kubectl apply -f slo-rules.yaml -n monitoring
+#
+# SLO 목표:
+#   - 가용성: 99.9% (월 허용 다운타임 약 43분)
+#   - 추론 응답시간: P99 < 5s (KServe timeout 기준)
+#   - DLQ 발생률: 전체 요청의 1% 미만
+# ============================================================
+# ─── 통합 시 교체 체크리스트 ────────────────────────────────
+# 1. [② 안예원 + ④ 최호성 완성]  slo.http 그룹의 vector(0) 2개 교체
+#     - slo:http_error_rate:ratio_rate5m  → BentoML 실제 메트릭 표현식
+#     - slo:http_latency_p99:5m          → BentoML histogram_quantile 표현식
+#     - slo:service_availability:ratio    → HTTP 기반 v2로 교체 (주석 해제)
+# 2. [⑤ 김세원 완성]  slo.kafka 그룹의 vector(0) 교체
+#     - slo:kafka_dlq_rate:ratio_rate5m  → Kafka Exporter 실제 메트릭 표현식
+# ─────────────────────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: sre-slo-recording-rules
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: sre-monitoring
+    app.kubernetes.io/component: slo
+spec:
+  groups:
+
+    # ============================================================
+    # 가용성 SLO — Pod up 기반 (초기 버전)
+    # 각 팀원 서비스의 HTTP 메트릭 연동 후 slo.http 그룹으로 교체
+    # ============================================================
+    - name: slo.availability
+      interval: 30s
+      rules:
+        # 전체 서비스 가용성 (up 메트릭 기반 — 서비스 메트릭 없을 때 사용)
+        - record: slo:service_availability:ratio
+          expr: |
+            avg(up{
+              job!~"kube-state-metrics|node-exporter|prometheus|alertmanager|kube-prometheus.*"
+            }) or vector(1)
+          labels:
+            slo: "availability"
+
+        # SLO 목표 상수 (99.9% = 0.999)
+        - record: slo:target:availability
+          expr: vector(0.999)
+
+        # 현재 Error Budget 번 레이트 (5분)
+        # 값 1.0 = 정상 속도로 소진, 14.4 = 1시간 내 월 예산 전부 소진
+        - record: slo:error_budget_burn_rate:5m
+          expr: |
+            (1 - slo:service_availability:ratio) / (1 - 0.999)
+
+        # 1시간 번 레이트 (빠른 소진 감지용 — critical alert 기준)
+        - record: slo:error_budget_burn_rate:1h
+          expr: |
+            (
+              1 - avg_over_time(slo:service_availability:ratio[1h])
+            ) / (1 - 0.999)
+
+        # 6시간 번 레이트 (중속 소진 감지용 — warning alert 기준)
+        - record: slo:error_budget_burn_rate:6h
+          expr: |
+            (
+              1 - avg_over_time(slo:service_availability:ratio[6h])
+            ) / (1 - 0.999)
+
+        # 24시간 번 레이트 (월간 추이 추적)
+        - record: slo:error_budget_burn_rate:24h
+          expr: |
+            (
+              1 - avg_over_time(slo:service_availability:ratio[24h])
+            ) / (1 - 0.999)
+
+        # 남은 Error Budget 비율 (0~1, 1이 100% 남음)
+        # 월 30일 기준으로 24h 번 레이트를 정규화
+        - record: slo:error_budget_remaining:ratio
+          expr: |
+            clamp_min(
+              1 - (slo:error_budget_burn_rate:24h / 30),
+              0
+            )
+
+    # ============================================================
+    # HTTP 기반 SLO
+    # [② 안예원 BentoML + ④ 최호성 KServe 배포 완료 후 활성화]
+    # ============================================================
+    - name: slo.http
+      interval: 30s
+      rules:
+
+        # TODO(통합 #1): [② 안예원 + ④ 최호성 완성 후] vector(0) → 아래 주석 표현식으로 교체
+        - record: slo:http_error_rate:ratio_rate5m
+          expr: vector(0)
+          labels:
+            note: "placeholder"
+
+        # BentoML 연동 후 아래로 교체:
+        # - record: slo:http_error_rate:ratio_rate5m
+        #   expr: |
+        #     sum(rate(bentoml_request_total{http_response_code=~"5.."}[5m]))
+        #     /
+        #     sum(rate(bentoml_request_total[5m]))
+
+        # TODO(통합 #1): [② 안예원 + ④ 최호성 완성 후] vector(0) → 아래 주석 표현식으로 교체
+        - record: slo:http_latency_p99:5m
+          expr: vector(0)
+          labels:
+            note: "placeholder"
+
+        # BentoML 연동 후 아래로 교체:
+        # - record: slo:http_latency_p99:5m
+        #   expr: |
+        #     histogram_quantile(0.99,
+        #       sum(rate(bentoml_request_duration_seconds_bucket[5m])) by (le)
+        #     )
+
+        # HTTP 기반 가용성 SLO (연동 후 위 pod-based SLO 대체)
+        # - record: slo:service_availability:ratio
+        #   expr: |
+        #     1 - slo:http_error_rate:ratio_rate5m
+        #   labels:
+        #     slo: "availability"
+        #     version: "v2-http-based"
+
+    # ============================================================
+    # Kafka / DLQ SLO
+    # [⑤ 김세원 Kafka/MSK 배포 완료 후 활성화]
+    # DLQ 발생률 목표: 전체 요청의 1% 미만
+    # ============================================================
+    - name: slo.kafka
+      interval: 30s
+      rules:
+
+        # TODO(통합 #2): [⑤ 김세원 완성 후] vector(0) → 아래 주석 표현식으로 교체
+        - record: slo:kafka_dlq_rate:ratio_rate5m
+          expr: vector(0)
+          labels:
+            note: "placeholder"
+
+        # Kafka Exporter 연동 후 아래로 교체:
+        # - record: slo:kafka_dlq_rate:ratio_rate5m
+        #   expr: |
+        #     sum(rate(kafka_consumergroup_lag{topic=~".*dlq.*"}[5m]))
+        #     /
+        #     clamp_min(sum(rate(kafka_consumergroup_lag[5m])), 1)
+
+        # Consumer Lag 5분 평균
+        # - record: slo:kafka_consumer_lag:avg5m
+        #   expr: |
+        #     avg by (consumergroup, topic) (
+        #       kafka_consumergroup_lag
+        #     )
+
+    # ============================================================
+    # 인프라 상태 요약 Recording Rules
+    # ============================================================
+    - name: sre.infra
+      interval: 30s
+      rules:
+
+        # 노드 CPU 사용률 (0~1)
+        - record: sre:node_cpu_utilization:rate5m
+          expr: |
+            1 - avg by (instance) (
+              rate(node_cpu_seconds_total{mode="idle"}[5m])
+            )
+
+        # 노드 메모리 사용률 (0~1)
+        - record: sre:node_memory_utilization:ratio
+          expr: |
+            1 - (
+              node_memory_MemAvailable_bytes
+              / node_memory_MemTotal_bytes
+            )
+
+        # 네임스페이스별 Pod 재시작율 (5분)
+        - record: sre:pod_restart_rate:rate5m
+          expr: |
+            sum by (namespace, pod, container) (
+              rate(kube_pod_container_status_restarts_total[5m])
+            )
+
+        # 네임스페이스별 Running Pod 수
+        - record: sre:pods_running:count
+          expr: |
+            count by (namespace) (
+              kube_pod_status_phase{phase="Running"}
+            )
+
+        # Deployment 가용성 (desired vs ready)
+        - record: sre:deployment_availability:ratio
+          expr: |
+            kube_deployment_status_replicas_available
+            /
+            clamp_min(kube_deployment_spec_replicas, 1)

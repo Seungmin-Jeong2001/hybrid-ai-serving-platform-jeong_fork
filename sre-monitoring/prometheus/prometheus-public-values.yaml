@@ -1,0 +1,275 @@
+# ============================================================
+# kube-prometheus-stack Helm Values — Public Cloud (AWS EKS)
+# 담당: 신민석 (⑥ Reliability & Chaos Engineering)
+#
+# 설치:
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm repo update
+#   helm install prometheus-public prometheus-community/kube-prometheus-stack \
+#     -n monitoring --create-namespace -f prometheus-public-values.yaml
+#
+# 확장 가이드:
+#   각 팀원 서비스 완성 시 해당 섹션 주석 해제 후 helm upgrade 실행
+#   helm upgrade prometheus-public prometheus-community/kube-prometheus-stack \
+#     -n monitoring -f prometheus-public-values.yaml
+# ============================================================
+# ─── 통합 시 교체 체크리스트 ────────────────────────────────
+# 1. [완료]       receivers > slack-critical.api_url → Discord #sre-alerts-critical 웹훅 설정 완료
+# 1. [완료]       receivers > slack-warning.api_url  → Discord #sre-alerts-warning 웹훅 설정 완료
+# 2. [② 안예원]  BentoML scrape config 주석 해제
+#                  → 실제 Pod 라벨(app: ?) 확인 후 적용
+# 3. [④ 최호성]  KServe scrape config 주석 해제
+# 4. [⑤ 김세원]  Kafka Exporter scrape config 주석 해제
+#                  → MSK Broker 엔드포인트로 교체
+# ─────────────────────────────────────────────────────────────
+
+nameOverride: "kube-prometheus"
+fullnameOverride: "kube-prometheus"
+
+# Grafana는 별도 설치 (두 Prometheus 데이터소스를 하나의 Grafana에서 통합)
+grafana:
+  enabled: false
+
+# ============================================================
+# Alertmanager — Slack 웹훅 기반 실시간 장애 알림
+# SLACK_WEBHOOK_URL 을 실제 Slack 웹훅으로 교체 필요
+# ============================================================
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    replicas: 1
+    retention: 120h
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+
+  config:
+    global:
+      resolve_timeout: 5m
+
+    route:
+      group_by: ["alertname", "namespace", "severity"]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      receiver: "slack-warning"
+      routes:
+        - matchers:
+            - severity = "critical"
+          receiver: "slack-critical"
+          continue: false
+        - matchers:
+            - severity = "warning"
+          receiver: "slack-warning"
+          continue: false
+
+    receivers:
+      - name: "slack-critical"
+        slack_configs:
+          # TODO(통합 #1): Slack Incoming Webhook은 채널 override 불가
+          # critical 전용 웹훅 URL을 별도로 생성해야 #sre-alerts-critical 채널로 전송됨
+          # Slack 앱에서 채널별로 웹훅을 따로 발급받거나, Bot Token 방식 사용 필요
+          - api_url: "https://discord.com/api/webhooks/1504007172189716561/hGtE1o5fEvKqwD2MSOIXD2BqeVGJbvD0TJKn-3570CFSWIDtdvZnuEmq_G0HcoOVDMNZ/slack"
+            channel: "#sre-alerts-critical"
+            title: "🚨 [CRITICAL] {{ .GroupLabels.alertname }}"
+            text: |
+              *Namespace:* {{ .CommonLabels.namespace }}
+              {{ range .Alerts }}
+              *Summary:* {{ .Annotations.summary }}
+              *Description:* {{ .Annotations.description }}
+              *Started:* {{ .StartsAt.Format "2006-01-02 15:04:05" }}
+              {{ end }}
+            send_resolved: true
+            color: "{{ if eq .Status \"firing\" }}danger{{ else }}good{{ end }}"
+
+      - name: "slack-warning"
+        slack_configs:
+          # TODO(통합 #1): warning 전용 웹훅 URL (critical과 다른 URL 사용)
+          - api_url: "https://discord.com/api/webhooks/1504007351542222989/jD4RUE_7vXkEhgId8UXidCr5_EWbNryGNR49QNksw_Mce1imaWxUMWGmtthq5irAnJ7E/slack"
+            channel: "#sre-alerts-warning"
+            title: "⚠️ [WARNING] {{ .GroupLabels.alertname }}"
+            text: |
+              *Namespace:* {{ .CommonLabels.namespace }}
+              {{ range .Alerts }}
+              *Summary:* {{ .Annotations.summary }}
+              {{ end }}
+            send_resolved: true
+            color: "{{ if eq .Status \"firing\" }}warning{{ else }}good{{ end }}"
+
+    inhibit_rules:
+      - source_matchers:
+          - severity = "critical"
+        target_matchers:
+          - severity = "warning"
+        equal: ["alertname", "namespace"]
+
+# ============================================================
+# Prometheus — 메트릭 수집 핵심 설정
+# ============================================================
+prometheus:
+  prometheusSpec:
+    retention: "15d"
+    retentionSize: "45GB"
+    scrapeInterval: "15s"
+    evaluationInterval: "15s"
+
+    # 환경 식별 레이블 (Private Prometheus와 구분)
+    externalLabels:
+      environment: "public"
+      cluster: "eks-main"
+      region: "ap-northeast-2"
+
+    # 모든 네임스페이스의 CRD 자동 수집
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: {}
+    podMonitorSelector: {}
+    ruleSelector: {}
+
+    # ============================================================
+    # 추가 스크레이프 설정
+    # 각 팀원 서비스 배포 완료 시 해당 블록 주석 해제
+    # ============================================================
+    additionalScrapeConfigs:
+
+      # ──────────────────────────────────────────────────────
+      # [현재 활성] KEDA Operator 메트릭
+      # KEDA 설치 후 자동으로 수집됨
+      # ──────────────────────────────────────────────────────
+      - job_name: "keda-operator"
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ["keda"]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            regex: "keda-operator"
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: "${1}:8080"
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+
+      # ──────────────────────────────────────────────────────
+      # [현재 활성] ArgoCD 메트릭
+      # ③ 정승민 — ArgoCD 배포 후 자동 수집 (ServiceMonitor로 교체 가능)
+      # ──────────────────────────────────────────────────────
+      - job_name: "argocd-server"
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ["argocd"]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            regex: "argocd-server"
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: "${1}:8083"
+
+      # ──────────────────────────────────────────────────────
+      # [⑤ 김세원 완성 후 주석 해제] Kafka Exporter (MSK 메트릭)
+      #
+      # 사전 작업: kafka-exporter 배포
+      #   helm install kafka-exporter prometheus-community/prometheus-kafka-exporter \
+      #     --set kafkaServer={MSK_BROKER_ENDPOINT:9092} \
+      #     -n monitoring
+      # ──────────────────────────────────────────────────────
+      # - job_name: "kafka-exporter"
+      #   static_configs:
+      #     - targets: ["kafka-exporter.monitoring.svc.cluster.local:9308"]
+      #   scrape_interval: 30s
+      #   metrics_path: /metrics
+
+      # ──────────────────────────────────────────────────────
+      # [② 안예원 완성 후 주석 해제] BentoML 추론 서버 메트릭
+      # BentoML은 /metrics 엔드포인트를 포트 3000에 노출
+      # ECR 이미지: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/failure-prediction:v1
+      # ──────────────────────────────────────────────────────
+      # - job_name: "bentoml-inference"
+      #   kubernetes_sd_configs:
+      #     - role: pod
+      #   relabel_configs:
+      #     - source_labels: [__meta_kubernetes_pod_label_app]
+      #       regex: "failure-prediction"
+      #       action: keep
+      #     - source_labels: [__meta_kubernetes_pod_ip]
+      #       target_label: __address__
+      #       replacement: "${1}:3000"
+      #     - source_labels: [__meta_kubernetes_pod_namespace]
+      #       target_label: namespace
+      #     - action: labelmap
+      #       regex: __meta_kubernetes_pod_label_(.+)
+
+      # ──────────────────────────────────────────────────────
+      # [④ 최호성 완성 후 주석 해제] KServe Predictor 메트릭
+      # KServe는 prometheus.io/scrape 어노테이션 자동 감지
+      # ──────────────────────────────────────────────────────
+      # - job_name: "kserve-predictor"
+      #   kubernetes_sd_configs:
+      #     - role: pod
+      #       namespaces:
+      #         names: ["kserve"]
+      #   relabel_configs:
+      #     - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+      #       action: keep
+      #       regex: "true"
+      #     - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+      #       action: replace
+      #       target_label: __metrics_path__
+      #       regex: (.+)
+      #     - source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
+      #       action: replace
+      #       target_label: __address__
+      #       regex: (.+);(.+)
+      #       replacement: "${1}:${2}"
+
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "2Gi"
+      limits:
+        cpu: "2000m"
+        memory: "6Gi"
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 50Gi
+
+# ============================================================
+# 기본 내장 컴포넌트
+# ============================================================
+nodeExporter:
+  enabled: true
+
+kubeStateMetrics:
+  enabled: true
+
+kubelet:
+  enabled: true
+  serviceMonitor:
+    cAdvisor: true
+    https: true
+
+kubeApiServer:
+  enabled: true
+
+# EKS는 Managed Control Plane — 해당 컴포넌트 비활성화
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false

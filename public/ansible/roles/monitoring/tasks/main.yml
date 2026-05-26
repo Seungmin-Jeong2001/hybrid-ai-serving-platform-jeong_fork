@@ -73,3 +73,27 @@
         path: "{{ monitoring_values_file.path }}"
         state: absent
       when: monitoring_values_file is defined and monitoring_values_file.path is defined
+
+- name: Create Grafana dashboard ConfigMap
+  ansible.builtin.command: >
+    kubectl create configmap grafana-sre-dashboards
+    --from-file=../../../../sre-monitoring/grafana/dashboards/sre-platform.json
+    -n {{ monitoring_namespace }}
+    --dry-run=client -o yaml
+  register: grafana_cm_yaml
+  changed_when: false
+
+- name: Apply Grafana dashboard ConfigMap
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ grafana_cm_yaml.stdout | from_yaml }}"
+
+- name: Apply SLO Recording Rules
+  kubernetes.core.k8s:
+    state: present
+    src: "../../../../sre-monitoring/prometheus/rules/slo-rules.yaml"
+
+- name: Apply Alert Rules
+  kubernetes.core.k8s:
+    state: present
+    src: "../../../../sre-monitoring/prometheus/rules/alert-rules.yaml"

@@ -1,0 +1,101 @@
+# ============================================================
+# Loki Helm Values — 전체 Pod 로그 수집
+# 담당: 신민석 (⑥ Reliability & Chaos Engineering)
+#
+# 설치:
+#   helm repo add grafana https://grafana.github.io/helm-charts
+#   helm install loki grafana/loki \
+#     -n monitoring --create-namespace -f loki-values.yaml
+# ============================================================
+# ─── 통합 시 교체 체크리스트 ────────────────────────────────
+# 1. [즉시]  loki.storage.s3.bucketnames
+#             → 실제 S3 버킷명으로 교체 (ACCOUNT_ID 부분)
+# 2. [즉시]  serviceAccount.annotations
+#             → IRSA Role ARN 주석 해제 및 실제 ARN 입력
+#             → IAM Role에 S3 버킷 접근 권한 정책 필요
+# ─────────────────────────────────────────────────────────────
+
+# Single Binary 모드 (개발/초기 구축용 — 프로덕션은 distributed 모드 권장)
+deploymentMode: SingleBinary
+
+loki:
+  auth_enabled: false
+
+  commonConfig:
+    replication_factor: 1
+
+  schemaConfig:
+    configs:
+      - from: "2024-01-01"
+        store: tsdb
+        object_store: s3
+        schema: v13
+        index:
+          prefix: loki_index_
+          period: 24h
+
+  storage:
+    type: s3
+    s3:
+      # S3 버킷 정보 — 실제 값으로 교체 필요
+      region: ap-northeast-2
+      bucketnames: sre-loki-logs-ACCOUNT_ID   # TODO(통합 #1): ACCOUNT_ID → 실제 AWS 계정 ID (예: 808379768010)
+      s3ForcePathStyle: false
+    # EKS IAM Role for Service Account (IRSA) 사용 권장
+    # AWS 콘솔에서 S3 접근 권한이 있는 IAM Role ARN을 아래에 설정
+
+  limits_config:
+    retention_period: 168h     # 7일 보관
+    ingestion_rate_mb: 10
+    ingestion_burst_size_mb: 20
+    max_query_series: 5000
+    max_entries_limit_per_query: 50000
+
+  rulerConfig:
+    storage:
+      type: local
+
+singleBinary:
+  replicas: 1
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+  persistence:
+    enabled: true
+    storageClass: gp3
+    size: 20Gi
+
+# Loki Canary — 로그 수집 지연 모니터링
+lokiCanary:
+  enabled: true
+
+# S3 접근을 위한 ServiceAccount (IRSA)
+serviceAccount:
+  create: true
+  annotations:
+    # TODO(통합 #2): ACCOUNT_ID와 role 이름을 실제 값으로 교체 후 아래 주석 해제
+    # eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/loki-s3-role
+    {}
+
+# Test 비활성화 (CI/CD 환경에서 오류 방지)
+test:
+  enabled: false
+
+# Monitoring (Prometheus 연동)
+monitoring:
+  selfMonitoring:
+    enabled: true
+    grafanaAgent:
+      installOperator: false
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: prometheus-public
+  rules:
+    enabled: true
+    labels:
+      release: prometheus-public

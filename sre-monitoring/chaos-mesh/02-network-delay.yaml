@@ -1,0 +1,82 @@
+# ============================================================
+# Chaos 시나리오 2: 네트워크 지연 주입
+# 담당: 신민석 (⑥ Reliability & Chaos Engineering)
+#
+# 검증 목표:
+#   - 200ms 네트워크 지연 주입
+#   - Kafka Consumer Lag 변화 측정 (⑤ 김세원 연동 후)
+#   - KEDA 스케일링 동작 확인 (lagThreshold 100 기준)
+#   - P99 레이턴시 영향도 측정
+#
+# 실행:
+#   kubectl apply -f 02-network-delay.yaml
+#
+# 중단:
+#   kubectl delete -f 02-network-delay.yaml
+#
+# 결과 확인:
+#   - Grafana: "Consumer Lag" 패널 + "P99 레이턴시" 패널
+#   - Grafana: "Deployment 레플리카 수" — KEDA 자동 확장 확인
+# ============================================================
+# ─── 통합 시 교체 체크리스트 ────────────────────────────────
+# 1. [⑤ 김세원 완성]  첫 번째 NetworkChaos selector
+#     - namespaces: default → 실제 inference-worker namespace
+#     - labelSelectors app: inference-worker → 실제 Pod 라벨
+# 2. [④ 최호성 완성]  두 번째 NetworkChaos (KServe) selector
+#     - namespaces: kserve → 실제 KServe namespace
+#     - labelSelectors app: kserve-predictor → 실제 Pod 라벨
+# ─────────────────────────────────────────────────────────────
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: chaos-network-delay-inference
+  namespace: chaos-testing
+  annotations:
+    description: "네트워크 200ms 지연 — Kafka Lag + KEDA 스케일링 검증"
+spec:
+  action: delay
+  mode: all                    # 선택된 모든 Pod에 적용
+
+  selector:
+    namespaces:
+      - default                # 교체: 실제 namespace
+    labelSelectors:
+      app: inference-worker    # 교체: 실제 라벨
+
+  delay:
+    latency: "200ms"           # 기본 지연 (Consumer Lag 발생 유도)
+    correlation: "25"          # 패킷 간 지연 상관관계 (%)
+    jitter: "50ms"             # 지연 변동폭 (150ms ~ 250ms 범위)
+
+  direction: both              # 인바운드 + 아웃바운드 모두 적용
+  duration: "5m"               # 5분간 지속 (결과 관찰 후 자동 복구)
+
+---
+# ──────────────────────────────────────────────────────────
+# [심화] KServe Predictor 네트워크 지연
+# P99 레이턴시 SLO(5s) 위반 시나리오
+# ④ 최호성 KServe 배포 후 활성화
+# ──────────────────────────────────────────────────────────
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: chaos-network-delay-kserve
+  namespace: chaos-testing
+  annotations:
+    description: "KServe 네트워크 지연 — P99 레이턴시 SLO 위반 시뮬레이션"
+spec:
+  action: delay
+  mode: one
+
+  selector:
+    namespaces:
+      - kserve                 # 교체: KServe namespace
+    labelSelectors:
+      app: kserve-predictor    # 교체: 실제 라벨
+
+  delay:
+    latency: "3000ms"          # 3초 지연 — P99 5s SLO 경계 테스트
+    jitter: "500ms"
+
+  direction: to
+  duration: "3m"

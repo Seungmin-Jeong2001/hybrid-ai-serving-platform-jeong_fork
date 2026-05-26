@@ -1,0 +1,136 @@
+# ============================================================
+# Promtail Helm Values — 전체 Pod 로그 수집 에이전트
+# 담당: 신민석 (⑥ Reliability & Chaos Engineering)
+#
+# 설치:
+#   helm install promtail grafana/promtail \
+#     -n monitoring -f promtail-values.yaml
+#
+# 동작: DaemonSet으로 모든 노드에 배포 → 노드 내 모든 Pod 로그 수집 → Loki 전송
+# ============================================================
+
+config:
+  # Loki 주소 (loki-values.yaml 설치 후 자동 연결)
+  clients:
+    - url: http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push
+
+  snippets:
+    # ──────────────────────────────────────────────────────
+    # 파이프라인 스테이지: Kubernetes 메타데이터 라벨 부착
+    # ──────────────────────────────────────────────────────
+    pipelineStages:
+      # Docker 로그 포맷 파싱
+      - cri: {}
+
+      # Kubernetes 메타데이터 추출
+      - kubernetes: {}
+
+      # 주요 라벨 선택 (Loki 카디널리티 관리)
+      - labeldrop:
+          - filename
+          - stream
+          - pod_template_hash
+
+      # JSON 로그 파싱 (BentoML, Python 앱 등)
+      - match:
+          selector: '{app=~"failure-prediction|inference-worker|api-server"}'
+          stages:
+            - json:
+                expressions:
+                  level: level
+                  message: message
+                  request_id: request_id
+            - labels:
+                level:
+            - output:
+                source: message
+
+    # 스크레이프 설정 — Kubernetes Pod 자동 발견
+    scrapeConfigs: |
+      # ──────────────────────────────────────────────────────
+      # 모든 Pod 로그 수집 (기본)
+      # ──────────────────────────────────────────────────────
+      - job_name: kubernetes-pods
+        pipeline_stages:
+          {{- toYaml .Values.config.snippets.pipelineStages | nindent 4 }}
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          # Prometheus scrape 비활성화된 Pod도 로그 수집
+          - action: replace
+            source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: __host__
+
+          # Kubernetes 메타데이터 → 라벨 매핑
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+
+          - action: replace
+            source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+
+          - action: replace
+            source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+          - action: replace
+            source_labels: [__meta_kubernetes_pod_container_name]
+            target_label: container
+
+          - action: replace
+            source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: app
+
+          - replacement: /var/log/pods/*$1/*.log
+            separator: /
+            source_labels:
+              - __meta_kubernetes_pod_uid
+              - __meta_kubernetes_pod_container_name
+            target_label: __path__
+
+      # ──────────────────────────────────────────────────────
+      # 시스템 컴포넌트 로그 (노드 수준)
+      # ──────────────────────────────────────────────────────
+      - job_name: kubernetes-pods-static
+        pipeline_stages:
+          - cri: {}
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - action: drop
+            source_labels: [__meta_kubernetes_pod_annotation_kubernetes_io_config_source]
+            regex: ^(?!api).*$
+          - action: replace
+            source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - action: replace
+            source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - replacement: /var/log/pods/*$1/*.log
+            separator: /
+            source_labels:
+              - __meta_kubernetes_pod_uid
+              - __meta_kubernetes_pod_container_name
+            target_label: __path__
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "200m"
+    memory: "256Mi"
+
+tolerations:
+  # 모든 노드(마스터 포함)에 배포되도록 설정
+  - key: node-role.kubernetes.io/master
+    operator: Exists
+    effect: NoSchedule
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+
+serviceMonitor:
+  enabled: true
+  labels:
+    release: prometheus-public

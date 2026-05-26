@@ -1,0 +1,90 @@
+# ============================================================
+# Chaos 시나리오 1: Pod 강제 종료
+# 담당: 신민석 (⑥ Reliability & Chaos Engineering)
+#
+# 검증 목표:
+#   - Pod 강제 종료 후 자동 재생성 확인
+#   - Kubernetes Self-healing 동작 검증
+#   - Slack 알람 발생 여부 확인 (PodCrashLooping alert)
+#   - Error Budget 소진량 측정
+#
+# 사전 조건:
+#   - Chaos Mesh 설치: helm install chaos-mesh chaos-mesh/chaos-mesh -n chaos-testing
+#   - 대상 서비스 배포 완료 (④ 최호성 / ⑤ 김세원)
+#
+# ─── 통합 시 교체 체크리스트 ────────────────────────────────
+# 1. [④ 최호성 완성]  시나리오 1-A selector
+#     - namespaces: default → 실제 api-server 배포 namespace
+#     - labelSelectors app: api-server → 실제 Pod 라벨
+# 2. [⑤ 김세원 완성]  시나리오 1-B selector
+#     - namespaces: default → 실제 inference-worker namespace
+#     - labelSelectors app: inference-worker → 실제 Pod 라벨
+# ─────────────────────────────────────────────────────────────
+#
+# 실행:
+#   kubectl apply -f 01-pod-kill.yaml
+#
+# 중단:
+#   kubectl delete -f 01-pod-kill.yaml
+#
+# 결과 확인:
+#   - Grafana: "Pod 재시작 현황" 패널 확인
+#   - Slack: #sre-alerts-critical 채널 알람 확인
+# ============================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: chaos-testing
+---
+# ──────────────────────────────────────────────────────────
+# [시나리오 1-A] API Server Pod 단일 종료
+# ④ 최호성 api-server 배포 후 네임스페이스/라벨 수정
+# ──────────────────────────────────────────────────────────
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: chaos-pod-kill-api-server
+  namespace: chaos-testing
+  annotations:
+    description: "API Server Pod 단일 종료 — 자동 재생성 검증"
+spec:
+  action: pod-kill
+  mode: one                    # 한 번에 1개 Pod 종료
+  gracePeriod: 0               # 즉시 강제 종료 (SIGKILL)
+
+  selector:
+    namespaces:
+      - default                # 교체: api-server가 배포된 실제 namespace
+    labelSelectors:
+      app: api-server          # 교체: 실제 Pod 라벨
+      # 예시 (최호성 서비스): app: failure-prediction
+
+  # 단발성 실행 (duration 없이)
+  # 주기적 실행 원할 경우 아래 주석 해제:
+  # scheduler:
+  #   cron: "@every 10m"
+
+---
+# ──────────────────────────────────────────────────────────
+# [시나리오 1-B] Inference Worker Pod 단일 종료
+# ⑤ 김세원 inference-worker 배포 후 활성화
+# ──────────────────────────────────────────────────────────
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: chaos-pod-kill-inference-worker
+  namespace: chaos-testing
+  annotations:
+    description: "Inference Worker Pod 종료 — Kafka Consumer 재연결 + KEDA 스케일링 검증"
+spec:
+  action: pod-kill
+  mode: one
+  gracePeriod: 0
+
+  selector:
+    namespaces:
+      - default                # 교체: 실제 namespace
+    labelSelectors:
+      app: inference-worker    # 교체: 실제 라벨
+
+  # duration: 단발성 실행

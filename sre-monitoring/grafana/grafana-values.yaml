@@ -1,0 +1,132 @@
+# ============================================================
+# Grafana Helm Values — 통합 대시보드 (Public Cloud 단일 배치)
+# 담당: 신민석 (⑥ Reliability & Chaos Engineering)
+#
+# 설치:
+#   helm repo add grafana https://grafana.github.io/helm-charts
+#   helm install grafana grafana/grafana \
+#     -n monitoring --create-namespace -f grafana-values.yaml
+#
+# 초기 접속:
+#   kubectl get secret grafana -n monitoring -o jsonpath="{.data.admin-password}" | base64 -d
+#   kubectl port-forward svc/grafana 3000:80 -n monitoring
+# ============================================================
+# ─── 통합 시 교체 체크리스트 ────────────────────────────────
+# 1. [즉시]       adminPassword
+#                  → 운영 비밀번호로 교체 (또는 K8s Secret으로 관리)
+# 2. [① 문경호]  datasources > Prometheus-Private 주석 해제
+#                  → VPN 터널 통과 가능한 실제 Private Prometheus URL 입력
+# 3. [ALB 설정]   ingress 주석 해제
+#                  → ingressClassName: alb, hosts 도메인 설정
+# ─────────────────────────────────────────────────────────────
+
+replicas: 1
+
+adminUser: admin
+# adminPassword는 Kubernetes Secret으로 관리 권장:
+#   kubectl create secret generic grafana-credentials \
+#     --from-literal=admin-password=YOUR_PASSWORD -n monitoring
+adminPassword: "admin"
+
+persistence:
+  enabled: true
+  storageClassName: gp3
+  size: 10Gi
+
+# ============================================================
+# 데이터소스 설정
+# ============================================================
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      # Public Cloud Prometheus (현재 활성)
+      - name: Prometheus-Public
+        type: prometheus
+        url: http://kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+        access: proxy
+        isDefault: true
+        jsonData:
+          timeInterval: "15s"
+          queryTimeout: "60s"
+        editable: true
+
+      # Loki 로그 수집 (현재 활성)
+      - name: Loki
+        type: loki
+        url: http://loki.monitoring.svc.cluster.local:3100
+        access: proxy
+        jsonData:
+          maxLines: 1000
+        editable: true
+
+      # ──────────────────────────────────────────────────────
+      # TODO(통합 #2): [① 문경호 Private K8s 완성 후 주석 해제]
+      # Private Cloud Prometheus 추가
+      # VPN 터널을 통해 접근 가능한 엔드포인트로 교체 필요
+      # ──────────────────────────────────────────────────────
+      # - name: Prometheus-Private
+      #   type: prometheus
+      #   url: http://PRIVATE_PROMETHEUS_ENDPOINT:9090  # ← 실제 Private Prometheus IP:Port
+      #   access: proxy
+      #   isDefault: false
+      #   jsonData:
+      #     timeInterval: "30s"
+      #   editable: true
+
+# ============================================================
+# 대시보드 프로비저닝 (ConfigMap 기반 자동 로드)
+# ============================================================
+dashboardProviders:
+  dashboardproviders.yaml:
+    apiVersion: 1
+    providers:
+      - name: "sre-dashboards"
+        orgId: 1
+        folder: "SRE Platform"
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards/sre
+
+dashboardsConfigMaps:
+  sre: "grafana-sre-dashboards"
+
+# ============================================================
+# Grafana 설정
+# ============================================================
+grafana.ini:
+  server:
+    domain: ""
+    root_url: "%(protocol)s://%(domain)s/"
+  auth.anonymous:
+    enabled: false
+  date_formats:
+    default_timezone: Asia/Seoul
+  unified_alerting:
+    enabled: true
+  alerting:
+    enabled: false  # 레거시 alerting 비활성화 (unified alerting 사용)
+
+# ============================================================
+# 리소스 설정
+# ============================================================
+resources:
+  requests:
+    cpu: "250m"
+    memory: "512Mi"
+  limits:
+    cpu: "1000m"
+    memory: "1Gi"
+
+# TODO(통합 #3): ALB로 외부 노출 시 아래 주석 해제 + 도메인 설정
+# ingress:
+#   enabled: true
+#   ingressClassName: alb
+#   annotations:
+#     kubernetes.io/ingress.class: alb
+#     alb.ingress.kubernetes.io/scheme: internet-facing
+#     alb.ingress.kubernetes.io/target-type: ip
+#   hosts:
+#     - grafana.your-domain.com

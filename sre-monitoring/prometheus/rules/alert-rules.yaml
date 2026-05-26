@@ -1,0 +1,302 @@
+# ============================================================
+# Alert Rules (PrometheusRule)
+# 담당: 신민석 (⑥ Reliability & Chaos Engineering)
+#
+# 배포:
+#   kubectl apply -f alert-rules.yaml -n monitoring
+# ============================================================
+# ─── 통합 시 교체 체크리스트 ────────────────────────────────
+# 1. [⑤ 김세원 완성]          kafka.alerts 그룹 주석 해제
+# 2. [② 안예원 + ④ 최호성]   inference.alerts 그룹 주석 해제
+# 3. [③ 정승민 완성]          argocd.alerts 그룹 주석 해제
+# ─────────────────────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: sre-alert-rules
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: sre-monitoring
+    app.kubernetes.io/component: alerting
+spec:
+  groups:
+
+    # ============================================================
+    # SLO / Error Budget 알림
+    # Multi-window, multi-burn-rate approach (Google SRE Book 기반)
+    # ============================================================
+    - name: slo.alerts
+      rules:
+
+        # 1시간 내 Error Budget을 모두 소진할 속도 → 즉시 대응 필요
+        # burn rate 14.4 = 1시간 소진 (월 30일 기준: 30*24/1 * (1-0.999)/0.001 = 14.4)
+        - alert: ErrorBudgetBurnRateCritical
+          expr: |
+            slo:error_budget_burn_rate:1h > 14.4
+            and
+            slo:error_budget_burn_rate:5m > 14.4
+          for: 2m
+          labels:
+            severity: critical
+            team: sre
+          annotations:
+            summary: "Error Budget 급속 소진 (1h 번 레이트: {{ $value | printf \"%.1f\" }}x)"
+            description: |
+              현재 속도로 계속되면 1시간 이내에 월간 Error Budget이 소진됩니다.
+              번 레이트: {{ $value | printf "%.1f" }}x (정상: 1.0x)
+
+        # 6시간 내 Error Budget을 모두 소진할 속도 → 빠른 대응 필요
+        - alert: ErrorBudgetBurnRateHigh
+          expr: |
+            slo:error_budget_burn_rate:6h > 6
+            and
+            slo:error_budget_burn_rate:5m > 6
+          for: 15m
+          labels:
+            severity: warning
+            team: sre
+          annotations:
+            summary: "Error Budget 빠른 소진 (6h 번 레이트: {{ $value | printf \"%.1f\" }}x)"
+            description: |
+              현재 속도로 계속되면 6시간 이내에 월간 Error Budget이 소진됩니다.
+              번 레이트: {{ $value | printf "%.1f" }}x
+
+        # Error Budget 10% 미만 잔여
+        - alert: ErrorBudgetAlmostExhausted
+          expr: |
+            slo:error_budget_remaining:ratio < 0.1
+          for: 5m
+          labels:
+            severity: warning
+            team: sre
+          annotations:
+            summary: "Error Budget 10% 미만 ({{ $value | humanizePercentage }} 잔여)"
+            description: |
+              이번 달 Error Budget이 {{ $value | humanizePercentage }} 밖에 남지 않았습니다.
+              새로운 릴리즈나 Chaos 테스트를 일시 중단하세요.
+
+    # ============================================================
+    # Pod / 애플리케이션 알림
+    # ============================================================
+    - name: pod.alerts
+      rules:
+
+        - alert: PodCrashLooping
+          expr: |
+            increase(kube_pod_container_status_restarts_total[10m]) > 3
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pod CrashLoop: {{ $labels.namespace }}/{{ $labels.pod }}"
+            description: |
+              Pod {{ $labels.pod }} (컨테이너: {{ $labels.container }})가
+              10분 내 {{ $value | printf "%.0f" }}회 재시작됐습니다.
+
+        - alert: PodNotReady
+          expr: |
+            kube_pod_status_ready{
+              condition="false",
+              namespace!~"kube-system|kube-public|kube-node-lease|monitoring|chaos-testing"
+            } == 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod 준비 안됨: {{ $labels.namespace }}/{{ $labels.pod }}"
+            description: |
+              Pod {{ $labels.pod }}가 5분 이상 Ready 상태가 아닙니다.
+
+        - alert: PodOOMKilled
+          expr: |
+            kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1
+          labels:
+            severity: critical
+          annotations:
+            summary: "OOMKilled: {{ $labels.namespace }}/{{ $labels.pod }}"
+            description: |
+              Pod {{ $labels.pod }}의 컨테이너 {{ $labels.container }}가 OOM으로 종료됐습니다.
+              메모리 리소스 리밋을 확인하세요.
+
+        - alert: DeploymentReplicasMismatch
+          expr: |
+            kube_deployment_spec_replicas
+            !=
+            kube_deployment_status_replicas_available
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Deployment 레플리카 불일치: {{ $labels.namespace }}/{{ $labels.deployment }}"
+            description: |
+              {{ $labels.deployment }}: 목표 {{ $value | printf "%.0f" }}개,
+              실제 가용 레플리카 수가 다릅니다.
+
+    # ============================================================
+    # 노드 / 인프라 알림
+    # ============================================================
+    - name: node.alerts
+      rules:
+
+        - alert: NodeCPUHigh
+          expr: |
+            sre:node_cpu_utilization:rate5m > 0.85
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "노드 CPU 높음: {{ $labels.instance }} ({{ $value | humanizePercentage }})"
+            description: |
+              노드 {{ $labels.instance }}의 CPU 사용률이 10분 이상 85%를 초과했습니다.
+
+        - alert: NodeMemoryHigh
+          expr: |
+            sre:node_memory_utilization:ratio > 0.90
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "노드 메모리 높음: {{ $labels.instance }} ({{ $value | humanizePercentage }})"
+            description: |
+              노드 {{ $labels.instance }}의 메모리 사용률이 10분 이상 90%를 초과했습니다.
+
+        - alert: NodeDiskSpaceHigh
+          expr: |
+            (
+              node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}
+              - node_filesystem_free_bytes{fstype!~"tmpfs|overlay"}
+            )
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"} > 0.85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "디스크 공간 부족: {{ $labels.instance }}:{{ $labels.mountpoint }}"
+            description: |
+              {{ $labels.mountpoint }}의 디스크 사용률이 {{ $value | humanizePercentage }}입니다.
+
+        - alert: NodeNotReady
+          expr: |
+            kube_node_status_condition{condition="Ready", status="true"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "노드 NotReady: {{ $labels.node }}"
+            description: |
+              노드 {{ $labels.node }}가 5분 이상 NotReady 상태입니다.
+
+    # ============================================================
+    # Prometheus 자체 상태 알림
+    # ============================================================
+    - name: prometheus.self.alerts
+      rules:
+
+        - alert: PrometheusTargetDown
+          expr: |
+            up == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Prometheus 수집 대상 Down: {{ $labels.job }}/{{ $labels.instance }}"
+            description: |
+              {{ $labels.job }}의 {{ $labels.instance }}에서 메트릭 수집이 5분 이상 실패했습니다.
+
+        - alert: PrometheusConfigReloadFailed
+          expr: |
+            prometheus_config_last_reload_successful == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Prometheus 설정 리로드 실패"
+            description: "Prometheus 설정 파일 리로드가 실패했습니다. 설정 파일을 확인하세요."
+
+    # ============================================================
+    # [⑤ 김세원 완성 후 주석 해제] Kafka / MSK 알림
+    # ============================================================
+    # - name: kafka.alerts
+    #   rules:
+    #
+    #     - alert: KafkaConsumerLagHigh
+    #       expr: |
+    #         kafka_consumergroup_lag{topic="inference-request"} > 1000
+    #       for: 5m
+    #       labels:
+    #         severity: critical
+    #       annotations:
+    #         summary: "Kafka Consumer Lag 높음: {{ $labels.consumergroup }}/{{ $labels.topic }}"
+    #         description: |
+    #           Consumer Lag가 {{ $value }}에 달했습니다. KEDA 스케일링을 확인하세요.
+    #
+    #     - alert: KafkaDLQMessageDetected
+    #       expr: |
+    #         increase(kafka_topic_partition_current_offset{topic=~".*dlq.*"}[5m]) > 0
+    #       labels:
+    #         severity: critical
+    #       annotations:
+    #         summary: "DLQ 메시지 감지: {{ $labels.topic }}"
+    #         description: |
+    #           5분간 {{ $value }}개의 메시지가 DLQ로 이동됐습니다.
+    #
+    #     - alert: KafkaDLQRateHigh
+    #       expr: |
+    #         slo:kafka_dlq_rate:ratio_rate5m > 0.01
+    #       for: 5m
+    #       labels:
+    #         severity: warning
+    #       annotations:
+    #         summary: "DLQ 발생률 SLO 위반 ({{ $value | humanizePercentage }})"
+    #         description: "DLQ 발생률이 1% SLO를 초과했습니다."
+
+    # ============================================================
+    # [② 안예원 + ④ 최호성 완성 후 주석 해제] HTTP / 추론 알림
+    # ============================================================
+    # - name: inference.alerts
+    #   rules:
+    #
+    #     - alert: HighErrorRate5xx
+    #       expr: |
+    #         slo:http_error_rate:ratio_rate5m > 0.05
+    #       for: 5m
+    #       labels:
+    #         severity: critical
+    #       annotations:
+    #         summary: "5xx 에러율 높음 ({{ $value | humanizePercentage }})"
+    #         description: "추론 서버 5xx 에러율이 5% SLO를 초과했습니다."
+    #
+    #     - alert: InferenceLatencyHigh
+    #       expr: |
+    #         slo:http_latency_p99:5m > 5
+    #       for: 5m
+    #       labels:
+    #         severity: warning
+    #       annotations:
+    #         summary: "P99 레이턴시 높음 ({{ $value | printf \"%.2f\" }}s)"
+    #         description: "추론 P99 레이턴시가 5s SLO를 초과했습니다."
+
+    # ============================================================
+    # [③ 정승민 완성 후 주석 해제] ArgoCD 배포 알림
+    # ============================================================
+    # - name: argocd.alerts
+    #   rules:
+    #
+    #     - alert: ArgoCDAppOutOfSync
+    #       expr: |
+    #         argocd_app_info{sync_status="OutOfSync"} == 1
+    #       for: 5m
+    #       labels:
+    #         severity: warning
+    #       annotations:
+    #         summary: "ArgoCD 앱 동기화 실패: {{ $labels.name }}"
+    #         description: "ArgoCD 애플리케이션 {{ $labels.name }}이 OutOfSync 상태입니다."
+    #
+    #     - alert: ArgoCDAppDegraded
+    #       expr: |
+    #         argocd_app_info{health_status="Degraded"} == 1
+    #       for: 5m
+    #       labels:
+    #         severity: critical
+    #       annotations:
+    #         summary: "ArgoCD 앱 Degraded: {{ $labels.name }}"

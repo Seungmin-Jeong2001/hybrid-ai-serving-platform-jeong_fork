@@ -8,6 +8,7 @@ monitoring_aws_region: ap-northeast-2
 grafana_admin_password_ssm_name: /sgs-hasp/monitoring/grafana_admin_password
 
 grafana_admin_user: admin
+grafana_admin_password: "admin"
 grafana_default_timezone: Asia/Seoul
 grafana_service_type: ClusterIP
 grafana_persistence_enabled: true
@@ -32,3 +33,7 @@ alertmanager_resources_requests_cpu: 100m
 alertmanager_resources_requests_memory: 256Mi
 alertmanager_resources_limits_cpu: 300m
 alertmanager_resources_limits_memory: 512Mi
+
+# Discord 웹훅 — Alertmanager 알림 채널
+discord_critical_webhook: "https://discord.com/api/webhooks/1504007172189716561/hGtE1o5fEvKqwD2MSOIXD2BqeVGJbvD0TJKn-3570CFSWIDtdvZnuEmq_G0HcoOVDMNZ/slack"
+discord_warning_webhook: "https://discord.com/api/webhooks/1504007351542222989/jD4RUE_7vXkEhgId8UXidCr5_EWbNryGNR49QNksw_Mce1imaWxUMWGmtthq5irAnJ7E/slack"

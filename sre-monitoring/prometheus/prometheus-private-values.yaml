@@ -1,0 +1,103 @@
+# ============================================================
+# kube-prometheus-stack Helm Values — Private Cloud (OpenStack / Private K8s)
+# 담당: 신민석 (⑥ Reliability & Chaos Engineering)
+#
+# [① 문경호 Private K8s 구성 완료 후 진행]
+#
+# 설치 (Private K8s 클러스터에서 실행):
+#   helm install prometheus-private prometheus-community/kube-prometheus-stack \
+#     -n monitoring --create-namespace -f prometheus-private-values.yaml
+# ============================================================
+
+nameOverride: "kube-prometheus-private"
+fullnameOverride: "kube-prometheus-private"
+
+# Grafana / Alertmanager는 Public Cloud에 단일 배치
+grafana:
+  enabled: false
+alertmanager:
+  enabled: false
+
+prometheus:
+  prometheusSpec:
+    retention: "7d"
+    scrapeInterval: "30s"
+    evaluationInterval: "30s"
+
+    externalLabels:
+      environment: "private"
+      cluster: "private-k8s"
+
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: {}
+    podMonitorSelector: {}
+    ruleSelector: {}
+
+    additionalScrapeConfigs:
+
+      # ──────────────────────────────────────────────────────
+      # [① 문경호 OpenStack 구성 완료 후 주석 해제]
+      # OpenStack Exporter 설치:
+      #   helm install openstack-exporter openstack-exporter/prometheus-openstack-exporter \
+      #     -n monitoring -f openstack-exporter-values.yaml
+      # ──────────────────────────────────────────────────────
+      # - job_name: "openstack-nova"
+      #   static_configs:
+      #     - targets: ["openstack-exporter.monitoring.svc.cluster.local:9180"]
+      #   metrics_path: /metrics
+      #   params:
+      #     prefix: ["openstack"]
+
+      # ──────────────────────────────────────────────────────
+      # [① 문경호 완성 후] MinIO 스토리지 메트릭
+      # ──────────────────────────────────────────────────────
+      # - job_name: "minio"
+      #   static_configs:
+      #     - targets: ["minio.storage.svc.cluster.local:9000"]
+      #   metrics_path: /minio/v2/metrics/cluster
+      #   scheme: http
+
+      # ──────────────────────────────────────────────────────
+      # [③ 정승민 완성 후] GitLab Runner 메트릭
+      # ──────────────────────────────────────────────────────
+      # - job_name: "gitlab-runner"
+      #   static_configs:
+      #     - targets: ["gitlab-runner.ci-runner.svc.cluster.local:9252"]
+
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "1Gi"
+      limits:
+        cpu: "1000m"
+        memory: "2Gi"
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: standard
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 20Gi
+
+nodeExporter:
+  enabled: true
+
+kubeStateMetrics:
+  enabled: true
+
+kubelet:
+  enabled: true
+  serviceMonitor:
+    cAdvisor: true
+
+# Private K8s는 self-managed — 이 컴포넌트들 활성화
+kubeControllerManager:
+  enabled: true
+kubeScheduler:
+  enabled: true
+kubeEtcd:
+  enabled: true
