@@ -112,6 +112,20 @@ resource "aws_vpc_endpoint" "ecr_dkr" {
   })
 }
 
+# STS 인터페이스 엔드포인트 (이미지 Push 시 필요)
+resource "aws_vpc_endpoint" "sts" {
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${var.aws_region}.sts"
+  vpc_endpoint_type   = "Interface"
+  private_dns_enabled = true
+  security_group_ids  = [aws_security_group.vpce.id]
+  subnet_ids          = aws_subnet.eks_private[*].id
+
+  tags = merge(local.common_tags, {
+    Name = "${var.project_name}-sts-endpoint"
+  })
+}
+
 # SSM (Session Manager - bastionless private access)
 resource "aws_vpc_endpoint" "ssm" {
   vpc_id              = aws_vpc.main.id
