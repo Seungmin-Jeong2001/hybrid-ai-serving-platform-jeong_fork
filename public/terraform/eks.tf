@@ -10,8 +10,9 @@ resource "aws_eks_cluster" "main" {
       aws_subnet.eks_private[*].id,
       [aws_subnet.mgmt_private.id],
     )
-    endpoint_private_access = true
-    endpoint_public_access  = true
+    endpoint_private_access      = true
+    endpoint_public_access       = true
+    public_access_cidrs          = var.eks_public_access_cidrs
   }
 
   depends_on = [
@@ -49,6 +50,20 @@ locals {
   }
 }
 
+# 노드 그룹별 Launch Template (EC2 인스턴스 Name 태그 전파용)
+resource "aws_launch_template" "node_groups" {
+  for_each = var.eks_node_groups
+
+  name = "${var.project_name}-${each.key}-lt"
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = merge(local.common_tags, {
+      Name = "${var.project_name}-${each.key}"
+    })
+  }
+}
+
 # EKS 노드 그룹 (워크로드별 5종: inference, app, system, monitoring, management)
 resource "aws_eks_node_group" "workloads" {
   for_each = var.eks_node_groups
@@ -60,6 +75,11 @@ resource "aws_eks_node_group" "workloads" {
 
   instance_types = each.value.instance_types
   capacity_type  = "ON_DEMAND"
+
+  launch_template {
+    id      = aws_launch_template.node_groups[each.key].id
+    version = aws_launch_template.node_groups[each.key].latest_version
+  }
 
   scaling_config {
     desired_size = each.value.desired_size
