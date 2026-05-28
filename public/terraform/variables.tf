@@ -147,7 +147,7 @@ variable "eks_node_groups" {
     }
     monitoring = {
       instance_types  = ["t3.large"]
-      az_count        = 1
+      az_count        = 2
       desired_size    = 1
       min_size        = 1
       max_size        = 2
