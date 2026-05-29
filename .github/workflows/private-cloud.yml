@@ -655,6 +655,57 @@ jobs:
           echo "Applying DNS records..."
           python3 private/reverse-proxy/cloudflare_dns.py --apply
 
+  cleanup-destroy:
+    name: Cleanup Kubernetes Resources
+    runs-on: ${{ vars.PRIVATE_CLOUD_RUNNER || 'self-hosted' }}
+    needs: terraform
+    if: always() && github.event.inputs.action == 'destroy'
+    env:
+      KUBECONFIG: ${{ github.workspace }}/.ha/openstack/kubeconfig
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Download kubeconfig
+        uses: actions/download-artifact@v4
+        with:
+          name: kubeconfig
+          path: .ha/openstack
+        continue-on-error: true
+
+      - name: Cleanup Kubernetes resources
+        run: |
+          if [[ ! -f "$KUBECONFIG" ]]; then
+            echo "No kubeconfig found - assuming cluster already destroyed"
+            exit 0
+          fi
+          
+          echo "Cleaning up Kubernetes resources..."
+          
+          # Delete workloads first
+          kubectl delete jobs --all --all-namespaces 2>/dev/null || true
+          kubectl delete deployments --all --all-namespaces 2>/dev/null || true
+          kubectl delete statefulsets --all --all-namespaces 2>/dev/null || true
+          kubectl delete daemonsets --all --all-namespaces 2>/dev/null || true
+          
+          # Delete storage
+          kubectl delete pvc --all --all-namespaces 2>/dev/null || true
+          kubectl delete pv --all 2>/dev/null || true
+          
+          # Delete namespaces (except system)
+          kubectl get namespaces -o name | grep -vE 'kube-system|kube-public|kube-node-lease|default' | xargs kubectl delete 2>/dev/null || true
+          
+          echo "Kubernetes cleanup complete"
+
+      - name: Uninstall k3s from nodes
+        run: |
+          echo "Note: k3s uninstall would require SSH to nodes"
+          echo "VMs will be destroyed by Terraform, k3s will be cleaned up with them"
+          echo "Cleanup complete"
+
   setup-storage:
     name: Setup Storage (MinIO + NFS)
     runs-on: ${{ vars.PRIVATE_CLOUD_RUNNER || 'self-hosted' }}
