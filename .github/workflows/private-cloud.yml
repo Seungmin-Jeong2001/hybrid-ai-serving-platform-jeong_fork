@@ -7,10 +7,10 @@ on:
         description: Action to perform
         required: true
         type: choice
-        default: plan
+        default: apply
         options:
-          - plan
           - apply
+          - plan
           - destroy
       install_openstack:
         description: Install DevStack (OpenStack) on the runner
@@ -21,9 +21,29 @@ on:
         description: Bootstrap k8s on OpenStack nodes
         required: true
         type: boolean
-        default: false
+        default: true
       apply_dns:
         description: Apply DNS records to Cloudflare
+        required: true
+        type: boolean
+        default: false
+      setup_storage:
+        description: Setup MinIO and NFS storage
+        required: true
+        type: boolean
+        default: true
+      validate_gpu:
+        description: Validate GPU passthrough and run tests
+        required: true
+        type: boolean
+        default: true
+      minio_volume_size:
+        description: MinIO volume size per disk (Gi)
+        required: true
+        type: string
+        default: "50"
+      force_cleanup:
+        description: Force cleanup all resources including running DevStack
         required: true
         type: boolean
         default: false
@@ -88,36 +108,67 @@ jobs:
       - name: Check existing DevStack
         id: check_devstack
         run: |
-          if lxc info ha-openstack >/dev/null 2>&1 && lxc exec ha-openstack -- curl -s http://localhost/identity/v3 >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "DevStack already running"
+          if lxc info ha-openstack >/dev/null 2>&1; then
+            echo "container_exists=true" >> "$GITHUB_OUTPUT"
+            echo "Container ha-openstack exists"
+            
+            # Check if DevStack is actually running (Keystone responding)
+            if lxc exec ha-openstack -- curl -s http://localhost/identity/v3 >/dev/null 2>&1; then
+              echo "devstack_running=true" >> "$GITHUB_OUTPUT"
+              echo "DevStack is already running - skipping installation"
+            else
+              echo "devstack_running=false" >> "$GITHUB_OUTPUT"
+              echo "Container exists but DevStack not running - will install"
+            fi
           else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "DevStack not found or not running"
+            echo "container_exists=false" >> "$GITHUB_OUTPUT"
+            echo "devstack_running=false" >> "$GITHUB_OUTPUT"
+            echo "DevStack container not found - will create and install"
           fi
 
-      - name: Cleanup existing DevStack
-        if: steps.check_devstack.outputs.exists == 'true'
+      - name: Force cleanup DevStack
+        if: github.event.inputs.force_cleanup == 'true' && steps.check_devstack.outputs.container_exists == 'true'
         run: |
-          echo "Stopping and removing existing DevStack..."
+          echo "FORCE CLEANUP: Stopping and removing DevStack container..."
+          lxc stop ha-openstack --force 2>/dev/null || true
+          lxc delete ha-openstack --force 2>/dev/null || true
+          echo "DevStack container removed"
+
+      - name: Cleanup existing DevStack
+        if: steps.check_devstack.outputs.devstack_running == 'false' && steps.check_devstack.outputs.container_exists == 'true' && github.event.inputs.force_cleanup != 'true'
+        run: |
+          echo "Cleaning up incomplete DevStack installation..."
           lxc stop ha-openstack --force 2>/dev/null || true
           lxc delete ha-openstack --force 2>/dev/null || true
           echo "Cleanup complete"
 
-      - name: Create LXC container for DevStack
+      - name: Skip DevStack installation
+        if: steps.check_devstack.outputs.devstack_running == 'true'
         run: |
-          echo "Creating DevStack container..."
-          raw_lxc=$(printf 'lxc.apparmor.profile=unconfined\nlxc.cap.drop=\nlxc.mount.auto=proc:rw sys:rw cgroup:rw')
-          lxc init ubuntu:24.04 ha-openstack \
-            -c security.nesting=true \
-            -c security.privileged=true \
-            -c raw.lxc="$raw_lxc"
-          lxc start ha-openstack
+          echo "DevStack is already running - skipping all installation steps"
+          echo "DevStack ready at: http://$(lxc exec ha-openstack -- ip -4 addr show eth0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')/identity/v3"
+
+      - name: Create LXC container for DevStack
+        if: steps.check_devstack.outputs.devstack_running == 'false'
+        run: |
+          if lxc info ha-openstack >/dev/null 2>&1; then
+            echo "Container ha-openstack already exists, skipping creation"
+            lxc start ha-openstack 2>/dev/null || true
+          else
+            echo "Creating DevStack container..."
+            raw_lxc=$(printf 'lxc.apparmor.profile=unconfined\nlxc.cap.drop=\nlxc.mount.auto=proc:rw sys:rw cgroup:rw')
+            lxc init ubuntu:24.04 ha-openstack \
+              -c security.nesting=true \
+              -c security.privileged=true \
+              -c raw.lxc="$raw_lxc"
+            lxc start ha-openstack
+            echo "Container created and started"
+          fi
           sleep 5
-          echo "Container created and started"
           lxc list | grep ha-openstack
 
       - name: Install DevStack prerequisites
+        if: steps.check_devstack.outputs.devstack_running == 'false'
         run: |
           echo "Installing prerequisites..."
           lxc exec ha-openstack -- bash -c '
@@ -133,6 +184,7 @@ jobs:
           '
 
       - name: Clone DevStack
+        if: steps.check_devstack.outputs.devstack_running == 'false'
         run: |
           lxc exec ha-openstack -- sudo -u stack -H bash -c '
             git clone --depth=1 --branch master https://opendev.org/openstack/devstack /opt/stack/devstack
@@ -140,16 +192,25 @@ jobs:
           '
 
       - name: Configure DevStack
+        if: steps.check_devstack.outputs.devstack_running == 'false'
         run: |
           IP=$(lxc exec ha-openstack -- ip -4 addr show eth0 | grep -oP "(?<=inet\s)\d+(\.\d+){3}")
           PASSWORD="${HA_DEVSTACK_PASSWORD}"
           echo "Configuring DevStack with IP: $IP"
-          # Create local.conf using printf to avoid YAML parsing issues
+          
+          # Create password file to avoid interactive prompt
+          lxc exec ha-openstack -- sudo -u stack -H bash -c "mkdir -p /opt/stack/devstack"
+          lxc exec ha-openstack -- sudo -u stack -H bash -c "echo '${PASSWORD}' > /opt/stack/devstack/.localrc.password"
+          lxc exec ha-openstack -- sudo -u stack -H bash -c "chmod 600 /opt/stack/devstack/.localrc.password"
+          
+          # Create local.conf using individual echo commands - ALL passwords must be set
           lxc exec ha-openstack -- bash -c "echo '[local|localrc]' > /opt/stack/devstack/local.conf"
           lxc exec ha-openstack -- bash -c "echo 'ADMIN_PASSWORD=${PASSWORD}' >> /opt/stack/devstack/local.conf"
           lxc exec ha-openstack -- bash -c "echo 'DATABASE_PASSWORD=${PASSWORD}' >> /opt/stack/devstack/local.conf"
           lxc exec ha-openstack -- bash -c "echo 'RABBIT_PASSWORD=${PASSWORD}' >> /opt/stack/devstack/local.conf"
           lxc exec ha-openstack -- bash -c "echo 'SERVICE_PASSWORD=${PASSWORD}' >> /opt/stack/devstack/local.conf"
+          lxc exec ha-openstack -- bash -c "echo 'SERVICE_TOKEN=${PASSWORD}' >> /opt/stack/devstack/local.conf"
+          lxc exec ha-openstack -- bash -c "echo 'MYSQL_PASSWORD=${PASSWORD}' >> /opt/stack/devstack/local.conf"
           lxc exec ha-openstack -- bash -c "echo 'HOST_IP=${IP}' >> /opt/stack/devstack/local.conf"
           lxc exec ha-openstack -- bash -c "echo 'SERVICE_HOST=${IP}' >> /opt/stack/devstack/local.conf"
           lxc exec ha-openstack -- bash -c "echo 'LOGFILE=/opt/stack/logs/stack.sh.log' >> /opt/stack/devstack/local.conf"
@@ -158,24 +219,30 @@ jobs:
           lxc exec ha-openstack -- bash -c "echo 'LIBVIRT_TYPE=qemu' >> /opt/stack/devstack/local.conf"
           lxc exec ha-openstack -- bash -c "echo 'ENABLE_VOLUME_BACKING_FILE=True' >> /opt/stack/devstack/local.conf"
           lxc exec ha-openstack -- bash -c "echo 'disable_service tempest' >> /opt/stack/devstack/local.conf"
+          lxc exec ha-openstack -- bash -c "echo 'disable_service swift' >> /opt/stack/devstack/local.conf"
+          lxc exec ha-openstack -- bash -c "echo 'disable_service cinder' >> /opt/stack/devstack/local.conf"
           lxc exec ha-openstack -- bash -c "echo 'ENABLE_KSM=False' >> /opt/stack/devstack/local.conf"
           lxc exec ha-openstack -- chown stack:stack /opt/stack/devstack/local.conf
           lxc exec ha-openstack -- chmod 600 /opt/stack/devstack/local.conf
           echo "local.conf created"
 
       - name: Patch DevStack for KSM
+        if: steps.check_devstack.outputs.devstack_running == 'false'
         run: |
           lxc exec ha-openstack -- sed -i 's/^function configure_ksm {/function configure_ksm {\n    return 0/' /opt/stack/devstack/lib/host
           echo "DevStack patched to skip KSM"
 
       - name: Run DevStack
+        if: steps.check_devstack.outputs.devstack_running == 'false'
         timeout-minutes: 90
         run: |
           echo "Starting DevStack installation (this takes 30-60 minutes)..."
-          lxc exec ha-openstack -- sudo -u stack -H bash -lc 'cd /opt/stack/devstack && ./stack.sh'
+          # Run with FORCE=yes to avoid interactive prompts and pipe yes as fallback
+          lxc exec ha-openstack -- sudo -u stack -H bash -lc 'cd /opt/stack/devstack && FORCE=yes ./stack.sh'
           echo "DevStack installation complete"
 
       - name: Verify DevStack
+        if: always()
         run: |
           echo "Verifying DevStack..."
           IP=$(lxc exec ha-openstack -- ip -4 addr show eth0 | grep -oP "(?<=inet\s)\d+(\.\d+){3}")
@@ -183,6 +250,7 @@ jobs:
           echo "DevStack is ready at http://${IP}/identity/v3"
 
       - name: Configure proxy device
+        if: steps.check_devstack.outputs.devstack_running == 'false'
         run: |
           lxc config device add ha-openstack horizon-proxy proxy listen=tcp:0.0.0.0:18081 connect=tcp:127.0.0.1:80 2>/dev/null || true
           echo "Proxy configured"
@@ -552,6 +620,13 @@ jobs:
           kubectl get pods -A
           echo "k8s cluster is ready!"
 
+      - name: Upload kubeconfig artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubeconfig
+          path: .ha/openstack/kubeconfig
+          retention-days: 1
+
   dns:
     name: Configure DNS
     runs-on: ubuntu-latest
@@ -579,3 +654,125 @@ jobs:
         run: |
           echo "Applying DNS records..."
           python3 private/reverse-proxy/cloudflare_dns.py --apply
+
+  setup-storage:
+    name: Setup Storage (MinIO + NFS)
+    runs-on: ${{ vars.PRIVATE_CLOUD_RUNNER || 'self-hosted' }}
+    needs: [bootstrap-k8s, terraform]
+    if: always() && needs.bootstrap-k8s.result == 'success' && needs.terraform.result == 'success' && github.event.inputs.action == 'apply' && github.event.inputs.bootstrap_kubernetes == 'true' && github.event.inputs.setup_storage == 'true'
+    defaults:
+      run:
+        working-directory: private/openstack
+    env:
+      KUBECONFIG: ${{ github.workspace }}/.ha/openstack/kubeconfig
+      MINIO_VOLUME_SIZE: ${{ github.event.inputs.minio_volume_size || '50' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Download kubeconfig
+        uses: actions/download-artifact@v4
+        with:
+          name: kubeconfig
+          path: .ha/openstack
+
+      - name: Get NFS server IP
+        id: nfs
+        run: |
+          NFS_IP=$(terraform output -raw nfs_server_ip)
+          echo "NFS_SERVER_IP=$NFS_IP" >> "$GITHUB_OUTPUT"
+          echo "NFS server IP: $NFS_IP"
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Install MinIO Operator
+        run: |
+          echo "Installing MinIO Operator with volume size ${MINIO_VOLUME_SIZE}Gi..."
+          # Replace volume size in MinIO operator YAML (path relative to working-directory)
+          sed -e "s/storage: 100Gi/storage: ${MINIO_VOLUME_SIZE}Gi/g" ../storage/minio-operator.yaml | kubectl apply -f -
+          echo "MinIO Operator installed"
+
+      - name: Wait for MinIO Tenant
+        timeout-minutes: 10
+        run: |
+          echo "Waiting for MinIO tenant to be ready..."
+          kubectl wait --for=condition=Ready pod -l v1.min.io/tenant=hybrid-ai -n minio-tenant --timeout=600s || true
+          kubectl get pods -n minio-tenant
+          echo "MinIO tenant status checked"
+
+      - name: Install NFS Provisioner
+        run: |
+          echo "Installing NFS provisioner with server ${{ steps.nfs.outputs.NFS_SERVER_IP }}..."
+          # Replace NFS server IP in provisioner YAML (path relative to working-directory)
+          sed -e "s/server: 192.168.100.1/server: ${{ steps.nfs.outputs.NFS_SERVER_IP }}/g" ../storage/nfs-provisioner.yaml | kubectl apply -f -
+          echo "NFS provisioner installed"
+
+      - name: Verify Storage Classes
+        run: |
+          echo "Available storage classes:"
+          kubectl get storageclass
+          echo "Storage setup complete!"
+
+  validate-gpu:
+    name: Validate GPU Passthrough
+    runs-on: ${{ vars.PRIVATE_CLOUD_RUNNER || 'self-hosted' }}
+    needs: setup-storage
+    if: always() && needs.setup-storage.result == 'success' && github.event.inputs.action == 'apply' && github.event.inputs.bootstrap_kubernetes == 'true' && github.event.inputs.validate_gpu == 'true'
+    defaults:
+      run:
+        working-directory: .
+    env:
+      KUBECONFIG: ${{ github.workspace }}/.ha/openstack/kubeconfig
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Download kubeconfig
+        uses: actions/download-artifact@v4
+        with:
+          name: kubeconfig
+          path: .ha/openstack
+
+      - name: Install NVIDIA Device Plugin
+        run: |
+          echo "Installing NVIDIA device plugin..."
+          kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.14.5/nvidia-device-plugin.yml
+          echo "NVIDIA device plugin installed"
+
+      - name: Wait for GPU nodes
+        timeout-minutes: 5
+        run: |
+          echo "Waiting for GPU nodes to be ready..."
+          kubectl wait --for=condition=Ready node -l hybrid-ai.io/accelerator=nvidia --timeout=300s || true
+          echo "GPU nodes:"
+          kubectl get nodes -l hybrid-ai.io/accelerator=nvidia -o wide
+
+      - name: Run GPU validation tests
+        run: |
+          echo "Running GPU validation jobs..."
+          kubectl apply -f private/gpu-worker/gpu-validation-job.yaml
+          
+          echo "Waiting for nvidia-smi job..."
+          kubectl wait --for=condition=Complete job/gpu-validation -n kube-system --timeout=300s || true
+          kubectl logs job/gpu-validation -n kube-system || echo "nvidia-smi job logs not available"
+          
+          echo "Waiting for TensorFlow GPU test..."
+          kubectl wait --for=condition=Complete job/gpu-tensorflow-test --timeout=600s || true
+          kubectl logs job/gpu-tensorflow-test || echo "TensorFlow test logs not available"
+          
+          echo "GPU validation complete!"
+
+      - name: Run MinIO connectivity test
+        run: |
+          echo "Testing MinIO connectivity..."
+          kubectl apply -f private/gpu-worker/gpu-validation-job.yaml
+          kubectl wait --for=condition=Complete job/dataset-minio-test --timeout=120s || true
+          kubectl logs job/dataset-minio-test || echo "MinIO test logs not available"
+          echo "MinIO validation complete!"

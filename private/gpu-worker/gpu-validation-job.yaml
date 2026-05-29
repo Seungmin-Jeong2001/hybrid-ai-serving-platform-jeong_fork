@@ -1,24 +1,90 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: nvidia-smi-validation
-  namespace: gpu-workload
-  labels:
-    app.kubernetes.io/name: nvidia-smi-validation
-    app.kubernetes.io/part-of: hybrid-ai-serving-platform
+  name: gpu-validation
+  namespace: kube-system
 spec:
-  backoffLimit: 0
   template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: nvidia-smi-validation
     spec:
       restartPolicy: Never
+      nodeSelector:
+        hybrid-ai.io/node-role: gpu-worker
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
       runtimeClassName: nvidia
       containers:
         - name: nvidia-smi
-          image: nvidia/cuda:12.4.1-base-ubuntu22.04
+          image: nvidia/cuda:12.2.0-base-ubuntu22.04
           command: ["nvidia-smi"]
           resources:
             limits:
               nvidia.com/gpu: "1"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gpu-tensorflow-test
+  namespace: default
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        hybrid-ai.io/node-role: gpu-worker
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      runtimeClassName: nvidia
+      containers:
+        - name: tensorflow-gpu-test
+          image: tensorflow/tensorflow:2.15.0-gpu
+          command:
+            - python3
+            - -c
+            - |
+              import tensorflow as tf
+              print("TensorFlow version:", tf.__version__)
+              print("GPU Available:", tf.config.list_physical_devices('GPU'))
+              
+              # Simple GPU test
+              with tf.device('/GPU:0'):
+                  a = tf.constant([[1.0, 2.0], [3.0, 4.0]])
+                  b = tf.constant([[5.0, 6.0], [7.0, 8.0]])
+                  c = tf.matmul(a, b)
+                  print("GPU Matrix multiplication result:")
+                  print(c)
+              
+              print("GPU validation passed!")
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dataset-minio-test
+  namespace: default
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: minio-client
+          image: minio/mc:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Testing MinIO connectivity..."
+              mc alias set local http://minio-api.minio-tenant.svc.cluster.local:9000 minioadmin minioadmin123
+              
+              echo "Creating test bucket..."
+              mc mb local/test-bucket --ignore-existing
+              
+              echo "Listing buckets..."
+              mc ls local
+              
+              echo "MinIO test passed!"

@@ -60,3 +60,8 @@ output "gpu_worker_nodes" {
     }
   ]
 }
+
+output "nfs_server_ip" {
+  description = "NFS server IP (first control-plane node)."
+  value       = openstack_networking_port_v2.control_plane[0].all_fixed_ips[0]
+}
