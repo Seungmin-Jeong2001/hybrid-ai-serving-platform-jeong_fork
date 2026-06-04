@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kserve-predictor
+  namespace: hasp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kserve-predictor
+  template:
+    metadata:
+      labels:
+        app: kserve-predictor
+    spec:
+      containers:
+        - name: kserve-predictor
+          image: replace-me
+          ports:
+            - containerPort: 8080

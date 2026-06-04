@@ -39,10 +39,12 @@ alertmanager:
   alertmanagerSpec:
     replicas: 1
     retention: 120h
+    nodeSelector:
+      workload: monitoring
     storage:
       volumeClaimTemplate:
         spec:
-          storageClassName: gp3
+          storageClassName: gp2
           accessModes: ["ReadWriteOnce"]
           resources:
             requests:
@@ -74,7 +76,7 @@ alertmanager:
           # TODO(통합 #1): Slack Incoming Webhook은 채널 override 불가
           # critical 전용 웹훅 URL을 별도로 생성해야 #sre-alerts-critical 채널로 전송됨
           # Slack 앱에서 채널별로 웹훅을 따로 발급받거나, Bot Token 방식 사용 필요
-          - api_url: "https://discord.com/api/webhooks/1504007172189716561/hGtE1o5fEvKqwD2MSOIXD2BqeVGJbvD0TJKn-3570CFSWIDtdvZnuEmq_G0HcoOVDMNZ/slack"
+          - api_url: "https://hooks.slack.com/services/REPLACE_WITH_CRITICAL_WEBHOOK"
             channel: "#sre-alerts-critical"
             title: "🚨 [CRITICAL] {{ .GroupLabels.alertname }}"
             text: |
@@ -90,7 +92,7 @@ alertmanager:
       - name: "slack-warning"
         slack_configs:
           # TODO(통합 #1): warning 전용 웹훅 URL (critical과 다른 URL 사용)
-          - api_url: "https://discord.com/api/webhooks/1504007351542222989/jD4RUE_7vXkEhgId8UXidCr5_EWbNryGNR49QNksw_Mce1imaWxUMWGmtthq5irAnJ7E/slack"
+          - api_url: "https://hooks.slack.com/services/REPLACE_WITH_WARNING_WEBHOOK"
             channel: "#sre-alerts-warning"
             title: "⚠️ [WARNING] {{ .GroupLabels.alertname }}"
             text: |
@@ -113,6 +115,8 @@ alertmanager:
 # ============================================================
 prometheus:
   prometheusSpec:
+    nodeSelector:
+      workload: monitoring
     retention: "15d"
     retentionSize: "45GB"
     scrapeInterval: "15s"
@@ -231,6 +235,54 @@ prometheus:
       #       regex: (.+);(.+)
       #       replacement: "${1}:${2}"
 
+      # ──────────────────────────────────────────────────────
+      # [① 문경호 Private Cloud 완성 후 주석 해제]
+      # Private Cloud 인프라 메트릭 — VPN 통해 직접 수집 (Pull 방식)
+      #
+      # 사전 작업 (Private Cloud에 설치):
+      #   1. node_exporter 설치 (각 노드에 DaemonSet 또는 systemd)
+      #   2. kube-state-metrics 설치 (Private K8s 클러스터)
+      #
+      # PRIVATE_NODE_IP_1, PRIVATE_NODE_IP_2 → 실제 Private Cloud 노드 IP로 교체
+      # PRIVATE_KSM_IP → kube-state-metrics 파드 IP로 교체
+      # ──────────────────────────────────────────────────────
+
+      # Private Cloud 노드 메트릭 (node_exporter :9100)
+      # - job_name: "private-node-exporter"
+      #   static_configs:
+      #     - targets:
+      #         - "PRIVATE_NODE_IP_1:9100"
+      #         - "PRIVATE_NODE_IP_2:9100"
+      #       labels:
+      #         cluster: "private-openstack"
+      #         environment: "private"
+      #   scrape_interval: 30s
+      #   relabel_configs:
+      #     - source_labels: [__address__]
+      #       regex: "([^:]+):.*"
+      #       target_label: instance
+      #       replacement: "${1}"
+
+      # Private K8s 상태 메트릭 (kube-state-metrics :8080)
+      # - job_name: "private-kube-state-metrics"
+      #   static_configs:
+      #     - targets:
+      #         - "PRIVATE_KSM_IP:8080"
+      #       labels:
+      #         cluster: "private-openstack"
+      #         environment: "private"
+      #   scrape_interval: 30s
+
+      # Private etcd 메트릭 (etcd :2381)
+      # - job_name: "private-etcd"
+      #   static_configs:
+      #     - targets:
+      #         - "PRIVATE_NODE_IP_1:2381"
+      #       labels:
+      #         cluster: "private-openstack"
+      #         environment: "private"
+      #   scrape_interval: 30s
+
     resources:
       requests:
         cpu: "500m"
@@ -242,7 +294,7 @@ prometheus:
     storageSpec:
       volumeClaimTemplate:
         spec:
-          storageClassName: gp3
+          storageClassName: gp2
           accessModes: ["ReadWriteOnce"]
           resources:
             requests:
@@ -251,6 +303,10 @@ prometheus:
 # ============================================================
 # 기본 내장 컴포넌트
 # ============================================================
+prometheusOperator:
+  nodeSelector:
+    workload: monitoring
+
 nodeExporter:
   enabled: true
 

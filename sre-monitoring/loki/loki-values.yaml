@@ -28,21 +28,22 @@ loki:
     configs:
       - from: "2024-01-01"
         store: tsdb
-        object_store: s3
+        object_store: filesystem
         schema: v13
         index:
           prefix: loki_index_
           period: 24h
 
   storage:
-    type: s3
-    s3:
-      # S3 버킷 정보 — 실제 값으로 교체 필요
-      region: ap-northeast-2
-      bucketnames: sre-loki-logs-ACCOUNT_ID   # TODO(통합 #1): ACCOUNT_ID → 실제 AWS 계정 ID (예: 808379768010)
-      s3ForcePathStyle: false
-    # EKS IAM Role for Service Account (IRSA) 사용 권장
-    # AWS 콘솔에서 S3 접근 권한이 있는 IAM Role ARN을 아래에 설정
+    type: filesystem
+    # TODO(통합): S3 연동 시 아래로 교체
+    # type: s3
+    # bucketNames:
+    #   chunks: sre-loki-logs-808379768010
+    #   ruler: sre-loki-logs-808379768010
+    # s3:
+    #   region: ap-northeast-2
+    #   s3ForcePathStyle: false
 
   limits_config:
     retention_period: 168h     # 7일 보관
@@ -55,8 +56,19 @@ loki:
     storage:
       type: local
 
+read:
+  replicas: 0
+
+write:
+  replicas: 0
+
+backend:
+  replicas: 0
+
 singleBinary:
   replicas: 1
+  nodeSelector:
+    workload: monitoring
   resources:
     requests:
       cpu: "250m"
@@ -66,12 +78,18 @@ singleBinary:
       memory: "2Gi"
   persistence:
     enabled: true
-    storageClass: gp3
+    storageClass: gp2
     size: 20Gi
 
 # Loki Canary — 로그 수집 지연 모니터링
 lokiCanary:
-  enabled: true
+  enabled: false
+
+chunksCache:
+  enabled: false
+
+resultsCache:
+  enabled: false
 
 # S3 접근을 위한 ServiceAccount (IRSA)
 serviceAccount:
@@ -88,7 +106,7 @@ test:
 # Monitoring (Prometheus 연동)
 monitoring:
   selfMonitoring:
-    enabled: true
+    enabled: false
     grafanaAgent:
       installOperator: false
   serviceMonitor:

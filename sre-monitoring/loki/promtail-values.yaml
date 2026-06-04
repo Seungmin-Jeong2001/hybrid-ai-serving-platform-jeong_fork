@@ -12,7 +12,7 @@
 config:
   # Loki 주소 (loki-values.yaml 설치 후 자동 연결)
   clients:
-    - url: http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push
+    - url: http://loki-gateway.monitoring.svc.cluster.local/loki/api/v1/push
 
   snippets:
     # ──────────────────────────────────────────────────────
@@ -21,9 +21,6 @@ config:
     pipelineStages:
       # Docker 로그 포맷 파싱
       - cri: {}
-
-      # Kubernetes 메타데이터 추출
-      - kubernetes: {}
 
       # 주요 라벨 선택 (Loki 카디널리티 관리)
       - labeldrop:
@@ -88,30 +85,6 @@ config:
               - __meta_kubernetes_pod_container_name
             target_label: __path__
 
-      # ──────────────────────────────────────────────────────
-      # 시스템 컴포넌트 로그 (노드 수준)
-      # ──────────────────────────────────────────────────────
-      - job_name: kubernetes-pods-static
-        pipeline_stages:
-          - cri: {}
-        kubernetes_sd_configs:
-          - role: pod
-        relabel_configs:
-          - action: drop
-            source_labels: [__meta_kubernetes_pod_annotation_kubernetes_io_config_source]
-            regex: ^(?!api).*$
-          - action: replace
-            source_labels: [__meta_kubernetes_namespace]
-            target_label: namespace
-          - action: replace
-            source_labels: [__meta_kubernetes_pod_name]
-            target_label: pod
-          - replacement: /var/log/pods/*$1/*.log
-            separator: /
-            source_labels:
-              - __meta_kubernetes_pod_uid
-              - __meta_kubernetes_pod_container_name
-            target_label: __path__
 
 resources:
   requests:

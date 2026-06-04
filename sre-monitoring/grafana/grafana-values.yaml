@@ -22,6 +22,9 @@
 
 replicas: 1
 
+nodeSelector:
+  workload: monitoring
+
 adminUser: admin
 # adminPassword는 Kubernetes Secret으로 관리 권장:
 #   kubectl create secret generic grafana-credentials \
@@ -30,7 +33,7 @@ adminPassword: "admin"
 
 persistence:
   enabled: true
-  storageClassName: gp3
+  storageClassName: gp2
   size: 10Gi
 
 # ============================================================
