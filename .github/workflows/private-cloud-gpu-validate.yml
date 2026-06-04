@@ -421,7 +421,7 @@ jobs:
           echo "GPU validation network: $network_name ($network_id)"
           echo "GPU validation security group: $security_group_name ($security_group_id)"
 
-          server_id="$(openstack server create \
+          openstack server create \
             --image "$image_name" \
             --flavor "$flavor_name" \
             --network "$network_id" \
@@ -429,20 +429,15 @@ jobs:
             --user-data "$user_data" \
             --property managed_by=github-actions \
             --property scope=private-cloud-gpu-validation \
-            -f value \
-            -c id \
-            "$server_name")"
+            "$server_name"
+
+          server_id="$(openstack server show "$server_name" -f value -c id 2>/dev/null || true)"
           if [[ -z "$server_id" ]]; then
-            echo "GPU validation server create returned no server id"
-            openstack server list --all-projects --name "$server_name" || true
-            exit 1
-          fi
-          echo "GPU validation server id: $server_id"
-          if ! openstack server show "$server_id" >/dev/null 2>&1; then
             echo "GPU validation server was not found after create"
             openstack server list --all-projects --name "$server_name" || true
             exit 1
           fi
+          echo "GPU validation server id: $server_id"
 
           server_status=""
           for index in $(seq 1 90); do
