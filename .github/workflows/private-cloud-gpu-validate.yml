@@ -203,6 +203,34 @@ jobs:
           export OS_PASSWORD
           OS_PASSWORD="$(cat "$password_file")"
 
+          use_local_admin=false
+          if [[ "$auth_url" == "http://127.0.0.1/identity/v3" && -f /opt/stack/devstack/openrc ]]; then
+            use_local_admin=true
+          fi
+
+          admin_openstack() {
+            if [[ "$use_local_admin" == "true" ]]; then
+              (
+                cd /opt/stack/devstack
+                set +u
+                # shellcheck disable=SC1091
+                source openrc admin admin >/dev/null
+                set -u
+                openstack "$@"
+              )
+            else
+              openstack "$@"
+            fi
+          }
+
+          debug_server_list() {
+            local name="$1"
+            openstack server list --name "$name" || true
+            if [[ "$use_local_admin" == "true" ]]; then
+              admin_openstack server list --all-projects --name "$name" || true
+            fi
+          }
+
           network_name="${resource_prefix}-net"
           subnet_name="${resource_prefix}-subnet"
           router_name="${resource_prefix}-router"
@@ -236,7 +264,7 @@ jobs:
               openstack server delete "$server_name" || true
               wait_for_server_delete "$server_name" || true
             fi
-            openstack flavor delete "$flavor_name" >/dev/null 2>&1 || true
+            admin_openstack flavor delete "$flavor_name" >/dev/null 2>&1 || true
             if openstack router show "$router_name" >/dev/null 2>&1; then
               openstack router remove subnet "$router_name" "$subnet_name" >/dev/null 2>&1 || true
               openstack router unset --external-gateway "$router_name" >/dev/null 2>&1 || true
@@ -379,14 +407,18 @@ jobs:
             exit 1
           fi
 
-          openstack flavor create \
+          admin_openstack flavor create \
             --ram "$temp_flavor_ram" \
             --vcpus "$temp_flavor_vcpus" \
             --disk "$temp_flavor_disk" \
             "$flavor_name" >/dev/null
+          if ! admin_openstack flavor show "$flavor_name" >/dev/null 2>&1; then
+            echo "Temporary GPU validation flavor was not created: $flavor_name"
+            exit 1
+          fi
           while IFS=$'\t' read -r key value; do
             [[ -z "${key:-}" ]] && continue
-            openstack flavor set --property "${key}=${value}" "$flavor_name"
+            admin_openstack flavor set --property "${key}=${value}" "$flavor_name"
           done < <(
             python3 - "$source_flavor_json" <<'PY'
           import json
@@ -399,6 +431,7 @@ jobs:
               print(f"{key}\t{value}")
           PY
           )
+          admin_openstack flavor show "$flavor_name" >/dev/null
           echo "GPU validation temporary flavor: $flavor_name (${temp_flavor_ram}MB RAM, ${temp_flavor_vcpus} vCPU, ${temp_flavor_disk}GB disk)"
 
           openstack network create "$network_name" >/dev/null
@@ -434,7 +467,7 @@ jobs:
           server_id="$(openstack server show "$server_name" -f value -c id 2>/dev/null || true)"
           if [[ -z "$server_id" ]]; then
             echo "GPU validation server was not found after create"
-            openstack server list --all-projects --name "$server_name" || true
+            debug_server_list "$server_name"
             exit 1
           fi
           echo "GPU validation server id: $server_id"
