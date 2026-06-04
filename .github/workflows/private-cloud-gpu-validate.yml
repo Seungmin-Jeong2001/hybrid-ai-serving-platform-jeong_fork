@@ -245,7 +245,6 @@ jobs:
             openstack subnet delete "$subnet_name" >/dev/null 2>&1 || true
             openstack network delete "$network_name" >/dev/null 2>&1 || true
             openstack security group delete "$security_group_name" >/dev/null 2>&1 || true
-            rm -f "$source_flavor_json" "$source_image_json"
             echo "Temporary GPU validation resources cleaned up"
           }
 
@@ -371,6 +370,14 @@ jobs:
           print(ram, vcpus, disk)
           PY
           )
+          if [[ -z "$temp_flavor_ram" || -z "$temp_flavor_vcpus" || -z "$temp_flavor_disk" ]]; then
+            echo "Could not calculate temporary validation flavor resources"
+            echo "Source flavor metadata:"
+            cat "$source_flavor_json" || true
+            echo "Source image metadata:"
+            cat "$source_image_json" || true
+            exit 1
+          fi
 
           openstack flavor create \
             --ram "$temp_flavor_ram" \
@@ -414,7 +421,7 @@ jobs:
           echo "GPU validation network: $network_name ($network_id)"
           echo "GPU validation security group: $security_group_name ($security_group_id)"
 
-          openstack server create \
+          server_id="$(openstack server create \
             --image "$image_name" \
             --flavor "$flavor_name" \
             --network "$network_id" \
@@ -422,18 +429,31 @@ jobs:
             --user-data "$user_data" \
             --property managed_by=github-actions \
             --property scope=private-cloud-gpu-validation \
-            "$server_name"
+            -f value \
+            -c id \
+            "$server_name")"
+          if [[ -z "$server_id" ]]; then
+            echo "GPU validation server create returned no server id"
+            openstack server list --all-projects --name "$server_name" || true
+            exit 1
+          fi
+          echo "GPU validation server id: $server_id"
+          if ! openstack server show "$server_id" >/dev/null 2>&1; then
+            echo "GPU validation server was not found after create"
+            openstack server list --all-projects --name "$server_name" || true
+            exit 1
+          fi
 
           server_status=""
           for index in $(seq 1 90); do
-            server_status="$(openstack server show "$server_name" -f value -c status 2>/dev/null || true)"
+            server_status="$(openstack server show "$server_id" -f value -c status 2>/dev/null || true)"
             echo "server_status=${server_status:-unknown} (${index}/90)"
             if [[ "$server_status" == "ACTIVE" ]]; then
               break
             fi
             if [[ "$server_status" == "ERROR" ]]; then
               echo "GPU validation server entered ERROR state"
-              openstack server show "$server_name" -f yaml || true
+              openstack server show "$server_id" -f yaml || true
               exit 1
             fi
             sleep 10
@@ -441,12 +461,12 @@ jobs:
 
           if [[ "$server_status" != "ACTIVE" ]]; then
             echo "GPU validation server did not become ACTIVE"
-            openstack server show "$server_name" -f yaml || true
+            openstack server show "$server_id" -f yaml || true
             exit 1
           fi
 
           for index in $(seq 1 120); do
-            openstack console log show --lines 240 "$server_name" > "$console_log" 2>/dev/null || true
+            openstack console log show --lines 240 "$server_id" > "$console_log" 2>/dev/null || true
             if grep -q 'GPU_VALIDATION_RESULT=pass' "$console_log"; then
               cat "$console_log"
               echo "GPU validation passed"
