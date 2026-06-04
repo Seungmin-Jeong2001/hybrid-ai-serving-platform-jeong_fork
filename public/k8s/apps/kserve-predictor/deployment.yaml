@@ -15,6 +15,6 @@ spec:
     spec:
       containers:
         - name: kserve-predictor
-          image: replace-me
+          image: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/kserve-predictor:latest
           ports:
             - containerPort: 8080

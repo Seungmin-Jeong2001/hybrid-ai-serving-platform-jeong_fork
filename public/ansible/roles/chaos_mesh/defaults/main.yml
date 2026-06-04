@@ -1,6 +1,0 @@
----
-chaos_mesh_namespace: chaos-testing
-chaos_mesh_release_name: chaos-mesh
-chaos_mesh_chart_ref: chaos-mesh/chaos-mesh
-chaos_mesh_chart_version: ""
-chaos_mesh_helm_timeout: 10m0s

@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: inference-worker
-  namespace: inference
+  namespace: hasp
 spec:
   replicas: 1
   selector:
@@ -13,24 +13,27 @@ spec:
       labels:
         app: inference-worker
     spec:
-      serviceAccountName: worker-sa
-      nodeSelector:
-        workload: app
       containers:
         - name: inference-worker
           image: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/inference-worker:latest
-          imagePullPolicy: IfNotPresent
-          envFrom:
-            - configMapRef:
-                name: app-config
-            - configMapRef:
-                name: kafka-config
-            - secretRef:
-                name: api-secret
-          resources:
-            requests:
-              cpu: 250m
-              memory: 256Mi
-            limits:
-              cpu: 500m
-              memory: 512Mi
+          env:
+            - name: AWS_REGION
+              value: ap-northeast-2
+            - name: BOOTSTRAP_SERVERS
+              value: replace-me:9092
+            - name: REQUEST_TOPIC
+              value: inference-request
+            - name: RETRY_TOPIC
+              value: inference-retry
+            - name: DLQ_TOPIC
+              value: inference-dlq
+            - name: WORKER_CONSUMER_GROUP
+              value: inference-worker-group
+            - name: DYNAMODB_TABLE_NAME
+              value: sgs-hasp-inference-jobs
+            - name: MAX_RETRY_COUNT
+              value: "3"
+            - name: RETRY_JITTER_SECONDS
+              value: "5"
+            - name: RETRY_POLL_DELAY_SECONDS
+              value: "1"

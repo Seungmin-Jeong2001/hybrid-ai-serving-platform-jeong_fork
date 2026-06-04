@@ -1,8 +1,10 @@
+# HTTP로 접근해야 함
+
 apiVersion: v1
 kind: Service
 metadata:
-  name: inference-api-svc
-  namespace: inference
+  name: inference-api
+  namespace: hasp
 spec:
   selector:
     app: inference-api

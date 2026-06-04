@@ -73,19 +73,6 @@ resource "aws_subnet" "msk_private" {
   })
 }
 
-# 관리/CICD 프라이빗 서브넷 (단일 AZ)
-resource "aws_subnet" "mgmt_private" {
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = var.mgmt_private_subnet_cidr
-  availability_zone = data.aws_availability_zones.available.names[var.mgmt_subnet_az_index]
-
-  tags = merge(local.common_tags, {
-    Name                                            = "${var.project_name}-mgmt-private"
-    "kubernetes.io/role/internal-elb"               = "1"
-    "kubernetes.io/cluster/${var.project_name}-eks" = "shared"
-  })
-}
-
 # 퍼블릭 라우팅 테이블
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
@@ -159,8 +146,3 @@ resource "aws_route_table_association" "msk_private" {
   route_table_id = aws_route_table.private.id
 }
 
-# 관리 서브넷 연결
-resource "aws_route_table_association" "mgmt_private" {
-  subnet_id      = aws_subnet.mgmt_private.id
-  route_table_id = aws_route_table.private.id
-}

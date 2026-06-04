@@ -1,5 +1,0 @@
-kserve:
-  controller:
-    deploymentMode: Standard
-    nodeSelector:
-      workload: system

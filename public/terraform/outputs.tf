@@ -19,11 +19,6 @@ output "msk_private_subnet_ids" {
   value       = aws_subnet.msk_private[*].id
 }
 
-output "mgmt_private_subnet_id" {
-  description = "ID of the management/CI-CD private subnet"
-  value       = aws_subnet.mgmt_private.id
-}
-
 output "nat_gateway_id" {
   description = "ID of the single NAT gateway"
   value       = aws_nat_gateway.main.id
@@ -59,16 +54,6 @@ output "eks_cluster_endpoint" {
 output "eks_oidc_issuer" {
   description = "OIDC issuer URL for the EKS cluster"
   value       = aws_eks_cluster.main.identity[0].oidc[0].issuer
-}
-
-output "ebs_csi_driver_role_arn" {
-  description = "IAM role ARN used by the EBS CSI driver addon"
-  value       = aws_iam_role.ebs_csi_driver.arn
-}
-
-output "aws_load_balancer_controller_role_arn" {
-  description = "IAM role ARN used by the AWS Load Balancer Controller service account"
-  value       = aws_iam_role.aws_load_balancer_controller.arn
 }
 
 output "eks_node_group_names" {

@@ -1,0 +1,84 @@
+name: Inference Image Build
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/inference-image-build.yml
+      - services/**
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/inference-image-build.yml
+      - services/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REGISTRY: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com
+
+concurrency:
+  group: inference-images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - inference-api
+          - inference-worker
+          - kserve-predictor
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build image
+        run: |
+          docker build \
+            -t "${{ matrix.service }}:ci" \
+            "services/${{ matrix.service }}"
+
+  push:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - inference-api
+          - inference-worker
+          - kserve-predictor
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+          PUSH_LATEST: ${{ github.ref == 'refs/heads/main' }}
+        run: |
+          docker build \
+            -t "${{ env.ECR_REGISTRY }}/${{ matrix.service }}:${IMAGE_TAG}" \
+            "services/${{ matrix.service }}"
+          docker push "${{ env.ECR_REGISTRY }}/${{ matrix.service }}:${IMAGE_TAG}"
+          if [[ "${PUSH_LATEST}" == "true" ]]; then
+            docker tag \
+              "${{ env.ECR_REGISTRY }}/${{ matrix.service }}:${IMAGE_TAG}" \
+              "${{ env.ECR_REGISTRY }}/${{ matrix.service }}:latest"
+            docker push "${{ env.ECR_REGISTRY }}/${{ matrix.service }}:latest"
+          fi

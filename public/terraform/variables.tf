@@ -54,30 +54,21 @@ variable "msk_private_subnet_cidrs" {
   ]
 }
 
-variable "mgmt_private_subnet_cidr" {
-  description = "CIDR block for the single-AZ management/CI-CD private subnet"
-  type        = string
-  default     = "10.0.30.0/24"
-}
-
-variable "mgmt_subnet_az_index" {
-  description = "Availability zone index (0=AZ-a, 1=AZ-b, 2=AZ-c) for the management subnet"
-  type        = number
-  default     = 2
-}
-
 variable "nat_gateway_az_index" {
   description = "Availability zone index (0=AZ-a, 1=AZ-b, 2=AZ-c) for the single NAT gateway"
   type        = number
   default     = 1
 }
 
-# ECR 변수
+# ECR 리포지토리 변수
 variable "ecr_repositories" {
   description = "ECR repository names"
   type        = list(string)
   default = [
-    "dnn-model"
+    "predictive-model",
+    "inference-api",
+    "inference-worker",
+    "kserve-predictor",
   ]
 }
 
@@ -112,58 +103,43 @@ variable "eks_node_groups" {
       value  = string
       effect = string
     }))
-    use_mgmt_subnet = bool # if true, ignore az_count and place in the management subnet
   }))
   default = {
     inference = {
-      instance_types  = ["m7i-flex.large"] # ["c6i.xlarge"]
-      az_count        = 3
-      desired_size    = 2
-      min_size        = 1
-      max_size        = 10
-      labels          = { workload = "inference" }
-      taints          = []
-      use_mgmt_subnet = false
+      instance_types = ["m7i-flex.large"] # ["c6i.xlarge"]
+      az_count       = 3
+      desired_size   = 2
+      min_size       = 1
+      max_size       = 10
+      labels         = { workload = "inference" }
+      taints         = []
     }
     app = {
-      instance_types  = ["m7i-flex.large"] # ["t3.medium"]
-      az_count        = 3
-      desired_size    = 2
-      min_size        = 1
-      max_size        = 10
-      labels          = { workload = "app" }
-      taints          = []
-      use_mgmt_subnet = false
+      instance_types = ["m7i-flex.large"] # ["t3.medium"]
+      az_count       = 3
+      desired_size   = 2
+      min_size       = 1
+      max_size       = 10
+      labels         = { workload = "app" }
+      taints         = []
     }
     system = {
-      instance_types  = ["m7i-flex.large"] # ["t3.medium"]
-      az_count        = 2
-      desired_size    = 2
-      min_size        = 2
-      max_size        = 3
-      labels          = { workload = "system" }
-      taints          = []
-      use_mgmt_subnet = false
+      instance_types = ["m7i-flex.large"] # ["t3.medium"]
+      az_count       = 2
+      desired_size   = 2
+      min_size       = 2
+      max_size       = 3
+      labels         = { workload = "system" }
+      taints         = []
     }
     monitoring = {
-      instance_types  = ["m7i-flex.large"] # ["t3.large"]
-      az_count        = 2
-      desired_size    = 1
-      min_size        = 1
-      max_size        = 2
-      labels          = { workload = "monitoring" }
-      taints          = []
-      use_mgmt_subnet = false
-    }
-    management = {
-      instance_types  = ["m7i-flex.large"] # ["t3.medium"]
-      az_count        = 1
-      desired_size    = 1
-      min_size        = 1
-      max_size        = 2
-      labels          = { workload = "management" }
-      taints          = []
-      use_mgmt_subnet = true
+      instance_types = ["m7i-flex.large"] # ["t3.large"]
+      az_count       = 2
+      desired_size   = 1
+      min_size       = 1
+      max_size       = 2
+      labels         = { workload = "monitoring" }
+      taints         = []
     }
   }
 }
@@ -193,6 +169,36 @@ variable "msk_ebs_volume_size" {
   description = "Broker EBS volume size in GiB for the MSK cluster"
   type        = number
   default     = 1000
+}
+
+variable "manage_msk_topics" {
+  description = "Whether Terraform should reconcile MSK topics through the AWS Kafka topic API"
+  type        = bool
+  default     = false
+}
+
+variable "msk_topic_replication_factor" {
+  description = "Replication factor to use when creating MSK topics"
+  type        = number
+  default     = 3
+}
+
+variable "msk_topic_configs" {
+  description = "Topic-level MSK configuration properties to apply when creating or updating topics"
+  type        = map(string)
+  default = {
+    min.insync.replicas = "2"
+  }
+}
+
+variable "msk_topics" {
+  description = "MSK topic names mapped to their desired partition counts"
+  type        = map(number)
+  default = {
+    inference-request = 6
+    inference-retry   = 3
+    inference-dlq     = 1
+  }
 }
 
 # S3 변수

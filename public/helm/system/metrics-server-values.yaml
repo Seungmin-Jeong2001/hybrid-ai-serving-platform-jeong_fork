@@ -1,6 +1,0 @@
-replicas: 2
-nodeSelector:
-  workload: system
-args:
-  - --kubelet-preferred-address-types=InternalIP,Hostname,ExternalIP
-  - --kubelet-insecure-tls
