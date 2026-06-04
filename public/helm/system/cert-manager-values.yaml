@@ -1,0 +1,18 @@
+nodeSelector:
+  kubernetes.io/os: linux
+  workload: system
+
+webhook:
+  nodeSelector:
+    kubernetes.io/os: linux
+    workload: system
+
+cainjector:
+  nodeSelector:
+    kubernetes.io/os: linux
+    workload: system
+
+startupapicheck:
+  nodeSelector:
+    kubernetes.io/os: linux
+    workload: system

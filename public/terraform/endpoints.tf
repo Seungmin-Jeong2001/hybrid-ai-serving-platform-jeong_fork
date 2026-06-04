@@ -12,15 +12,16 @@ resource "aws_security_group" "vpce" {
     cidr_blocks = [var.vpc_cidr]
   }
 
-  # 온프레미스(VPN)에서 인터페이스 엔드포인트(특히 S3/SSM) 호출 허용
+  # Private Cloud 사이트(VPN)에서 인터페이스 엔드포인트(ECR/S3/STS/SSM 등) 호출 허용
+  # - Edge 사이트는 VPCE를 직접 호출할 필요가 없으므로 의도적으로 제외 (역할 분리)
   dynamic "ingress" {
-    for_each = length(var.edge_network_cidrs) > 0 ? [1] : []
+    for_each = length(var.private_cloud_cidrs) > 0 ? [1] : []
     content {
-      description = "Allow HTTPS from on-premise / edge networks over VPN"
+      description = "Allow HTTPS from Private Cloud site over VPN"
       from_port   = 443
       to_port     = 443
       protocol    = "tcp"
-      cidr_blocks = var.edge_network_cidrs
+      cidr_blocks = var.private_cloud_cidrs
     }
   }
 

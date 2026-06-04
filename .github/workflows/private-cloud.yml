@@ -1,0 +1,581 @@
+name: Private Cloud
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Action to perform
+        required: true
+        type: choice
+        default: plan
+        options:
+          - plan
+          - apply
+          - destroy
+      install_openstack:
+        description: Install DevStack (OpenStack) on the runner
+        required: true
+        type: boolean
+        default: true
+      bootstrap_kubernetes:
+        description: Bootstrap k8s on OpenStack nodes
+        required: true
+        type: boolean
+        default: false
+      apply_dns:
+        description: Apply DNS records to Cloudflare
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-cloud
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TERRAFORM_ACTION: ${{ github.event.inputs.action || 'plan' }}
+  INSTALL_OPENSTACK: ${{ github.event.inputs.install_openstack && 'true' || 'false' }}
+  BOOTSTRAP_KUBERNETES: ${{ github.event.inputs.bootstrap_kubernetes && 'true' || 'false' }}
+  APPLY_DNS: ${{ github.event.inputs.apply_dns && 'true' || 'false' }}
+  # OpenStack settings from GitHub Variables/Secrets
+  OS_AUTH_URL: ${{ vars.OPENSTACK_AUTH_URL || secrets.OPENSTACK_AUTH_URL }}
+  OS_USERNAME: ${{ vars.OPENSTACK_USERNAME || secrets.OPENSTACK_USERNAME }}
+  OS_PASSWORD: ${{ secrets.OPENSTACK_PASSWORD }}
+  OS_PROJECT_NAME: ${{ vars.OPENSTACK_PROJECT_NAME || secrets.OPENSTACK_PROJECT_NAME }}
+  OS_USER_DOMAIN_NAME: ${{ vars.OPENSTACK_USER_DOMAIN_NAME || secrets.OPENSTACK_USER_DOMAIN_NAME || 'Default' }}
+  OS_PROJECT_DOMAIN_NAME: ${{ vars.OPENSTACK_PROJECT_DOMAIN_NAME || secrets.OPENSTACK_PROJECT_DOMAIN_NAME || 'Default' }}
+  OS_REGION_NAME: ${{ vars.OPENSTACK_REGION || 'RegionOne' }}
+  OS_IDENTITY_API_VERSION: "3"
+  # DevStack password (used when installing)
+  HA_DEVSTACK_PASSWORD: ${{ secrets.OPENSTACK_PASSWORD }}
+  # DNS settings
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
+  PRIVATE_CLOUD_BASE_DOMAIN: ${{ vars.PRIVATE_CLOUD_BASE_DOMAIN || 'intp.me' }}
+  PRIVATE_CLOUD_TAILSCALE_IP: ${{ vars.PRIVATE_CLOUD_TAILSCALE_IP }}
+  PRIVATE_CLOUD_DNS_TTL: ${{ vars.PRIVATE_CLOUD_DNS_TTL || '120' }}
+  PRIVATE_CLOUD_DNS_SERVICES: ${{ vars.PRIVATE_CLOUD_DNS_SERVICES || 'openstack,k8s,grafana,argocd' }}
+  # Terraform backend
+  TF_BACKEND_CONFIG: ${{ secrets.TF_BACKEND_CONFIG }}
+  TF_BACKEND_TYPE: ${{ vars.TF_BACKEND_TYPE || 's3' }}
+  # SSH keys
+  PRIVATE_CLOUD_SSH_PUBLIC_KEY: ${{ secrets.PRIVATE_CLOUD_SSH_PUBLIC_KEY }}
+  PRIVATE_CLOUD_SSH_PRIVATE_KEY: ${{ secrets.PRIVATE_CLOUD_SSH_PRIVATE_KEY }}
+  PRIVATE_CLOUD_SSH_USER: ${{ vars.PRIVATE_CLOUD_SSH_USER || 'ubuntu' }}
+  # Terraform variables
+  TF_VAR_ssh_public_key: ${{ secrets.PRIVATE_CLOUD_SSH_PUBLIC_KEY }}
+  TF_VAR_control_plane_image_name: ${{ vars.CONTROL_PLANE_IMAGE_NAME || 'ubuntu-22.04' }}
+  TF_VAR_control_plane_flavor_name: ${{ vars.CONTROL_PLANE_FLAVOR_NAME || 'm1.medium' }}
+  TF_VAR_build_worker_image_name: ${{ vars.BUILD_WORKER_IMAGE_NAME || 'ubuntu-22.04' }}
+  TF_VAR_build_worker_flavor_name: ${{ vars.BUILD_WORKER_FLAVOR_NAME || 'm1.large' }}
+  TF_VAR_gpu_worker_image_name: ${{ vars.GPU_WORKER_IMAGE_NAME || 'ubuntu-22.04' }}
+  TF_VAR_gpu_worker_flavor_name: ${{ vars.GPU_WORKER_FLAVOR_NAME || 'm1.large' }}
+
+jobs:
+  install-openstack:
+    name: Install OpenStack (DevStack)
+    runs-on: ${{ vars.PRIVATE_CLOUD_RUNNER || 'self-hosted' }}
+    if: ${{ github.event.inputs.install_openstack == 'true' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check existing DevStack
+        id: check_devstack
+        run: |
+          if lxc info ha-openstack >/dev/null 2>&1 && lxc exec ha-openstack -- curl -s http://localhost/identity/v3 >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "DevStack already running"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "DevStack not found or not running"
+          fi
+
+      - name: Cleanup existing DevStack
+        if: steps.check_devstack.outputs.exists == 'true'
+        run: |
+          echo "Stopping and removing existing DevStack..."
+          lxc stop ha-openstack --force 2>/dev/null || true
+          lxc delete ha-openstack --force 2>/dev/null || true
+          echo "Cleanup complete"
+
+      - name: Create LXC container for DevStack
+        run: |
+          echo "Creating DevStack container..."
+          raw_lxc=$(printf 'lxc.apparmor.profile=unconfined\nlxc.cap.drop=\nlxc.mount.auto=proc:rw sys:rw cgroup:rw')
+          lxc init ubuntu:24.04 ha-openstack \
+            -c security.nesting=true \
+            -c security.privileged=true \
+            -c raw.lxc="$raw_lxc"
+          lxc start ha-openstack
+          sleep 5
+          echo "Container created and started"
+          lxc list | grep ha-openstack
+
+      - name: Install DevStack prerequisites
+        run: |
+          echo "Installing prerequisites..."
+          lxc exec ha-openstack -- bash -c '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq git sudo curl ca-certificates iproute2 net-tools kmod python3-openstackclient
+            id stack &>/dev/null || useradd -s /bin/bash -d /opt/stack -m stack
+            chmod +x /opt/stack
+            echo "stack ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/stack
+            chmod 440 /etc/sudoers.d/stack
+            chown -R stack:stack /opt/stack
+            echo "Prerequisites installed"
+          '
+
+      - name: Clone DevStack
+        run: |
+          lxc exec ha-openstack -- sudo -u stack -H bash -c '
+            git clone --depth=1 --branch master https://opendev.org/openstack/devstack /opt/stack/devstack
+            echo "DevStack cloned"
+          '
+
+      - name: Configure DevStack
+        run: |
+          IP=$(lxc exec ha-openstack -- ip -4 addr show eth0 | grep -oP "(?<=inet\s)\d+(\.\d+){3}")
+          PASSWORD="${HA_DEVSTACK_PASSWORD}"
+          echo "Configuring DevStack with IP: $IP"
+          # Create local.conf using printf to avoid YAML parsing issues
+          lxc exec ha-openstack -- bash -c "echo '[local|localrc]' > /opt/stack/devstack/local.conf"
+          lxc exec ha-openstack -- bash -c "echo 'ADMIN_PASSWORD=${PASSWORD}' >> /opt/stack/devstack/local.conf"
+          lxc exec ha-openstack -- bash -c "echo 'DATABASE_PASSWORD=${PASSWORD}' >> /opt/stack/devstack/local.conf"
+          lxc exec ha-openstack -- bash -c "echo 'RABBIT_PASSWORD=${PASSWORD}' >> /opt/stack/devstack/local.conf"
+          lxc exec ha-openstack -- bash -c "echo 'SERVICE_PASSWORD=${PASSWORD}' >> /opt/stack/devstack/local.conf"
+          lxc exec ha-openstack -- bash -c "echo 'HOST_IP=${IP}' >> /opt/stack/devstack/local.conf"
+          lxc exec ha-openstack -- bash -c "echo 'SERVICE_HOST=${IP}' >> /opt/stack/devstack/local.conf"
+          lxc exec ha-openstack -- bash -c "echo 'LOGFILE=/opt/stack/logs/stack.sh.log' >> /opt/stack/devstack/local.conf"
+          lxc exec ha-openstack -- bash -c "echo 'LOG_COLOR=False' >> /opt/stack/devstack/local.conf"
+          lxc exec ha-openstack -- bash -c "echo 'VERBOSE=True' >> /opt/stack/devstack/local.conf"
+          lxc exec ha-openstack -- bash -c "echo 'LIBVIRT_TYPE=qemu' >> /opt/stack/devstack/local.conf"
+          lxc exec ha-openstack -- bash -c "echo 'ENABLE_VOLUME_BACKING_FILE=True' >> /opt/stack/devstack/local.conf"
+          lxc exec ha-openstack -- bash -c "echo 'disable_service tempest' >> /opt/stack/devstack/local.conf"
+          lxc exec ha-openstack -- bash -c "echo 'ENABLE_KSM=False' >> /opt/stack/devstack/local.conf"
+          lxc exec ha-openstack -- chown stack:stack /opt/stack/devstack/local.conf
+          lxc exec ha-openstack -- chmod 600 /opt/stack/devstack/local.conf
+          echo "local.conf created"
+
+      - name: Patch DevStack for KSM
+        run: |
+          lxc exec ha-openstack -- sed -i 's/^function configure_ksm {/function configure_ksm {\n    return 0/' /opt/stack/devstack/lib/host
+          echo "DevStack patched to skip KSM"
+
+      - name: Run DevStack
+        timeout-minutes: 90
+        run: |
+          echo "Starting DevStack installation (this takes 30-60 minutes)..."
+          lxc exec ha-openstack -- sudo -u stack -H bash -lc 'cd /opt/stack/devstack && ./stack.sh'
+          echo "DevStack installation complete"
+
+      - name: Verify DevStack
+        run: |
+          echo "Verifying DevStack..."
+          IP=$(lxc exec ha-openstack -- ip -4 addr show eth0 | grep -oP "(?<=inet\s)\d+(\.\d+){3}")
+          lxc exec ha-openstack -- curl -s http://localhost/identity/v3 | grep -q "v3.14" && echo "Keystone is running" || exit 1
+          echo "DevStack is ready at http://${IP}/identity/v3"
+
+      - name: Configure proxy device
+        run: |
+          lxc config device add ha-openstack horizon-proxy proxy listen=tcp:0.0.0.0:18081 connect=tcp:127.0.0.1:80 2>/dev/null || true
+          echo "Proxy configured"
+
+  terraform:
+    name: Terraform OpenStack
+    runs-on: ${{ vars.PRIVATE_CLOUD_RUNNER || 'self-hosted' }}
+    needs: install-openstack
+    if: always() && (needs.install-openstack.result == 'success' || needs.install-openstack.result == 'skipped')
+    defaults:
+      run:
+        working-directory: private/openstack
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Wait for DevStack
+        run: |
+          echo "Waiting for DevStack to be ready..."
+          for i in {1..30}; do
+            if curl -s http://127.0.0.1:18081/identity/v3 | grep -q "v3.14"; then
+              echo "DevStack is ready!"
+              break
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 10
+          done
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+
+      - name: Verify OpenStack login
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.error
+          import urllib.request
+
+          auth_url = os.environ["OS_AUTH_URL"].rstrip("/")
+          if not auth_url.endswith("/v3"):
+              auth_url = f"{auth_url}/v3"
+
+          payload = {
+              "auth": {
+                  "identity": {
+                      "methods": ["password"],
+                      "password": {
+                          "user": {
+                              "name": os.environ["OS_USERNAME"],
+                              "domain": {"name": os.environ["OS_USER_DOMAIN_NAME"]},
+                              "password": os.environ["OS_PASSWORD"],
+                          }
+                      },
+                  },
+                  "scope": {
+                      "project": {
+                          "name": os.environ["OS_PROJECT_NAME"],
+                          "domain": {"name": os.environ["OS_PROJECT_DOMAIN_NAME"]},
+                      }
+                  },
+              }
+          }
+
+          request = urllib.request.Request(
+              f"{auth_url}/auth/tokens",
+              data=json.dumps(payload).encode("utf-8"),
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  if response.status not in (200, 201):
+                      print(f"Unexpected Keystone status: {response.status}", file=sys.stderr)
+                      sys.exit(1)
+          except urllib.error.HTTPError as exc:
+              print(f"OpenStack Keystone login failed: HTTP {exc.code}", file=sys.stderr)
+              sys.exit(1)
+          except Exception as exc:
+              print(f"OpenStack Keystone login failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+              sys.exit(1)
+
+          print("ok: OpenStack Keystone login")
+          PY
+
+      - name: Terraform init
+        run: |
+          if [[ -n "${TF_BACKEND_CONFIG}" ]]; then
+            printf "terraform {\n  backend \"%s\" {}\n}\n" "${TF_BACKEND_TYPE}" > backend.generated.tf
+            printf "%s" "${TF_BACKEND_CONFIG}" > backend.hcl
+            terraform init -backend-config=backend.hcl
+          else
+            terraform init
+          fi
+
+      - name: Terraform plan
+        run: |
+          if [[ "${TERRAFORM_ACTION}" == "destroy" ]]; then
+            terraform plan -destroy -out=private-cloud.tfplan
+          else
+            terraform plan -out=private-cloud.tfplan
+          fi
+
+      - name: Terraform apply
+        if: ${{ env.TERRAFORM_ACTION == 'apply' || env.TERRAFORM_ACTION == 'destroy' }}
+        run: terraform apply -auto-approve private-cloud.tfplan
+
+  bootstrap-k8s:
+    name: Bootstrap Kubernetes
+    runs-on: ${{ vars.PRIVATE_CLOUD_RUNNER || 'self-hosted' }}
+    needs: terraform
+    if: always() && needs.terraform.result == 'success' && github.event.inputs.bootstrap_kubernetes == 'true' && github.event.inputs.action == 'apply'
+    defaults:
+      run:
+        working-directory: private/openstack
+    env:
+      HA_OPENSTACK_SSH_USER: ${{ vars.PRIVATE_CLOUD_SSH_USER || 'ubuntu' }}
+      HA_OPENSTACK_SSH_KEY: /tmp/private-cloud-ssh
+      HA_OPENSTACK_SSH_TARGET: ${{ vars.PRIVATE_CLOUD_SSH_TARGET || 'auto' }}
+      HA_OPENSTACK_SSH_PROXY_CONTAINER: ${{ vars.PRIVATE_CLOUD_SSH_PROXY_CONTAINER }}
+      HA_OPENSTACK_KUBECONFIG: ${{ github.workspace }}/.ha/openstack/kubeconfig
+      HA_K3S_TOKEN_FILE: ${{ github.workspace }}/.ha/openstack/k3s-token
+      HA_K3S_CHANNEL: ${{ vars.PRIVATE_CLOUD_K3S_CHANNEL || 'stable' }}
+      HA_K3S_DISABLE_COMPONENTS: ${{ vars.PRIVATE_CLOUD_K3S_DISABLE_COMPONENTS || 'traefik' }}
+      K3S_API_IP: ${{ vars.PRIVATE_CLOUD_TAILSCALE_IP }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p "$(dirname "$HA_OPENSTACK_SSH_KEY")"
+          printf '%s' '${{ secrets.PRIVATE_CLOUD_SSH_PRIVATE_KEY }}' > "$HA_OPENSTACK_SSH_KEY"
+          chmod 600 "$HA_OPENSTACK_SSH_KEY"
+          echo "SSH key configured"
+
+      - name: Wait for nodes SSH
+        timeout-minutes: 15
+        run: |
+          echo "Waiting for nodes to be SSH-ready..."
+          terraform output -json > /tmp/tf-output.json
+          
+          # Extract node IPs from Terraform output
+          python3 - <<'PY' | while read -r ip name; do
+          import json
+          import sys
+          with open('/tmp/tf-output.json', 'r') as f:
+              data = json.load(f)
+          
+          def get_ip(node):
+              return node.get('floating_ip') or node.get('private_ip')
+          
+          for node in data.get('control_plane_nodes', {}).get('value', []):
+              ip = get_ip(node)
+              if ip:
+                  print(f"{ip} {node.get('name', '')}")
+          for node in data.get('build_worker_nodes', {}).get('value', []):
+              ip = get_ip(node)
+              if ip:
+                  print(f"{ip} {node.get('name', '')}")
+          for node in data.get('gpu_worker_nodes', {}).get('value', []):
+              ip = get_ip(node)
+              if ip:
+                  print(f"{ip} {node.get('name', '')}")
+          PY
+            echo "Checking $name ($ip)..."
+            deadline=$((SECONDS + 600))
+            while (( SECONDS < deadline )); do
+              if ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o CheckHostIP=no -i "$HA_OPENSTACK_SSH_KEY" "${HA_OPENSTACK_SSH_USER}@$ip" 'true' 2>/dev/null; then
+                echo "  $name is ready"
+                break
+              fi
+              sleep 10
+            done
+          done
+          echo "All nodes are SSH-ready"
+
+      - name: Generate k3s token
+        run: |
+          mkdir -p "$(dirname "$HA_K3S_TOKEN_FILE")"
+          openssl rand -hex 32 > "$HA_K3S_TOKEN_FILE"
+          chmod 600 "$HA_K3S_TOKEN_FILE"
+          echo "k3s token generated"
+
+      - name: Install k3s on first control-plane
+        run: |
+          echo "Installing k3s on first control-plane..."
+          FIRST_CP_IP=$(python3 - <<'PY'
+          import json
+          with open('/tmp/tf-output.json', 'r') as f:
+              data = json.load(f)
+          nodes = data.get('control_plane_nodes', {}).get('value', [])
+          if nodes:
+              print(nodes[0].get('floating_ip') or nodes[0].get('private_ip'))
+          PY
+          )
+          echo "First control-plane: $FIRST_CP_IP"
+          
+          TOKEN=$(cat "$HA_K3S_TOKEN_FILE")
+          API_IP="${K3S_API_IP:-$FIRST_CP_IP}"
+          
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=no -i "$HA_OPENSTACK_SSH_KEY" \
+            "${HA_OPENSTACK_SSH_USER}@$FIRST_CP_IP" \
+            "curl -sfL https://get.k3s.io | K3S_TOKEN='$TOKEN' INSTALL_K3S_CHANNEL='$HA_K3S_CHANNEL' INSTALL_K3S_EXEC='server --cluster-init --write-kubeconfig-mode 644 --disable ${HA_K3S_DISABLE_COMPONENTS} --tls-san $API_IP --node-label hybrid-ai.io/node-role=control-plane' sh -"
+          
+          echo "k3s installed on first control-plane"
+
+      - name: Wait for first control-plane ready
+        timeout-minutes: 10
+        run: |
+          FIRST_CP_IP=$(python3 - <<'PY'
+          import json
+          with open('/tmp/tf-output.json', 'r') as f:
+              data = json.load(f)
+          nodes = data.get('control_plane_nodes', {}).get('value', [])
+          if nodes:
+              print(nodes[0].get('floating_ip') or nodes[0].get('private_ip'))
+          PY
+          )
+          
+          echo "Waiting for k3s API to be ready..."
+          deadline=$((SECONDS + 600))
+          while (( SECONDS < deadline )); do
+            if ssh -o BatchMode=yes -o StrictHostKeyChecking=no -i "$HA_OPENSTACK_SSH_KEY" \
+              "${HA_OPENSTACK_SSH_USER}@$FIRST_CP_IP" \
+              'sudo k3s kubectl get --raw=/readyz' 2>/dev/null; then
+              echo "k3s is ready!"
+              break
+            fi
+            echo "Waiting..."
+            sleep 10
+          done
+
+      - name: Join additional control-planes
+        run: |
+          FIRST_CP_IP=$(python3 - <<'PY'
+          import json
+          with open('/tmp/tf-output.json', 'r') as f:
+              data = json.load(f)
+          nodes = data.get('control_plane_nodes', {}).get('value', [])
+          if nodes:
+              print(nodes[0].get('floating_ip') or nodes[0].get('private_ip'))
+          PY
+          )
+          
+          TOKEN=$(cat "$HA_K3S_TOKEN_FILE")
+          SERVER_IP="${K3S_API_IP:-$FIRST_CP_IP}"
+          
+          # Skip first node, join remaining control-planes
+          python3 - <<'PY' | while read -r ip name; do
+          import json
+          import sys
+          with open('/tmp/tf-output.json', 'r') as f:
+              data = json.load(f)
+          nodes = data.get('control_plane_nodes', {}).get('value', [])
+          for i, node in enumerate(nodes[1:], 1):
+              ip = node.get('floating_ip') or node.get('private_ip')
+              if ip:
+                  print(f"{ip} {node.get('name', '')}")
+          PY
+            echo "Joining control-plane: $name ($ip)"
+            ssh -o BatchMode=yes -o StrictHostKeyChecking=no -i "$HA_OPENSTACK_SSH_KEY" \
+              "${HA_OPENSTACK_SSH_USER}@$ip" \
+              "curl -sfL https://get.k3s.io | K3S_URL='https://$SERVER_IP:6443' K3S_TOKEN='$TOKEN' INSTALL_K3S_CHANNEL='$HA_K3S_CHANNEL' INSTALL_K3S_EXEC='server --disable ${HA_K3S_DISABLE_COMPONENTS} --node-label hybrid-ai.io/node-role=control-plane' sh -"
+            echo "  $name joined"
+          done
+
+      - name: Join workers
+        run: |
+          FIRST_CP_IP=$(python3 - <<'PY'
+          import json
+          with open('/tmp/tf-output.json', 'r') as f:
+              data = json.load(f)
+          nodes = data.get('control_plane_nodes', {}).get('value', [])
+          if nodes:
+              print(nodes[0].get('floating_ip') or nodes[0].get('private_ip'))
+          PY
+          )
+          
+          TOKEN=$(cat "$HA_K3S_TOKEN_FILE")
+          SERVER_IP="${K3S_API_IP:-$FIRST_CP_IP}"
+          
+          # Join build workers
+          python3 - <<'PY' | while read -r ip name; do
+          import json
+          with open('/tmp/tf-output.json', 'r') as f:
+              data = json.load(f)
+          for node in data.get('build_worker_nodes', {}).get('value', []):
+              ip = node.get('floating_ip') or node.get('private_ip')
+              if ip:
+                  print(f"{ip} {node.get('name', '')}")
+          PY
+            echo "Joining build worker: $name ($ip)"
+            ssh -o BatchMode=yes -o StrictHostKeyChecking=no -i "$HA_OPENSTACK_SSH_KEY" \
+              "${HA_OPENSTACK_SSH_USER}@$ip" \
+              "curl -sfL https://get.k3s.io | K3S_URL='https://$SERVER_IP:6443' K3S_TOKEN='$TOKEN' INSTALL_K3S_CHANNEL='$HA_K3S_CHANNEL' INSTALL_K3S_EXEC='agent --node-label hybrid-ai.io/node-role=build-worker --node-label node-role.kubernetes.io/build-worker=true' sh -"
+            echo "  $name joined"
+          done
+          
+          # Join GPU workers
+          python3 - <<'PY' | while read -r ip name; do
+          import json
+          with open('/tmp/tf-output.json', 'r') as f:
+              data = json.load(f)
+          for node in data.get('gpu_worker_nodes', {}).get('value', []):
+              ip = node.get('floating_ip') or node.get('private_ip')
+              if ip:
+                  print(f"{ip} {node.get('name', '')}")
+          PY
+            echo "Joining GPU worker: $name ($ip)"
+            ssh -o BatchMode=yes -o StrictHostKeyChecking=no -i "$HA_OPENSTACK_SSH_KEY" \
+              "${HA_OPENSTACK_SSH_USER}@$ip" \
+              "curl -sfL https://get.k3s.io | K3S_URL='https://$SERVER_IP:6443' K3S_TOKEN='$TOKEN' INSTALL_K3S_CHANNEL='$HA_K3S_CHANNEL' INSTALL_K3S_EXEC='agent --node-label hybrid-ai.io/node-role=gpu-worker --node-label hybrid-ai.io/accelerator=nvidia --node-label node-role.kubernetes.io/gpu-worker=true --node-taint nvidia.com/gpu=true:NoSchedule' sh -"
+            echo "  $name joined"
+          done
+
+      - name: Label nodes
+        run: |
+          FIRST_CP_IP=$(python3 - <<'PY'
+          import json
+          with open('/tmp/tf-output.json', 'r') as f:
+              data = json.load(f)
+          nodes = data.get('control_plane_nodes', {}).get('value', [])
+          if nodes:
+              print(nodes[0].get('floating_ip') or nodes[0].get('private_ip'))
+          PY
+          )
+          
+          echo "Labeling nodes..."
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=no -i "$HA_OPENSTACK_SSH_KEY" \
+            "${HA_OPENSTACK_SSH_USER}@$FIRST_CP_IP" \
+            'sudo k3s kubectl get nodes -o name | while read node; do sudo k3s kubectl label $node hybrid-ai.io/provider=openstack --overwrite; done'
+          echo "Nodes labeled"
+
+      - name: Export kubeconfig
+        run: |
+          FIRST_CP_IP=$(python3 - <<'PY'
+          import json
+          with open('/tmp/tf-output.json', 'r') as f:
+              data = json.load(f)
+          nodes = data.get('control_plane_nodes', {}).get('value', [])
+          if nodes:
+              print(nodes[0].get('floating_ip') or nodes[0].get('private_ip'))
+          PY
+          )
+          
+          API_IP="${K3S_API_IP:-$FIRST_CP_IP}"
+          mkdir -p "$(dirname $HA_OPENSTACK_KUBECONFIG)"
+          
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=no -i "$HA_OPENSTACK_SSH_KEY" \
+            "${HA_OPENSTACK_SSH_USER}@$FIRST_CP_IP" \
+            'sudo cat /etc/rancher/k3s/k3s.yaml' > "$HA_OPENSTACK_KUBECONFIG"
+          
+          sed -i "s|https://127.0.0.1:6443|https://$API_IP:6443|" "$HA_OPENSTACK_KUBECONFIG"
+          chmod 600 "$HA_OPENSTACK_KUBECONFIG"
+          
+          echo "kubeconfig exported to $HA_OPENSTACK_KUBECONFIG"
+
+      - name: Verify cluster
+        run: |
+          export KUBECONFIG="$HA_OPENSTACK_KUBECONFIG"
+          kubectl get nodes -o wide
+          kubectl get pods -A
+          echo "k8s cluster is ready!"
+
+  dns:
+    name: Configure DNS
+    runs-on: ubuntu-latest
+    needs: terraform
+    if: always() && needs.terraform.result == 'success' && github.event.inputs.apply_dns == 'true'
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Verify DNS prerequisites
+        run: |
+          missing=0
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ZONE_ID PRIVATE_CLOUD_BASE_DOMAIN PRIVATE_CLOUD_TAILSCALE_IP; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing required secret or variable: ${name}"
+              missing=1
+            fi
+          done
+          exit "${missing}"
+
+      - name: Apply DNS records
+        run: |
+          echo "Applying DNS records..."
+          python3 private/reverse-proxy/cloudflare_dns.py --apply

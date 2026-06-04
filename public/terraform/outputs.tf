@@ -61,6 +61,16 @@ output "eks_oidc_issuer" {
   value       = aws_eks_cluster.main.identity[0].oidc[0].issuer
 }
 
+output "ebs_csi_driver_role_arn" {
+  description = "IAM role ARN used by the EBS CSI driver addon"
+  value       = aws_iam_role.ebs_csi_driver.arn
+}
+
+output "aws_load_balancer_controller_role_arn" {
+  description = "IAM role ARN used by the AWS Load Balancer Controller service account"
+  value       = aws_iam_role.aws_load_balancer_controller.arn
+}
+
 output "eks_node_group_names" {
   description = "EKS managed node group names keyed by workload"
   value       = { for k, ng in aws_eks_node_group.workloads : k => ng.node_group_name }
@@ -111,12 +121,18 @@ output "vpn_gateway_id" {
   value       = try(aws_vpn_gateway.main[0].id, null)
 }
 
-output "customer_gateway_id" {
-  description = "Customer gateway ID"
-  value       = try(aws_customer_gateway.main[0].id, null)
+output "customer_gateway_ids" {
+  description = "Customer gateway IDs keyed by site name"
+  value       = { for k, cgw in aws_customer_gateway.sites : k => cgw.id }
 }
 
-output "vpn_connection_id" {
-  description = "Site-to-Site VPN connection ID"
-  value       = try(aws_vpn_connection.main[0].id, null)
+output "vpn_connection_ids" {
+  description = "Site-to-Site VPN connection IDs keyed by site name"
+  value       = { for k, vpn in aws_vpn_connection.sites : k => vpn.id }
+}
+
+# Route 53 Resolver 출력
+output "inbound_resolver_ips" {
+  description = "온프레미스 DNS 서버가 *.amazonaws.com / Private Hosted Zone 등을 forward할 대상 IP"
+  value       = [for ip in aws_route53_resolver_endpoint.inbound.ip_address : ip.ip]
 }

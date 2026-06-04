@@ -1,0 +1,25 @@
+---
+- name: Ensure KEDA namespace exists
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ keda_namespace }}"
+
+- name: Add KEDA Helm repository
+  kubernetes.core.helm_repository:
+    name: kedacore
+    repo_url: https://kedacore.github.io/charts
+
+- name: Install or upgrade KEDA
+  kubernetes.core.helm:
+    name: "{{ keda_release_name }}"
+    chart_ref: "{{ keda_chart_ref }}"
+    chart_version: "{{ keda_chart_version if keda_chart_version else omit }}"
+    release_namespace: "{{ keda_namespace }}"
+    create_namespace: true
+    update_repo_cache: true
+    wait: true
+    timeout: "{{ keda_helm_timeout }}"

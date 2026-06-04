@@ -1,0 +1,12 @@
+---
+logging_namespace: logging
+logging_loki_release_name: loki
+logging_loki_chart_ref: grafana/loki
+logging_loki_chart_version: ""
+logging_promtail_release_name: promtail
+logging_promtail_chart_ref: grafana/promtail
+logging_promtail_chart_version: ""
+logging_helm_timeout: 10m0s
+logging_storage_class_name: gp2
+logging_loki_storage_size: 20Gi
+logging_loki_retention: 168h

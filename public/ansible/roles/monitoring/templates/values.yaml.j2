@@ -4,6 +4,8 @@ grafana:
   defaultDashboardsTimezone: "{{ grafana_default_timezone }}"
   service:
     type: "{{ grafana_service_type }}"
+  nodeSelector:
+    workload: monitoring
   persistence:
     enabled: {{ grafana_persistence_enabled | bool | to_json }}
     size: "{{ grafana_persistence_size }}"
@@ -34,7 +36,7 @@ grafana:
           editable: true
         - name: Loki
           type: loki
-          url: http://loki.monitoring.svc.cluster.local:3100
+          url: http://loki-gateway.logging.svc.cluster.local
           access: proxy
           editable: true
   sidecar:
@@ -48,6 +50,8 @@ prometheus:
     retention: "{{ prometheus_retention }}"
     scrapeInterval: "{{ prometheus_scrape_interval }}"
     evaluationInterval: "{{ prometheus_evaluation_interval }}"
+    nodeSelector:
+      workload: monitoring
     resources:
       requests:
         cpu: "{{ prometheus_resources_requests_cpu }}"
@@ -69,6 +73,8 @@ prometheus:
 
 alertmanager:
   alertmanagerSpec:
+    nodeSelector:
+      workload: monitoring
     resources:
       requests:
         cpu: "{{ alertmanager_resources_requests_cpu }}"
@@ -121,6 +127,8 @@ kubeEtcd:
   enabled: false
 
 kube-state-metrics:
+  nodeSelector:
+    workload: monitoring
   resources:
     requests:
       cpu: 50m
@@ -133,6 +141,8 @@ prometheus-node-exporter:
       memory: 64Mi
 
 prometheusOperator:
+  nodeSelector:
+    workload: monitoring
   resources:
     requests:
       cpu: 100m

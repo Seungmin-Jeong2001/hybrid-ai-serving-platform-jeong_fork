@@ -1,0 +1,80 @@
+---
+- name: Ensure logging namespace exists
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ logging_namespace }}"
+
+- name: Add Grafana Helm repository
+  kubernetes.core.helm_repository:
+    name: grafana
+    repo_url: https://grafana.github.io/helm-charts
+
+- name: Render Loki values and install logging stack
+  block:
+    - name: Create temporary Loki values file
+      ansible.builtin.tempfile:
+        state: file
+        suffix: -loki-values.yaml
+      register: loki_values_file
+
+    - name: Render Loki values file
+      ansible.builtin.template:
+        src: loki-values.yaml.j2
+        dest: "{{ loki_values_file.path }}"
+        mode: "0600"
+
+    - name: Install or upgrade Loki
+      kubernetes.core.helm:
+        name: "{{ logging_loki_release_name }}"
+        chart_ref: "{{ logging_loki_chart_ref }}"
+        chart_version: "{{ logging_loki_chart_version if logging_loki_chart_version else omit }}"
+        release_namespace: "{{ logging_namespace }}"
+        create_namespace: true
+        update_repo_cache: true
+        wait: true
+        timeout: "{{ logging_helm_timeout }}"
+        values_files:
+          - "{{ loki_values_file.path }}"
+  always:
+    - name: Remove temporary Loki values file
+      ansible.builtin.file:
+        path: "{{ loki_values_file.path }}"
+        state: absent
+      when: loki_values_file is defined and loki_values_file.path is defined
+
+- name: Render Promtail values and install promtail
+  block:
+    - name: Create temporary Promtail values file
+      ansible.builtin.tempfile:
+        state: file
+        suffix: -promtail-values.yaml
+      register: promtail_values_file
+
+    - name: Render Promtail values file
+      ansible.builtin.template:
+        src: promtail-values.yaml.j2
+        dest: "{{ promtail_values_file.path }}"
+        mode: "0600"
+
+    - name: Install or upgrade Promtail
+      kubernetes.core.helm:
+        name: "{{ logging_promtail_release_name }}"
+        chart_ref: "{{ logging_promtail_chart_ref }}"
+        chart_version: "{{ logging_promtail_chart_version if logging_promtail_chart_version else omit }}"
+        release_namespace: "{{ logging_namespace }}"
+        create_namespace: true
+        update_repo_cache: true
+        wait: true
+        timeout: "{{ logging_helm_timeout }}"
+        values_files:
+          - "{{ promtail_values_file.path }}"
+  always:
+    - name: Remove temporary Promtail values file
+      ansible.builtin.file:
+        path: "{{ promtail_values_file.path }}"
+        state: absent
+      when: promtail_values_file is defined and promtail_values_file.path is defined

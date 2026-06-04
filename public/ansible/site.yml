@@ -17,6 +17,18 @@
       no_log: true
 
   roles:
+    - role: keda
+      tags:
+        - keda
+    - role: kserve
+      tags:
+        - kserve
     - role: monitoring
       tags:
         - monitoring
+    - role: logging
+      tags:
+        - logging
+    - role: chaos_mesh
+      tags:
+        - chaos-mesh

@@ -82,6 +82,16 @@ variable "ecr_repositories" {
 }
 
 # EKS 변수
+variable "eks_public_access_cidrs" {
+  description = "CIDR blocks allowed to access the EKS public endpoint"
+  type        = list(string)
+  default = [
+    "221.150.194.220/32", # choi
+    "125.243.10.39/32",   # shin
+    "218.39.98.40 "       # kim
+  ]
+}
+
 variable "eks_cluster_version" {
   description = "Kubernetes version for the EKS cluster"
   type        = string
@@ -106,7 +116,7 @@ variable "eks_node_groups" {
   }))
   default = {
     inference = {
-      instance_types  = ["c6i.xlarge"]
+      instance_types  = ["m7i-flex.large"] # ["c6i.xlarge"]
       az_count        = 3
       desired_size    = 2
       min_size        = 1
@@ -116,7 +126,7 @@ variable "eks_node_groups" {
       use_mgmt_subnet = false
     }
     app = {
-      instance_types  = ["t3.medium"]
+      instance_types  = ["m7i-flex.large"] # ["t3.medium"]
       az_count        = 3
       desired_size    = 2
       min_size        = 1
@@ -126,7 +136,7 @@ variable "eks_node_groups" {
       use_mgmt_subnet = false
     }
     system = {
-      instance_types  = ["t3.medium"]
+      instance_types  = ["m7i-flex.large"] # ["t3.medium"]
       az_count        = 2
       desired_size    = 2
       min_size        = 2
@@ -136,8 +146,8 @@ variable "eks_node_groups" {
       use_mgmt_subnet = false
     }
     monitoring = {
-      instance_types  = ["t3.large"]
-      az_count        = 1
+      instance_types  = ["m7i-flex.large"] # ["t3.large"]
+      az_count        = 2
       desired_size    = 1
       min_size        = 1
       max_size        = 2
@@ -146,7 +156,7 @@ variable "eks_node_groups" {
       use_mgmt_subnet = false
     }
     management = {
-      instance_types  = ["t3.medium"]
+      instance_types  = ["m7i-flex.large"] # ["t3.medium"]
       az_count        = 1
       desired_size    = 1
       min_size        = 1
@@ -223,8 +233,14 @@ variable "internal_alb_health_check_path" {
   default     = "/"
 }
 
+variable "private_cloud_cidrs" {
+  description = "Private Cloud 사이트 CIDR (VPCE 경유로 ECR/S3/STS 등 AWS 서비스 접근 허용)"
+  type        = list(string)
+  default     = []
+}
+
 variable "edge_network_cidrs" {
-  description = "On-premise / edge (factory) CIDR blocks allowed to reach the internal ALB over VPN"
+  description = "Edge(공장) 사이트 CIDR (VPN 경유로 Internal ALB 접근 허용)"
   type        = list(string)
   default     = []
 }
@@ -236,16 +252,13 @@ variable "enable_site_to_site_vpn" {
   default     = false
 }
 
-variable "customer_gateway_ip" {
-  description = "Public IP address of the customer gateway device"
-  type        = string
-  default     = ""
-}
-
-variable "customer_gateway_bgp_asn" {
-  description = "BGP ASN for the customer gateway"
-  type        = number
-  default     = 65000
+variable "customer_gateways" {
+  description = "Map of customer gateways keyed by site name"
+  type = map(object({
+    ip      = string
+    bgp_asn = number
+  }))
+  default = {}
 }
 
 variable "vpn_static_routes_only" {
@@ -255,7 +268,7 @@ variable "vpn_static_routes_only" {
 }
 
 variable "vpn_static_route_cidrs" {
-  description = "Static route CIDR blocks for the Site-to-Site VPN connection"
-  type        = list(string)
-  default     = []
+  description = "Static route CIDR blocks per site for the Site-to-Site VPN connections"
+  type        = map(list(string))
+  default     = {}
 }

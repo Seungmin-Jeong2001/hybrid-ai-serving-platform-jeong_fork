@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: inference-worker
-  namespace: hasp
+  namespace: inference
 spec:
   replicas: 1
   selector:
@@ -13,6 +13,24 @@ spec:
       labels:
         app: inference-worker
     spec:
+      serviceAccountName: worker-sa
+      nodeSelector:
+        workload: app
       containers:
         - name: inference-worker
-          image: replace-me
+          image: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/inference-worker:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - configMapRef:
+                name: kafka-config
+            - secretRef:
+                name: api-secret
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

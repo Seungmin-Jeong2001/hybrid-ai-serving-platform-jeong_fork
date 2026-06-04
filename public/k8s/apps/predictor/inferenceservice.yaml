@@ -1,0 +1,30 @@
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: predictor
+  namespace: inference
+spec:
+  predictor:
+    serviceAccountName: predictor-sa
+    minReplicas: 1
+    maxReplicas: 3
+    nodeSelector:
+      workload: inference
+    containers:
+      - name: kserve-container
+        image: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/predictor:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+          - containerPort: 8080
+        envFrom:
+          - configMapRef:
+              name: app-config
+          - secretRef:
+              name: api-secret
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: "1"
+            memory: 2Gi

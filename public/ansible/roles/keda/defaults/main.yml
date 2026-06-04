@@ -1,0 +1,6 @@
+---
+keda_namespace: keda
+keda_release_name: keda
+keda_chart_ref: kedacore/keda
+keda_chart_version: ""
+keda_helm_timeout: 10m0s

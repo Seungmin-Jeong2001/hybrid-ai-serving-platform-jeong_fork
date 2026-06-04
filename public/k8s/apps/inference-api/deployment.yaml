@@ -2,9 +2,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: inference-api
-  namespace: hasp
+  namespace: inference
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: inference-api
@@ -13,8 +13,24 @@ spec:
       labels:
         app: inference-api
     spec:
+      serviceAccountName: inference-api-sa
+      nodeSelector:
+        workload: app
       containers:
         - name: inference-api
-          image: replace-me
+          image: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/inference-api:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: api-secret
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

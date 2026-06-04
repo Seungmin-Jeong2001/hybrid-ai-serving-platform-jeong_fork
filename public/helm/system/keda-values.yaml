@@ -1,0 +1,11 @@
+operator:
+  nodeSelector:
+    workload: system
+
+metricsServer:
+  nodeSelector:
+    workload: system
+
+webhooks:
+  nodeSelector:
+    workload: system

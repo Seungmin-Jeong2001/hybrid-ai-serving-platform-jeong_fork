@@ -1,0 +1,12 @@
+clusterName: sgs-hasp-eks
+region: ap-northeast-2
+serviceAccount:
+  create: true
+  name: aws-load-balancer-controller
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::808379768010:role/sgs-hasp-aws-load-balancer-controller-role
+
+enableServiceMutatorWebhook: true
+
+nodeSelector:
+  workload: system
