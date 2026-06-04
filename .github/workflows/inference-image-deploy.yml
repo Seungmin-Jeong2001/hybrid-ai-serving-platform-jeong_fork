@@ -1,0 +1,63 @@
+name: Inference Image Deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REGISTRY: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com
+  EKS_CLUSTER_NAME: sgs-hasp-eks
+  K8S_NAMESPACE: hasp
+  IMAGE_TAG: latest
+
+concurrency:
+  group: inference-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --region "${AWS_REGION}" --name "${EKS_CLUSTER_NAME}"
+
+      - name: Apply namespace and manifests
+        run: |
+          kubectl apply -f public/k8s/base/namespace.yaml
+          kubectl apply -f public/k8s/apps/inference-api
+          kubectl apply -f public/k8s/apps/inference-worker
+          kubectl apply -f public/k8s/apps/kserve-predictor
+
+      - name: Update deployment images
+        run: |
+          kubectl set image deployment/inference-api \
+            inference-api="${ECR_REGISTRY}/inference-api:${IMAGE_TAG}" \
+            -n "${K8S_NAMESPACE}"
+          kubectl set image deployment/inference-worker \
+            inference-worker="${ECR_REGISTRY}/inference-worker:${IMAGE_TAG}" \
+            -n "${K8S_NAMESPACE}"
+          kubectl set image deployment/kserve-predictor \
+            kserve-predictor="${ECR_REGISTRY}/kserve-predictor:${IMAGE_TAG}" \
+            -n "${K8S_NAMESPACE}"
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/inference-api -n "${K8S_NAMESPACE}" --timeout=300s
+          kubectl rollout status deployment/inference-worker -n "${K8S_NAMESPACE}" --timeout=300s
+          kubectl rollout status deployment/kserve-predictor -n "${K8S_NAMESPACE}" --timeout=300s
