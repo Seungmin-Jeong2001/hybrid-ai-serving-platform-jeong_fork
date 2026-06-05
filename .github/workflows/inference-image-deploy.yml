@@ -11,7 +11,7 @@ env:
   AWS_REGION: ap-northeast-2
   ECR_REGISTRY: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com
   EKS_CLUSTER_NAME: sgs-hasp-eks
-  K8S_NAMESPACE: hasp
+  K8S_NAMESPACE: inference
   IMAGE_TAG: latest
 
 concurrency:

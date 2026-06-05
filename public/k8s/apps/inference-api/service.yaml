@@ -4,7 +4,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: inference-api
-  namespace: hasp
+  namespace: inference
 spec:
   selector:
     app: inference-api

@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: inference-worker
-  namespace: hasp
+  namespace: inference
 spec:
   replicas: 1
   selector:
