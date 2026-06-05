@@ -20,8 +20,12 @@ spec:
           env:
             - name: AWS_REGION
               value: ap-northeast-2
+            # 실제 주소는 배포 워크플로우가 MSK에서 읽어 inference-config ConfigMap에 주입함
             - name: BOOTSTRAP_SERVERS
-              value: replace-me:9092
+              valueFrom:
+                configMapKeyRef:
+                  name: inference-config
+                  key: BOOTSTRAP_SERVERS
             - name: REQUEST_TOPIC
               value: inference-request
             - name: RETRY_TOPIC
