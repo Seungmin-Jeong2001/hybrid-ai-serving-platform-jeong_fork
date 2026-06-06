@@ -239,6 +239,12 @@ variable "internal_alb_health_check_path" {
   default     = "/"
 }
 
+variable "internal_alb_https_certificate_arn" {
+  description = "ACM certificate ARN to enable HTTPS on the internal ALB"
+  type        = string
+  default     = ""
+}
+
 variable "private_cloud_cidrs" {
   description = "Private Cloud 사이트 CIDR (VPCE 경유로 ECR/S3/STS 등 AWS 서비스 접근 허용)"
   type        = list(string)

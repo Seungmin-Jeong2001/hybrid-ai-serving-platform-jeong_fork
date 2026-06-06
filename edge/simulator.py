@@ -9,7 +9,7 @@ import pandas as pd
 import requests
 
 
-API_URL = os.getenv("API_URL", "http://your-api-server/infer")
+API_URL = os.getenv("API_URL", "https://your-api-server/infer")
 DATA_PATH = Path(os.getenv("DATA_PATH", "/data/normal.csv"))
 
 EQUIPMENT_COUNT = 100
