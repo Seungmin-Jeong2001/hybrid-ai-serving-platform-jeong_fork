@@ -2,6 +2,7 @@ import json
 import time
 import uuid
 import random
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -9,7 +10,7 @@ import requests
 
 
 API_URL = "https://your-api-server.com/inference-requests"
-DATA_PATH = Path("./simulator_data/normal.csv")
+DATA_PATH = Path(os.getenv("DATA_PATH", "/data/normal.csv"))
 
 EQUIPMENT_COUNT = 100
 WINDOW_SIZE = 1000
