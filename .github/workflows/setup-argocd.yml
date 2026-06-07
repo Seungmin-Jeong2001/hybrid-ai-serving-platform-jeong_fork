@@ -41,6 +41,12 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
 
+      - name: Resolve bootstrap admin role ARN
+        id: bootstrap_role
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "value=arn:aws:iam::${ACCOUNT_ID}:role/sgs-hasp-eks-bootstrap-admin" >> "$GITHUB_OUTPUT"
+
       - name: Build root application manifest
         env:
           REPO_URL: ${{ env.ARGOCD_REPO_URL }}
@@ -111,6 +117,7 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN_FOR_ARGOCD: ${{ secrets.ARGOCD_GITHUB_TOKEN }}
           TARGET_INSTANCE_ID: ${{ steps.resolve_instance.outputs.value }}
+          BOOTSTRAP_ROLE_ARN: ${{ steps.bootstrap_role.outputs.value }}
         run: |
           ROOT_APP_YAML_B64=$(base64 -w 0 argocd-root-app.yaml)
           export ROOT_APP_YAML_B64
@@ -125,6 +132,8 @@ jobs:
               "if ! command -v helm >/dev/null 2>&1; then curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash; fi",
               "mkdir -p ~/.kube",
               "export KUBECONFIG=/tmp/eks-kubeconfig",
+              f"read AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN <<< \\\"$(aws sts assume-role --role-arn {os.environ['BOOTSTRAP_ROLE_ARN']} --role-session-name argocd-bootstrap --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text)\\\"",
+              "export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN",
               "aws sts get-caller-identity",
               f"aws eks describe-cluster --region {os.environ['AWS_REGION']} --name {os.environ['EKS_CLUSTER_NAME']} >/dev/null",
               f"aws eks update-kubeconfig --region {os.environ['AWS_REGION']} --name {os.environ['EKS_CLUSTER_NAME']} --kubeconfig /tmp/eks-kubeconfig",

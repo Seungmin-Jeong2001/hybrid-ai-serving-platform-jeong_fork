@@ -51,6 +51,11 @@ output "aws_load_balancer_controller_role_arn" {
   value       = aws_iam_role.aws_load_balancer_controller.arn
 }
 
+output "eks_bootstrap_admin_role_arn" {
+  description = "IAM role ARN used by SSM bootstrap jobs to access the EKS cluster as an admin"
+  value       = aws_iam_role.eks_bootstrap_admin.arn
+}
+
 # Container and cluster outputs
 output "ecr_repository_urls" {
   description = "ECR repository URLs"
