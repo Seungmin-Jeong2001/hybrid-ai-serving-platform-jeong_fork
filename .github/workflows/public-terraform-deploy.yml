@@ -67,32 +67,42 @@ jobs:
         run: |
           VPC_ID=$(terraform -chdir=public/terraform output -raw vpc_id)
           LB_ROLE_ARN=$(terraform -chdir=public/terraform output -raw aws_load_balancer_controller_role_arn)
-          export VPC_ID LB_ROLE_ARN
+          MSK_BOOTSTRAP_SERVERS=$(terraform -chdir=public/terraform output -raw msk_bootstrap_brokers)
+          export VPC_ID LB_ROLE_ARN MSK_BOOTSTRAP_SERVERS
           python - <<'PY'
           import os
           import re
           from pathlib import Path
 
-          path = Path("public/k8s/argocd/apps/aws-load-balancer-controller-app.yaml")
-          text = path.read_text(encoding="utf-8")
-          text = re.sub(r"(?m)^(\s*vpcId:\s*).*$", rf"\1{os.environ['VPC_ID']}", text)
-          text = re.sub(
+          alb_path = Path("public/k8s/argocd/apps/aws-load-balancer-controller-app.yaml")
+          alb_text = alb_path.read_text(encoding="utf-8")
+          alb_text = re.sub(r"(?m)^(\s*vpcId:\s*).*$", rf"\1{os.environ['VPC_ID']}", alb_text)
+          alb_text = re.sub(
               r"(?m)^(\s*eks\.amazonaws\.com/role-arn:\s*).*$",
               rf"\1{os.environ['LB_ROLE_ARN']}",
-              text,
+              alb_text,
           )
-          path.write_text(text, encoding="utf-8")
+          alb_path.write_text(alb_text, encoding="utf-8")
+
+          cm_path = Path("public/k8s/apps/inference-api/configmap.yaml")
+          cm_text = cm_path.read_text(encoding="utf-8")
+          cm_text = re.sub(
+              r"(?m)^(\s*BOOTSTRAP_SERVERS:\s*).*$",
+              rf"\1{os.environ['MSK_BOOTSTRAP_SERVERS']}",
+              cm_text,
+          )
+          cm_path.write_text(cm_text, encoding="utf-8")
           PY
 
       - name: Commit generated Argo CD values
         run: |
-          if git diff --quiet -- public/k8s/argocd/apps/aws-load-balancer-controller-app.yaml; then
+          if git diff --quiet -- public/k8s/argocd/apps/aws-load-balancer-controller-app.yaml public/k8s/apps/inference-api/configmap.yaml; then
             echo "No generated Argo CD manifest changes to commit."
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add public/k8s/argocd/apps/aws-load-balancer-controller-app.yaml
-          git commit -m "chore: sync aws-load-balancer-controller Argo CD values"
+          git add public/k8s/argocd/apps/aws-load-balancer-controller-app.yaml public/k8s/apps/inference-api/configmap.yaml
+          git commit -m "chore: sync generated platform values"
           git push

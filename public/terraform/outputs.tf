@@ -88,6 +88,11 @@ output "msk_cluster_arn" {
   value       = aws_msk_cluster.main.arn
 }
 
+output "msk_bootstrap_brokers" {
+  description = "Plaintext bootstrap brokers for the MSK cluster"
+  value       = aws_msk_cluster.main.bootstrap_brokers
+}
+
 # S3 outputs
 output "artifacts_s3_bucket_name" {
   description = "Shared artifacts S3 bucket name"

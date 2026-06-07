@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inference-config
+  namespace: inference
+data:
+  BOOTSTRAP_SERVERS: __MSK_BOOTSTRAP_SERVERS__
