@@ -260,6 +260,75 @@ set -euo pipefail
 version_minor="$1"
 
 export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+
+wait_for_cloud_init() {
+  command -v cloud-init >/dev/null 2>&1 || return 0
+
+  local deadline=$((SECONDS + 1800))
+  local status
+  while true; do
+    status="$(cloud-init status 2>/dev/null || true)"
+    if ! grep -q '^status: running$' <<<"$status"; then
+      cloud-init status --long || true
+      return 0
+    fi
+    if (( SECONDS >= deadline )); then
+      echo "Timed out waiting for cloud-init to finish; continuing with apt lock wait" >&2
+      cloud-init status --long || true
+      return 0
+    fi
+    sleep 10
+  done
+}
+
+wait_for_apt_locks() {
+  local deadline=$((SECONDS + 900))
+  local locks=(
+    /var/lib/dpkg/lock
+    /var/lib/dpkg/lock-frontend
+    /var/lib/apt/lists/lock
+    /var/cache/apt/archives/lock
+  )
+
+  while true; do
+    local busy=0
+    if command -v fuser >/dev/null 2>&1; then
+      for lock in "${locks[@]}"; do
+        if fuser "$lock" >/dev/null 2>&1; then
+          busy=1
+          break
+        fi
+      done
+    elif pgrep -x apt >/dev/null 2>&1 || pgrep -x apt-get >/dev/null 2>&1 || pgrep -x dpkg >/dev/null 2>&1 || pgrep -x unattended-upgrade >/dev/null 2>&1; then
+      busy=1
+    fi
+
+    [[ "$busy" -eq 0 ]] && return 0
+    if (( SECONDS >= deadline )); then
+      echo "Timed out waiting for apt/dpkg locks" >&2
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+apt_get() {
+  local attempt
+  for attempt in {1..12}; do
+    wait_for_apt_locks
+    if apt-get "$@"; then
+      return 0
+    fi
+    if (( attempt == 12 )); then
+      return 1
+    fi
+    echo "apt-get $* failed; retrying after apt/dpkg lock check (${attempt}/12)" >&2
+    sleep 10
+  done
+}
+
+wait_for_cloud_init
 
 swapoff -a || true
 sed -ri '/\sswap\s/s/^/#/' /etc/fstab || true
@@ -278,8 +347,8 @@ net.ipv4.ip_forward = 1
 EOF
 sysctl --system >/dev/null || true
 
-apt-get update -qq
-apt-get install -y -qq apt-transport-https ca-certificates curl gpg containerd
+apt_get update -qq
+apt_get install -y -qq apt-transport-https ca-certificates curl gpg containerd
 
 mkdir -p /etc/containerd
 containerd config default >/etc/containerd/config.toml
@@ -295,8 +364,8 @@ chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 cat >/etc/apt/sources.list.d/kubernetes.list <<EOF
 deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/${version_minor}/deb/ /
 EOF
-apt-get update -qq
-apt-get install -y -qq kubelet kubeadm kubectl
+apt_get update -qq
+apt_get install -y -qq kubelet kubeadm kubectl
 apt-mark hold kubelet kubeadm kubectl >/dev/null
 systemctl enable kubelet
 REMOTE

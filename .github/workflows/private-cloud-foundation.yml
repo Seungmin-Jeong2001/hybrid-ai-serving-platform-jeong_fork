@@ -2741,9 +2741,71 @@ jobs:
           set -euo pipefail
           cidr="$1"
           export DEBIAN_FRONTEND=noninteractive
+          export NEEDRESTART_MODE=a
+          wait_for_cloud_init() {
+            command -v cloud-init >/dev/null 2>&1 || return 0
+            local deadline=$((SECONDS + 1800))
+            local status
+            while true; do
+              status="$(cloud-init status 2>/dev/null || true)"
+              if ! grep -q '^status: running$' <<<"$status"; then
+                cloud-init status --long || true
+                return 0
+              fi
+              if (( SECONDS >= deadline )); then
+                echo "Timed out waiting for cloud-init to finish; continuing with apt lock wait" >&2
+                cloud-init status --long || true
+                return 0
+              fi
+              sleep 10
+            done
+          }
+          wait_for_apt_locks() {
+            local deadline=$((SECONDS + 900))
+            local locks=(
+              /var/lib/dpkg/lock
+              /var/lib/dpkg/lock-frontend
+              /var/lib/apt/lists/lock
+              /var/cache/apt/archives/lock
+            )
+            while true; do
+              local busy=0
+              if command -v fuser >/dev/null 2>&1; then
+                for lock in "${locks[@]}"; do
+                  if sudo fuser "$lock" >/dev/null 2>&1; then
+                    busy=1
+                    break
+                  fi
+                done
+              elif pgrep -x apt >/dev/null 2>&1 || pgrep -x apt-get >/dev/null 2>&1 || pgrep -x dpkg >/dev/null 2>&1 || pgrep -x unattended-upgrade >/dev/null 2>&1; then
+                busy=1
+              fi
+              [[ "$busy" -eq 0 ]] && return 0
+              if (( SECONDS >= deadline )); then
+                echo "Timed out waiting for apt/dpkg locks" >&2
+                return 1
+              fi
+              sleep 5
+            done
+          }
+          apt_get() {
+            local attempt
+            for attempt in {1..12}; do
+              wait_for_apt_locks
+              if sudo apt-get "$@"; then
+                return 0
+              fi
+              if (( attempt == 12 )); then
+                return 1
+              fi
+              echo "apt-get $* failed; retrying after apt/dpkg lock check (${attempt}/12)" >&2
+              sleep 10
+            done
+          }
+          wait_for_cloud_init
           if ! sudo test -x /usr/sbin/exportfs; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq nfs-common nfs-kernel-server
+            apt_get update -qq
+            apt_get install -y -qq nfs-common nfs-kernel-server
           fi
           sudo mkdir -p /mnt/nfs/hybrid-ai
           sudo chown nobody:nogroup /mnt/nfs/hybrid-ai
