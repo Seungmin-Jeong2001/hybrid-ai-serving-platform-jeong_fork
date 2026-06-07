@@ -113,30 +113,44 @@ jobs:
           TARGET_INSTANCE_ID: ${{ steps.resolve_instance.outputs.value }}
         run: |
           ROOT_APP_YAML_B64=$(base64 -w 0 argocd-root-app.yaml)
+          export ROOT_APP_YAML_B64
+          python - <<'PY'
+          import json
+          import os
 
-          cat > commands.json <<EOF
-          {
-            "commands": [
+          repo_secret_name = f"repo-{os.environ['GITHUB_REPOSITORY'].replace('/', '-')}"
+          commands = [
               "set -euo pipefail",
               "if ! command -v kubectl >/dev/null 2>&1; then curl -fsSLo /tmp/kubectl https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl && chmod +x /tmp/kubectl && sudo mv /tmp/kubectl /usr/local/bin/kubectl; fi",
               "if ! command -v helm >/dev/null 2>&1; then curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash; fi",
-              "aws eks update-kubeconfig --region ${AWS_REGION} --name ${EKS_CLUSTER_NAME}",
-              "kubectl create namespace ${ARGOCD_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -",
+              f"aws eks update-kubeconfig --region {os.environ['AWS_REGION']} --name {os.environ['EKS_CLUSTER_NAME']}",
+              f"kubectl create namespace {os.environ['ARGOCD_NAMESPACE']} --dry-run=client -o yaml | kubectl apply -f -",
               "helm repo add argo https://argoproj.github.io/argo-helm",
               "helm repo update",
-              "helm upgrade --install argocd argo/argo-cd --namespace ${ARGOCD_NAMESPACE} --version ${ARGOCD_CHART_VERSION}",
-              "kubectl rollout status deployment/argocd-server -n ${ARGOCD_NAMESPACE} --timeout=300s",
-              "kubectl rollout status deployment/argocd-repo-server -n ${ARGOCD_NAMESPACE} --timeout=300s",
-              "kubectl rollout status statefulset/argocd-application-controller -n ${ARGOCD_NAMESPACE} --timeout=300s",
-              "if [ -n \\\"${GITHUB_TOKEN_FOR_ARGOCD}\\\" ]; then kubectl -n ${ARGOCD_NAMESPACE} create secret generic repo-${GITHUB_REPOSITORY//\\//-} --from-literal=url=${ARGOCD_REPO_URL} --from-literal=username=${GITHUB_ACTOR} --from-literal=password=${GITHUB_TOKEN_FOR_ARGOCD} --type=Opaque --dry-run=client -o yaml | kubectl apply -f - && kubectl -n ${ARGOCD_NAMESPACE} label secret repo-${GITHUB_REPOSITORY//\\//-} argocd.argoproj.io/secret-type=repository --overwrite; fi",
-              "echo ${ROOT_APP_YAML_B64} | base64 -d | kubectl apply -f -",
+              f"helm upgrade --install argocd argo/argo-cd --namespace {os.environ['ARGOCD_NAMESPACE']} --version {os.environ['ARGOCD_CHART_VERSION']}",
+              f"kubectl rollout status deployment/argocd-server -n {os.environ['ARGOCD_NAMESPACE']} --timeout=300s",
+              f"kubectl rollout status deployment/argocd-repo-server -n {os.environ['ARGOCD_NAMESPACE']} --timeout=300s",
+              f"kubectl rollout status statefulset/argocd-application-controller -n {os.environ['ARGOCD_NAMESPACE']} --timeout=300s",
+              (
+                  f"if [ -n \"{os.environ.get('GITHUB_TOKEN_FOR_ARGOCD', '')}\" ]; then "
+                  f"kubectl -n {os.environ['ARGOCD_NAMESPACE']} create secret generic {repo_secret_name} "
+                  f"--from-literal=url={os.environ['ARGOCD_REPO_URL']} "
+                  f"--from-literal=username={os.environ['GITHUB_ACTOR']} "
+                  f"--from-literal=password={os.environ.get('GITHUB_TOKEN_FOR_ARGOCD', '')} "
+                  f"--type=Opaque --dry-run=client -o yaml | kubectl apply -f - && "
+                  f"kubectl -n {os.environ['ARGOCD_NAMESPACE']} label secret {repo_secret_name} "
+                  f"argocd.argoproj.io/secret-type=repository --overwrite; fi"
+              ),
+              f"echo {os.environ['ROOT_APP_YAML_B64']} | base64 -d | kubectl apply -f -",
               "kubectl wait --for=condition=available deployment/aws-load-balancer-controller -n kube-system --timeout=600s",
               "kubectl wait --for=condition=available deployment/inference-api -n inference --timeout=600s",
               "for i in $(seq 1 60); do kubectl get ingress inference-api -n inference >/dev/null 2>&1 && break; sleep 10; done",
-              "kubectl get ingress inference-api -n inference"
-            ]
-          }
-          EOF
+              "kubectl get ingress inference-api -n inference",
+          ]
+
+          with open("commands.json", "w", encoding="utf-8") as fp:
+              json.dump({"commands": commands}, fp)
+          PY
 
           COMMAND_ID=$(aws ssm send-command \
             --region "${AWS_REGION}" \
