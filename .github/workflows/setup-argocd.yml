@@ -1,4 +1,4 @@
-name: Argo CD Bootstrap via SSM
+name: Setup Argo CD
 
 on:
   workflow_dispatch:
@@ -12,9 +12,10 @@ env:
   EKS_CLUSTER_NAME: sgs-hasp-eks
   ARGOCD_NAMESPACE: argocd
   ARGOCD_CHART_VERSION: 7.8.23
-  TARGET_INSTANCE_ID: ${{ vars.SSM_BOOTSTRAP_INSTANCE_ID }}
   ARGOCD_REPO_URL: https://github.com/${{ github.repository }}.git
   ARGOCD_TARGET_REVISION: ${{ github.ref_name }}
+  SSM_BOOTSTRAP_TAG_KEY: Name
+  SSM_BOOTSTRAP_TAG_VALUE: sgs-hasp-system
 
 concurrency:
   group: argocd-bootstrap-ssm-${{ github.ref }}
@@ -29,8 +30,8 @@ jobs:
 
       - name: Validate required variables
         run: |
-          if [[ -z "${TARGET_INSTANCE_ID}" ]]; then
-            echo "GitHub variable SSM_BOOTSTRAP_INSTANCE_ID is required."
+          if [[ -z "${SSM_BOOTSTRAP_TAG_KEY}" || -z "${SSM_BOOTSTRAP_TAG_VALUE}" ]]; then
+            echo "Bootstrap instance tag configuration is required."
             exit 1
           fi
 
@@ -66,12 +67,50 @@ jobs:
                 selfHeal: true
           EOF
 
+      - name: Resolve SSM bootstrap instance
+        id: resolve_instance
+        run: |
+          RUNNING_INSTANCE_IDS=$(aws ec2 describe-instances \
+            --region "${AWS_REGION}" \
+            --filters "Name=tag:${SSM_BOOTSTRAP_TAG_KEY},Values=${SSM_BOOTSTRAP_TAG_VALUE}" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[].Instances[].InstanceId' \
+            --output text)
+
+          if [[ -z "${RUNNING_INSTANCE_IDS}" || "${RUNNING_INSTANCE_IDS}" == "None" ]]; then
+            echo "No running EC2 instances found for tag ${SSM_BOOTSTRAP_TAG_KEY}=${SSM_BOOTSTRAP_TAG_VALUE}."
+            exit 1
+          fi
+
+          MANAGED_INSTANCE_IDS=$(aws ssm describe-instance-information \
+            --region "${AWS_REGION}" \
+            --query 'InstanceInformationList[].InstanceId' \
+            --output text)
+
+          TARGET_INSTANCE_ID=""
+          for instance_id in ${RUNNING_INSTANCE_IDS}; do
+            for managed_id in ${MANAGED_INSTANCE_IDS}; do
+              if [[ "${instance_id}" == "${managed_id}" ]]; then
+                TARGET_INSTANCE_ID="${instance_id}"
+                break 2
+              fi
+            done
+          done
+
+          if [[ -z "${TARGET_INSTANCE_ID}" ]]; then
+            echo "No SSM-managed running instance found for tag ${SSM_BOOTSTRAP_TAG_KEY}=${SSM_BOOTSTRAP_TAG_VALUE}."
+            exit 1
+          fi
+
+          echo "value=${TARGET_INSTANCE_ID}" >> "$GITHUB_OUTPUT"
+          echo "Resolved bootstrap instance: ${TARGET_INSTANCE_ID}"
+
       - name: Send bootstrap command through SSM
         id: send_bootstrap
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN_FOR_ARGOCD: ${{ secrets.ARGOCD_GITHUB_TOKEN }}
+          TARGET_INSTANCE_ID: ${{ steps.resolve_instance.outputs.value }}
         run: |
           ROOT_APP_YAML_B64=$(base64 -w 0 argocd-root-app.yaml)
 
@@ -86,8 +125,15 @@ jobs:
               "helm repo add argo https://argoproj.github.io/argo-helm",
               "helm repo update",
               "helm upgrade --install argocd argo/argo-cd --namespace ${ARGOCD_NAMESPACE} --version ${ARGOCD_CHART_VERSION}",
+              "kubectl rollout status deployment/argocd-server -n ${ARGOCD_NAMESPACE} --timeout=300s",
+              "kubectl rollout status deployment/argocd-repo-server -n ${ARGOCD_NAMESPACE} --timeout=300s",
+              "kubectl rollout status statefulset/argocd-application-controller -n ${ARGOCD_NAMESPACE} --timeout=300s",
               "if [ -n \\\"${GITHUB_TOKEN_FOR_ARGOCD}\\\" ]; then kubectl -n ${ARGOCD_NAMESPACE} create secret generic repo-${GITHUB_REPOSITORY//\\//-} --from-literal=url=${ARGOCD_REPO_URL} --from-literal=username=${GITHUB_ACTOR} --from-literal=password=${GITHUB_TOKEN_FOR_ARGOCD} --type=Opaque --dry-run=client -o yaml | kubectl apply -f - && kubectl -n ${ARGOCD_NAMESPACE} label secret repo-${GITHUB_REPOSITORY//\\//-} argocd.argoproj.io/secret-type=repository --overwrite; fi",
-              "echo ${ROOT_APP_YAML_B64} | base64 -d | kubectl apply -f -"
+              "echo ${ROOT_APP_YAML_B64} | base64 -d | kubectl apply -f -",
+              "kubectl wait --for=condition=available deployment/aws-load-balancer-controller -n kube-system --timeout=600s",
+              "kubectl wait --for=condition=available deployment/inference-api -n inference --timeout=600s",
+              "for i in $(seq 1 60); do kubectl get ingress inference-api -n inference >/dev/null 2>&1 && break; sleep 10; done",
+              "kubectl get ingress inference-api -n inference"
             ]
           }
           EOF
@@ -107,6 +153,7 @@ jobs:
       - name: Wait for bootstrap result
         env:
           COMMAND_ID: ${{ steps.send_bootstrap.outputs.command_id }}
+          TARGET_INSTANCE_ID: ${{ steps.resolve_instance.outputs.value }}
         run: |
           if [[ -z "${COMMAND_ID}" ]]; then
             echo "Missing command id."

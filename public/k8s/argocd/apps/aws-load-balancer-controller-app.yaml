@@ -19,7 +19,7 @@ spec:
           create: true
           name: aws-load-balancer-controller
           annotations:
-            eks.amazonaws.com/role-arn: REPLACE_ME_WITH_AWS_LB_CONTROLLER_ROLE_ARN
+            eks.amazonaws.com/role-arn: arn:aws:iam::808379768010:role/sgs-hasp-aws-load-balancer-controller
   destination:
     server: https://kubernetes.default.svc
     namespace: kube-system

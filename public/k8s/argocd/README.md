@@ -8,6 +8,7 @@ This directory contains Argo CD `Application` manifests for cluster add-ons used
 - `aws-load-balancer-controller`
 - `metrics-server`
 - `keda`
+- `inference-api`
 - `kube-prometheus-stack`
 - `loki`
 - `promtail`
@@ -22,12 +23,14 @@ This directory contains Argo CD `Application` manifests for cluster add-ons used
 
 ## Before sync
 
-Update the following values before syncing:
+Review the following values before syncing:
 
 1. `aws-load-balancer-controller-app.yaml`
-   - Replace `REPLACE_ME_WITH_AWS_LB_CONTROLLER_ROLE_ARN` with the Terraform output `aws_load_balancer_controller_role_arn`.
+   - This manifest is pinned to the current public AWS account and IRSA role ARN.
+   - If the target AWS account or Terraform role name changes, update the ARN accordingly.
 2. `kube-prometheus-stack-app.yaml`
-   - Replace `CHANGE_ME_GRAFANA_ADMIN_PASSWORD` with the actual Grafana admin password, or move the password handling to an ExternalSecret/Secret management flow.
+   - The Grafana admin password is currently set to a bootstrap value for initial setup.
+   - Rotate it later or move it to an ExternalSecret/Secret management flow.
 3. `kserve-app.yaml`
    - This manifest assumes KServe Standard mode.
    - If the cluster standardizes on `RawDeployment`/older KServe behavior, align this value with the deployed KServe version and the `InferenceService` manifests in [public/k8s/serving/predictive-model/pdm-isvc.yaml](C:/git_clone/hybrid-ai-serving-platform/public/k8s/serving/predictive-model/pdm-isvc.yaml).

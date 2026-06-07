@@ -15,7 +15,7 @@ spec:
       valuesObject:
         grafana:
           adminUser: admin
-          adminPassword: CHANGE_ME_GRAFANA_ADMIN_PASSWORD
+          adminPassword: changeme123!
           defaultDashboardsTimezone: Asia/Seoul
           service:
             type: ClusterIP
