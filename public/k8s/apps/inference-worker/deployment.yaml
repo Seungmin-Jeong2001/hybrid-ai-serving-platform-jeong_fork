@@ -14,15 +14,26 @@ spec:
         app: inference-worker
     spec:
       serviceAccountName: inference-worker
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
       nodeSelector:
         workload: inference
       containers:
         - name: inference-worker
           image: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/inference-worker:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: false
           env:
             - name: AWS_REGION
               value: ap-northeast-2
-            # 실제 주소는 배포 워크플로우가 MSK에서 읽어 inference-config ConfigMap에 주입함
+            # Deploy workflow resolves MSK bootstrap brokers and injects them via the inference-config ConfigMap.
             - name: BOOTSTRAP_SERVERS
               valueFrom:
                 configMapKeyRef:
@@ -44,3 +55,10 @@ spec:
               value: "5"
             - name: RETRY_POLL_DELAY_SECONDS
               value: "1"
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"

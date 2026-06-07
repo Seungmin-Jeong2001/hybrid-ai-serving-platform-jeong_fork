@@ -1,23 +1,7 @@
 name: Edge Image Build
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/edge-image-build.yml
-      - edge/**
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/edge-image-build.yml
-      - edge/**
   workflow_dispatch:
-    inputs:
-      image_name:
-        description: Docker Hub repository name for the edge image
-        required: false
-        default: edge-simulator
-        type: string
 
 permissions:
   contents: read
@@ -27,30 +11,12 @@ env:
   DEFAULT_IMAGE_NAME: edge-simulator
 
 concurrency:
-  group: edge-image-${{ github.ref }}
-  cancel-in-progress: true
+  group: edge-image-dispatch-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  validate:
+  build-and-push:
     runs-on: ubuntu-latest
-    env:
-      IMAGE_NAME: ${{ inputs.image_name || 'edge-simulator' }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Build image
-        run: |
-          docker build \
-            -t "${IMAGE_NAME}:ci" \
-            edge
-
-  push:
-    if: github.event_name != 'pull_request'
-    needs: validate
-    runs-on: ubuntu-latest
-    env:
-      IMAGE_NAME: ${{ inputs.image_name || 'edge-simulator' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -64,16 +30,13 @@ jobs:
       - name: Build and push image
         env:
           IMAGE_TAG: ${{ github.sha }}
-          PUSH_LATEST: ${{ github.ref == 'refs/heads/main' }}
-          IMAGE_REPO: ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_NAME }}
+          IMAGE_REPO: ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DEFAULT_IMAGE_NAME }}
         run: |
           docker build \
             -t "${IMAGE_REPO}:${IMAGE_TAG}" \
             edge
           docker push "${IMAGE_REPO}:${IMAGE_TAG}"
-          if [[ "${PUSH_LATEST}" == "true" ]]; then
-            docker tag \
-              "${IMAGE_REPO}:${IMAGE_TAG}" \
-              "${IMAGE_REPO}:latest"
-            docker push "${IMAGE_REPO}:latest"
-          fi
+          docker tag \
+            "${IMAGE_REPO}:${IMAGE_TAG}" \
+            "${IMAGE_REPO}:latest"
+          docker push "${IMAGE_REPO}:latest"

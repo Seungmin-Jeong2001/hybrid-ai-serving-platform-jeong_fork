@@ -1,3 +1,6 @@
+# HTTP 추론 요청을 Kafka 토픽으로 발행하는 API 서버
+# 역할 : FastAPI 서버 + Kafka producer
+
 import json
 import logging
 import os

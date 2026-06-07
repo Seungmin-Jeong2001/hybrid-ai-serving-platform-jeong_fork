@@ -1,3 +1,6 @@
+# Kafka 요청을 소비해 추론을 수행하고 결과 저장 및 재처리를 담당하는 워커
+# 역할 : Kafka consumer + predictor 호출 + DynamoDB 저장 + retry/DLQ용 Kafka producer
+
 import json
 import logging
 import os
