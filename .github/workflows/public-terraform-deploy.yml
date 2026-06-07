@@ -9,7 +9,6 @@ permissions:
 
 env:
   AWS_REGION: ap-northeast-2
-  TF_WORKING_DIR: public/terraform
 
 concurrency:
   group: public-terraform-deploy-${{ github.ref }}
@@ -18,10 +17,6 @@ concurrency:
 jobs:
   terraform:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash
-        working-directory: ${{ env.TF_WORKING_DIR }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -39,27 +34,33 @@ jobs:
         if: ${{ secrets.PUBLIC_TERRAFORM_TFVARS != '' }}
         env:
           TFVARS_CONTENT: ${{ secrets.PUBLIC_TERRAFORM_TFVARS }}
+        working-directory: public/terraform
         run: printf '%s\n' "$TFVARS_CONTENT" > terraform.tfvars
 
       - name: Terraform fmt check
+        working-directory: public/terraform
         run: terraform fmt -check
 
       - name: Terraform init
+        working-directory: public/terraform
         run: terraform init
 
       - name: Terraform validate
+        working-directory: public/terraform
         run: terraform validate
 
       - name: Terraform plan
+        working-directory: public/terraform
         run: terraform plan -out=tfplan
 
       - name: Upload tfplan artifact
         uses: actions/upload-artifact@v4
         with:
           name: public-terraform-tfplan
-          path: ${{ env.TF_WORKING_DIR }}/tfplan
+          path: public/terraform/tfplan
 
       - name: Terraform apply
+        working-directory: public/terraform
         run: terraform apply -auto-approve tfplan
 
       - name: Read target group ARN from Terraform output
