@@ -1,3 +1,5 @@
+# 삭제 예정입니다. (Argo CD가 진행할 예정)
+
 name: Inference Image Deploy
 
 on:

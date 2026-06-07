@@ -6,6 +6,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY simulator.py .
-COPY simulator_data ./simulator_data
+
+RUN mkdir -p /data
+
+ENV DATA_PATH=/data/normal.csv
 
 CMD ["python", "simulator.py"]

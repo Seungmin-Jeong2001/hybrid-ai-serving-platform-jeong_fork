@@ -105,3 +105,18 @@ resource "aws_lb_listener" "internal_http" {
     target_group_arn = aws_lb_target_group.internal.arn
   }
 }
+
+resource "aws_lb_listener" "internal_https" {
+  count = var.internal_alb_https_certificate_arn != "" ? 1 : 0
+
+  load_balancer_arn = aws_lb.internal.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = var.internal_alb_https_certificate_arn
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.internal.arn
+  }
+}

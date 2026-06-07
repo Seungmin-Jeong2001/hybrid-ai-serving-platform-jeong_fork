@@ -45,8 +45,10 @@ def _create_producer() -> KafkaProducer:
 
 class InferenceRequest(BaseModel):
     request_id: str | None = None
+    factory_id: str
+    equipment_id: str
+    timestamp: int
     inputs: list[Any] = Field(default_factory=list)
-    parameters: dict[str, Any] = Field(default_factory=dict)
 
 
 @asynccontextmanager
@@ -84,8 +86,10 @@ async def infer(request: InferenceRequest) -> dict[str, Any]:
     payload = {
         "request_id": job_id,
         "job_id": job_id,
+        "factory_id": request.factory_id,
+        "equipment_id": request.equipment_id,
+        "timestamp": request.timestamp,
         "inputs": request.inputs,
-        "parameters": request.parameters,
         "retry_count": 0,
         "source_topic": _request_topic(),
     }

@@ -1,0 +1,33 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: chaos-mesh
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "6"
+spec:
+  project: default
+  source:
+    repoURL: https://charts.chaos-mesh.org
+    chart: chaos-mesh
+    targetRevision: 2.8.2
+    helm:
+      releaseName: chaos-mesh
+      valuesObject:
+        controllerManager:
+          replicaCount: 1
+        dashboard:
+          securityMode: true
+        chaosDaemon:
+          runtime: containerd
+          socketPath: /run/containerd/containerd.sock
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: chaos-testing
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+

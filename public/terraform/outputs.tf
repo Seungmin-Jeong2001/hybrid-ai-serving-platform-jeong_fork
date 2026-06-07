@@ -67,6 +67,11 @@ output "ebs_csi_driver_role_arn" {
   value       = aws_iam_role.ebs_csi.arn
 }
 
+output "aws_load_balancer_controller_role_arn" {
+  description = "IAM role ARN for the aws-load-balancer-controller service account (IRSA)"
+  value       = aws_iam_role.aws_load_balancer_controller.arn
+}
+
 output "eks_node_group_names" {
   description = "EKS managed node group names keyed by workload"
   value       = { for k, ng in aws_eks_node_group.workloads : k => ng.node_group_name }
