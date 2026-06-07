@@ -54,6 +54,7 @@ Private Cloud Foundation에서 담당하지 않는 것:
 - GitLab URL: `https://gitlab.intp.me`
 - GitLab Caddy upstream: `127.0.0.1:18083`
 - GitLab root password 기준: `GITLAB_ROOT_PASSWORD` Secret 또는 VM `/srv/gitlab/config/initial_root_password`
+- GitLab bootstrap 상태: VM `/var/lib/hybrid-ai/gitlab-bootstrap/status.env`
 - GitLab 계정 생성 기준: 먼저 `root`로 로그인한 뒤 Admin 영역에서 사용자 생성 또는 초대
 - GitLab GPU runner tag: `gpu-worker`
 - GitLab training helper: `hybrid-ai-training-run`

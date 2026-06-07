@@ -25,7 +25,7 @@ private/
 4. `apply_kubernetes=true`이면 namespace, quota, RBAC, network policy baseline을 적용합니다.
 5. DNS는 foundation 생명주기와 같이 움직입니다. Plan은 dry-run, Apply는 Cloudflare upsert, Destroy는 Cloudflare delete를 실행합니다.
 6. `setup_storage=true`이면 NFS, MinIO, PVC 기준을 적용합니다.
-7. GitLab VM에서 runner authentication token을 자동 생성하고 GPU worker VM에 GitLab shell runner를 등록합니다.
+7. GitLab VM bootstrap service가 GitLab 초기 설정과 runner token 생성을 재시도하고, 준비되면 GPU worker VM에 GitLab shell runner를 등록합니다.
 8. `validate_gpu=true`는 실제 GPU backing 준비가 끝난 뒤 선택적으로 켭니다.
 9. 제거는 `Private Cloud Destroy` workflow로 실행합니다.
 10. `handoff/` 문서를 기준으로 model, public, hybrid, monitoring 담당자에게 필요한 값을 전달합니다.
@@ -232,15 +232,16 @@ credential을 검증합니다.
 - `PRIVATE_CLOUD_K8S_API_ENDPOINT`: kubeconfig에 기록할 API endpoint, 기본 `PRIVATE_CLOUD_TAILSCALE_IP`
 - `GITLAB_DOMAIN`: 기본 `gitlab.intp.me`
 - `GITLAB_EXTERNAL_URL`: 기본 `https://gitlab.intp.me`
-- `GITLAB_IMAGE`: 기본 `gitlab/gitlab-ce:latest`
+- `GITLAB_IMAGE`: 기본 `gitlab/gitlab-ce:18.11.4-ce.0`
 - `GITLAB_SIGNUP_ENABLED`: 기본 `false`
 - `GITLAB_UPSTREAM_PORT`: 기본 `18083`
 - `GITLAB_GPU_RUNNER_NAME_PREFIX`: 기본 `hybrid-ai-gpu`
 - `GITLAB_GPU_RUNNER_TAGS`: 기본 `gpu-worker`
 
-GitLab CE 첫 부팅은 VM 성능에 따라 오래 걸릴 수 있습니다. Apply는 GitLab container와 reverse proxy upstream을
-만들면 성공 처리하고, GitLab HTTP가 아직 booting이면 runner 등록은 건너뜁니다. GitLab이 ready된 뒤 같은 Apply를
-다시 실행하면 GPU runner 등록이 이어집니다.
+GitLab CE 첫 부팅은 VM 성능에 따라 오래 걸릴 수 있습니다. Apply는 VM 내부
+`hybrid-ai-gitlab-bootstrap.service`/timer와 reverse proxy upstream을 만들면 성공 처리하고,
+GitLab HTTP나 Rails CLI가 아직 booting이면 VM에서 계속 재시도합니다. GitLab이 ready된 뒤 같은 Apply를
+다시 실행하면 bootstrap state의 runner token으로 GPU runner 등록이 이어집니다.
 
 DNS는 Plan/Apply/Destroy workflow 안에서 자동 실행됩니다.
 
