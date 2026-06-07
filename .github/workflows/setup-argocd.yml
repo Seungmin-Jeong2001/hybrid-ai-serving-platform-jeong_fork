@@ -160,7 +160,13 @@ jobs:
                   f"argocd.argoproj.io/secret-type=repository --overwrite; fi"
               ),
               f"echo {os.environ['ROOT_APP_YAML_B64']} | base64 -d | kubectl apply -f -",
+              f"for i in $(seq 1 60); do kubectl get application aws-load-balancer-controller -n {os.environ['ARGOCD_NAMESPACE']} >/dev/null 2>&1 && break; sleep 10; done",
+              f"kubectl get application aws-load-balancer-controller -n {os.environ['ARGOCD_NAMESPACE']}",
+              f"for i in $(seq 1 60); do kubectl get application inference-api -n {os.environ['ARGOCD_NAMESPACE']} >/dev/null 2>&1 && break; sleep 10; done",
+              f"kubectl get application inference-api -n {os.environ['ARGOCD_NAMESPACE']}",
+              "for i in $(seq 1 60); do kubectl get deployment aws-load-balancer-controller -n kube-system >/dev/null 2>&1 && break; sleep 10; done",
               "kubectl wait --for=condition=available deployment/aws-load-balancer-controller -n kube-system --timeout=600s",
+              "for i in $(seq 1 60); do kubectl get deployment inference-api -n inference >/dev/null 2>&1 && break; sleep 10; done",
               "kubectl wait --for=condition=available deployment/inference-api -n inference --timeout=600s",
               "for i in $(seq 1 60); do kubectl get ingress inference-api -n inference >/dev/null 2>&1 && break; sleep 10; done",
               "kubectl get ingress inference-api -n inference",
