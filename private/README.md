@@ -218,7 +218,7 @@ credential을 검증합니다.
 
 - `MINIO_ROOT_USER`: 기본 `minioadmin`
 - `CONTROL_PLANE_IMAGE_NAME`: 기본 `ubuntu-22.04`
-- `CONTROL_PLANE_FLAVOR_NAME`: 기본 `m1.large`
+- `CONTROL_PLANE_FLAVOR_NAME`: 기본 `m1.medium`
 - `BUILD_WORKER_IMAGE_NAME`: 기본 `ubuntu-22.04`
 - `BUILD_WORKER_FLAVOR_NAME`: 기본 `m1.large`
 - `GPU_WORKER_IMAGE_NAME`: 기본 `ubuntu-22.04`

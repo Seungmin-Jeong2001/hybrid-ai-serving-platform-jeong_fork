@@ -16,7 +16,7 @@ ssh_public_key = "ssh-ed25519 REPLACE_WITH_PUBLIC_KEY_ONLY"
 
 control_plane_count       = 1
 control_plane_image_name  = "ubuntu-22.04"
-control_plane_flavor_name = "m1.large"
+control_plane_flavor_name = "m1.medium"
 
 build_worker_count       = 1
 build_worker_image_name  = "ubuntu-22.04"

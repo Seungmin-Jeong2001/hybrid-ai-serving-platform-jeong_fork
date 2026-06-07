@@ -31,7 +31,7 @@ export TF_VAR_control_plane_count=1
 export TF_VAR_build_worker_count=0
 export TF_VAR_gpu_worker_count=0
 export TF_VAR_control_plane_image_name=ubuntu-24.04
-export TF_VAR_control_plane_flavor_name=m1.large
+export TF_VAR_control_plane_flavor_name=m1.medium
 ./ha up openstack --auto-approve
 ```
 

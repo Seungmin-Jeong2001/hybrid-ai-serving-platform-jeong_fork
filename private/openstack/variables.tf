@@ -103,7 +103,7 @@ variable "control_plane_image_name" {
 variable "control_plane_flavor_name" {
   description = "OpenStack flavor name for control-plane VMs."
   type        = string
-  default     = "m1.large"
+  default     = "m1.medium"
 }
 
 variable "build_worker_image_name" {

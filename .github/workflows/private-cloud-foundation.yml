@@ -80,7 +80,7 @@ env:
   # Terraform variables
   TF_VAR_ssh_public_key: ${{ secrets.PRIVATE_CLOUD_SSH_PUBLIC_KEY }}
   TF_VAR_control_plane_image_name: ${{ vars.CONTROL_PLANE_IMAGE_NAME || 'ubuntu-22.04' }}
-  TF_VAR_control_plane_flavor_name: ${{ vars.CONTROL_PLANE_FLAVOR_NAME || 'm1.large' }}
+  TF_VAR_control_plane_flavor_name: ${{ vars.CONTROL_PLANE_FLAVOR_NAME || 'm1.medium' }}
   TF_VAR_build_worker_image_name: ${{ vars.BUILD_WORKER_IMAGE_NAME || 'ubuntu-22.04' }}
   TF_VAR_build_worker_flavor_name: ${{ vars.BUILD_WORKER_FLAVOR_NAME || 'm1.large' }}
   TF_VAR_gpu_worker_image_name: ${{ vars.GPU_WORKER_IMAGE_NAME || 'ubuntu-22.04' }}
@@ -98,7 +98,7 @@ env:
   HA_OPENSTACK_GPU_FLAVOR_RAM: ${{ vars.OPENSTACK_GPU_FLAVOR_RAM || '8192' }}
   HA_OPENSTACK_GPU_FLAVOR_VCPUS: ${{ vars.OPENSTACK_GPU_FLAVOR_VCPUS || '4' }}
   HA_OPENSTACK_GPU_FLAVOR_DISK: ${{ vars.OPENSTACK_GPU_FLAVOR_DISK || '40' }}
-  HA_DEVSTACK_CONTROL_FLAVOR_NAME: ha.m1.large
+  HA_DEVSTACK_CONTROL_FLAVOR_NAME: ha.m1.medium
   HA_DEVSTACK_CONTROL_FLAVOR_RAM: "8192"
   HA_DEVSTACK_CONTROL_FLAVOR_VCPUS: "4"
   HA_DEVSTACK_CONTROL_FLAVOR_DISK: "80"
@@ -1334,7 +1334,7 @@ jobs:
           }
 
           key_pair_name="$(read_tf_string key_pair_name hybrid-ai-private-admin)"
-          if terraform state list | grep -qx 'openstack_compute_keypair_v2.admin'; then
+          if terraform state show -no-color 'openstack_compute_keypair_v2.admin' >/dev/null 2>&1; then
             echo "OpenStack keypair is already tracked by Terraform state"
             exit 0
           fi
@@ -1512,6 +1512,10 @@ jobs:
               || true
           }
 
+          state_has_address() {
+            terraform state show -no-color "$1" >/dev/null 2>&1
+          }
+
           port_project_id() {
             local port_id="$1"
             lxc exec ha-openstack -- sudo -u stack -H bash -s -- "$port_id" <<'PORT_PROJECT'
@@ -1564,7 +1568,7 @@ jobs:
           remove_state_if_project_mismatch 'openstack_networking_port_v2.control_plane[0]' port
           remove_state_if_project_mismatch 'openstack_networking_floatingip_v2.control_plane[0]' fip
 
-          if ! terraform state list | grep -qx 'openstack_networking_secgroup_v2.private'; then
+          if ! state_has_address 'openstack_networking_secgroup_v2.private'; then
             echo "::notice::Security group is not in Terraform state yet; skipping security group rule import"
             exit 0
           fi
@@ -1638,7 +1642,7 @@ jobs:
             local port_max="${5:-}"
             local rule_id
 
-            if terraform state list | grep -qx "$address"; then
+            if state_has_address "$address"; then
               return 0
             fi
 
@@ -1649,7 +1653,14 @@ jobs:
             fi
 
             echo "Importing existing ${protocol} rule ${rule_id} into ${address}"
-            terraform import "$address" "$rule_id"
+            if terraform import "$address" "$rule_id"; then
+              return 0
+            fi
+            if state_has_address "$address"; then
+              echo "Terraform already tracks ${address}; continuing"
+              return 0
+            fi
+            return 1
           }
 
           import_rule_if_missing openstack_networking_secgroup_rule_v2.allow_internal_tcp tcp
@@ -1750,6 +1761,167 @@ jobs:
       - name: Terraform apply
         if: ${{ inputs.action == 'apply' || inputs.action == 'destroy' }}
         run: terraform apply -auto-approve private-cloud.tfplan
+
+      - name: Resize local DevStack instances
+        if: ${{ inputs.action == 'apply' && env.INSTALL_OPENSTACK == 'true' }}
+        run: |
+          set -euo pipefail
+
+          read_tf_string() {
+            local name="$1"
+            local default_value="$2"
+            python3 - "$name" "$default_value" <<'PY'
+          import os
+          import pathlib
+          import re
+          import sys
+
+          name, value = sys.argv[1], sys.argv[2]
+          env_value = os.environ.get(f"TF_VAR_{name}")
+          if env_value:
+              print(env_value)
+              raise SystemExit
+
+          pattern = re.compile(rf'^\s*{re.escape(name)}\s*=\s*"([^"]*)"', re.M)
+          for filename in ("private-cloud.auto.tfvars", "zz-local-devstack.auto.tfvars"):
+              path = pathlib.Path(filename)
+              if not path.exists():
+                  continue
+              match = pattern.search(path.read_text(encoding="utf-8"))
+              if match:
+                  value = match.group(1)
+          print(value)
+          PY
+          }
+
+          project_name="$(read_tf_string project_name hybrid-ai-private)"
+          target_project_id="$(lxc exec ha-openstack -- sudo -u stack -H bash -s -- \
+            "${OS_PROJECT_NAME}" \
+            "${OS_PROJECT_DOMAIN_NAME}" <<'LOOKUP_PROJECT'
+          set -eo pipefail
+          project_name="$1"
+          project_domain="$2"
+          cd /opt/stack/devstack
+          set +u
+          source openrc admin admin >/dev/null
+          set -u
+          openstack project show --domain "$project_domain" "$project_name" -f value -c id
+          LOOKUP_PROJECT
+          )"
+
+          lxc exec ha-openstack -- sudo -u stack -H bash -s -- \
+            "$project_name" \
+            "$target_project_id" \
+            "$HA_DEVSTACK_CONTROL_FLAVOR_NAME" \
+            "$HA_DEVSTACK_WORKER_FLAVOR_NAME" \
+            "$HA_OPENSTACK_GPU_FLAVOR_NAME" <<'RESIZE_LOCAL_DEVSTACK_INSTANCES'
+          set -eo pipefail
+          project_name="$1"
+          target_project_id="$2"
+          control_flavor="$3"
+          worker_flavor="$4"
+          gpu_flavor="$5"
+
+          cd /opt/stack/devstack
+          set +u
+          source openrc admin admin >/dev/null
+          set -u
+
+          python3 - "$project_name" "$target_project_id" "$control_flavor" "$worker_flavor" "$gpu_flavor" <<'PY'
+          import json
+          import subprocess
+          import sys
+          import time
+
+          project_name, target_project_id, control_flavor, worker_flavor, gpu_flavor = sys.argv[1:6]
+
+          def openstack_json(*args):
+              return json.loads(subprocess.check_output(["openstack", *args, "-f", "json"], text=True))
+
+          def openstack_value(*args):
+              return subprocess.check_output(["openstack", *args, "-f", "value"], text=True).strip()
+
+          def run(*args):
+              subprocess.run(["openstack", *args], check=True)
+
+          def desired_flavor_for(name):
+              if name.startswith(f"{project_name}-control-"):
+                  return control_flavor
+              if name.startswith(f"{project_name}-build-") or name.startswith(f"{project_name}-gitlab-"):
+                  return worker_flavor
+              if name.startswith(f"{project_name}-gpu-"):
+                  return gpu_flavor
+              return ""
+
+          def flavor_shape(flavor_name):
+              flavor = openstack_json("flavor", "show", flavor_name)
+              return {
+                  "name": flavor_name,
+                  "ram": int(flavor["ram"]),
+                  "vcpus": int(flavor["vcpus"]),
+                  "disk": int(flavor["disk"]),
+              }
+
+          def server_shape(server):
+              flavor = server.get("flavor") or {}
+              return {
+                  "name": flavor.get("original_name") or flavor.get("name") or "",
+                  "ram": int(flavor.get("ram") or 0),
+                  "vcpus": int(flavor.get("vcpus") or 0),
+                  "disk": int(flavor.get("disk") or 0),
+              }
+
+          def needs_resize(server, desired):
+              current = server_shape(server)
+              return any(current[key] != desired[key] for key in ("name", "ram", "vcpus", "disk"))
+
+          def wait_status(server_id, wanted, timeout=900):
+              deadline = time.monotonic() + timeout
+              while time.monotonic() < deadline:
+                  status = openstack_value("server", "show", server_id, "-c", "status")
+                  if status in wanted:
+                      return status
+                  if status == "ERROR":
+                      raise RuntimeError(f"server {server_id} entered ERROR during resize")
+                  time.sleep(10)
+              raise RuntimeError(f"timed out waiting for server {server_id} status in {wanted}")
+
+          servers = openstack_json("server", "list", "--all-projects", "-c", "ID", "-c", "Name")
+          desired_cache = {}
+          for item in servers:
+              server_id = item.get("ID")
+              name = item.get("Name") or ""
+              if not server_id:
+                  continue
+              desired_name = desired_flavor_for(name)
+              if not desired_name:
+                  continue
+              server = openstack_json("server", "show", server_id)
+              if server.get("project_id") != target_project_id:
+                  continue
+              status = server.get("status") or server.get("Status")
+              if status == "VERIFY_RESIZE":
+                  print(f"Confirming pending resize for {name} ({server_id})")
+                  run("server", "resize", "confirm", server_id)
+                  wait_status(server_id, {"ACTIVE"})
+                  server = openstack_json("server", "show", server_id)
+                  status = server.get("status") or server.get("Status")
+              if status != "ACTIVE":
+                  raise RuntimeError(f"server {name} ({server_id}) is {status}; cannot resize safely")
+              desired = desired_cache.setdefault(desired_name, flavor_shape(desired_name))
+              if not needs_resize(server, desired):
+                  print(f"Server already matches flavor shape: {name} -> {desired_name}")
+                  continue
+              print(
+                  f"Resizing {name} ({server_id}) to {desired_name} "
+                  f"({desired['ram']}MB RAM, {desired['vcpus']} vCPU, {desired['disk']}GB disk)"
+              )
+              run("server", "resize", "--flavor", desired_name, "--wait", server_id)
+              wait_status(server_id, {"VERIFY_RESIZE"})
+              run("server", "resize", "confirm", server_id)
+              wait_status(server_id, {"ACTIVE"})
+          PY
+          RESIZE_LOCAL_DEVSTACK_INSTANCES
 
       - name: Cleanup local DevStack orphans after destroy
         if: ${{ always() && inputs.action == 'destroy' && env.INSTALL_OPENSTACK == 'true' }}
