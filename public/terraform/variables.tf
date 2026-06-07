@@ -215,36 +215,6 @@ variable "artifacts_s3_force_destroy" {
 }
 
 # ALB 변수
-variable "internal_alb_deletion_protection" {
-  description = "Whether to enable deletion protection for the internal ALB"
-  type        = bool
-  default     = false
-}
-
-variable "internal_alb_target_port" {
-  description = "Target port for the internal ALB target group"
-  type        = number
-  default     = 80
-}
-
-variable "internal_alb_target_type" {
-  description = "Target type for the internal ALB target group"
-  type        = string
-  default     = "ip"
-}
-
-variable "internal_alb_health_check_path" {
-  description = "Health check path for the internal ALB target group"
-  type        = string
-  default     = "/"
-}
-
-variable "internal_alb_https_certificate_arn" {
-  description = "ACM certificate ARN to enable HTTPS on the internal ALB"
-  type        = string
-  default     = ""
-}
-
 variable "private_cloud_cidrs" {
   description = "Private Cloud 사이트 CIDR (VPCE 경유로 ECR/S3/STS 등 AWS 서비스 접근 허용)"
   type        = list(string)

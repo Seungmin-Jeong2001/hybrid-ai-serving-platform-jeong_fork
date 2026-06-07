@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: inference-api
+  namespace: inference
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/backend-protocol: HTTP
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    alb.ingress.kubernetes.io/success-codes: "200"
+    # Update this CIDR list when additional on-premise networks such as OpenStack are connected.
+    alb.ingress.kubernetes.io/inbound-cidrs: 10.0.0.0/16,192.168.0.0/24
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /infer
+            pathType: Exact
+            backend:
+              service:
+                name: inference-api
+                port:
+                  number: 80

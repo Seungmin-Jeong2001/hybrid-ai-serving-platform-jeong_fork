@@ -4,7 +4,6 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
   id-token: write
 
 env:
@@ -62,48 +61,3 @@ jobs:
       - name: Terraform apply
         working-directory: public/terraform
         run: terraform apply -auto-approve tfplan
-
-      - name: Read target group ARN from Terraform output
-        id: tg_arn
-        run: |
-          TARGET_GROUP_ARN=$(terraform output -raw internal_alb_target_group_arn)
-          echo "value=${TARGET_GROUP_ARN}" >> "$GITHUB_OUTPUT"
-
-      - name: Update TargetGroupBinding manifest
-        working-directory: ${{ github.workspace }}
-        env:
-          TARGET_GROUP_ARN: ${{ steps.tg_arn.outputs.value }}
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import os
-
-          manifest = Path("public/k8s/apps/inference-api/targetgroupbinding.yaml")
-          target_group_arn = os.environ["TARGET_GROUP_ARN"]
-          content = manifest.read_text(encoding="utf-8")
-
-          marker = "targetGroupARN:"
-          lines = content.splitlines()
-          updated = []
-          for line in lines:
-              if line.strip().startswith(marker):
-                  indent = line[: len(line) - len(line.lstrip())]
-                  updated.append(f"{indent}{marker} {target_group_arn}")
-              else:
-                  updated.append(line)
-
-          manifest.write_text("\n".join(updated) + "\n", encoding="utf-8")
-          PY
-
-      - name: Commit updated TargetGroupBinding
-        working-directory: ${{ github.workspace }}
-        run: |
-          if git diff --quiet -- public/k8s/apps/inference-api/targetgroupbinding.yaml; then
-            echo "No TargetGroupBinding change detected."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add public/k8s/apps/inference-api/targetgroupbinding.yaml
-          git commit -m "chore: sync internal ALB target group ARN"
-          git push
