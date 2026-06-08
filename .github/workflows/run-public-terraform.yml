@@ -1,4 +1,4 @@
-name: Public Terraform Deploy
+name: Run Public Terraform
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ env:
   AWS_REGION: ap-northeast-2
 
 concurrency:
-  group: public-terraform-deploy-${{ github.ref }}
+  group: run-public-terraform-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -66,7 +66,7 @@ jobs:
         if: ${{ inputs.action == 'apply' }}
         uses: actions/upload-artifact@v4
         with:
-          name: public-terraform-tfplan
+          name: run-public-terraform-tfplan
           path: public/terraform/tfplan
 
       - name: Terraform apply
@@ -83,7 +83,7 @@ jobs:
         if: ${{ inputs.action == 'destroy' }}
         uses: actions/upload-artifact@v4
         with:
-          name: public-terraform-destroy-plan
+          name: run-public-terraform-destroy-plan
           path: public/terraform/tfdestroy
 
       - name: Terraform destroy
