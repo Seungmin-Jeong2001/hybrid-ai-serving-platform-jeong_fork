@@ -1,0 +1,14 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: prometheus-pod-kill
+  namespace: chaos-testing
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces:
+      - monitoring
+    labelSelectors:
+      app.kubernetes.io/name: prometheus
+  duration: "1m"

@@ -1,0 +1,19 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: inference-api-network-delay
+  namespace: chaos-testing
+spec:
+  action: delay
+  mode: all
+  selector:
+    namespaces:
+      - inference
+    labelSelectors:
+      app: inference-api
+  delay:
+    latency: "200ms"
+    jitter: "50ms"
+    correlation: "25"
+  direction: both
+  duration: "2m"

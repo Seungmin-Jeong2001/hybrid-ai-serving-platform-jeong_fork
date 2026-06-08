@@ -8,11 +8,26 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
-    body {
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --border: #2d3148;
+      --text: #e2e8f0;
+      --muted: #64748b;
+      --sub: #94a3b8;
+      --green: #22c55e;
+      --yellow: #eab308;
+      --red: #ef4444;
+      --indigo: #6366f1;
+    }
+
+    html, body {
       font-family: 'Segoe UI', sans-serif;
-      background: #0f1117;
-      color: #e2e8f0;
+      background: var(--bg);
+      color: var(--text);
       min-height: 100vh;
+      font-size: 14px;
+      overflow-x: hidden;
     }
 
     /* ── 헤더 ── */
@@ -20,115 +35,161 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 20px 32px;
-      background: #1a1d27;
-      border-bottom: 1px solid #2d3148;
+      padding: 0.75rem 2rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 10;
     }
-    header h1 { font-size: 20px; font-weight: 700; color: #fff; }
-    header h1 span { color: #6366f1; }
-    #clock { font-size: 13px; color: #94a3b8; }
+    header h1 { font-size: 1.1rem; font-weight: 700; color: #fff; }
+    header h1 span { color: var(--indigo); }
+    #clock { font-size: 0.8rem; color: var(--sub); }
 
     /* ── 메인 레이아웃 ── */
-    main { padding: 28px 32px; display: flex; flex-direction: column; gap: 24px; }
+    main {
+      padding: 1.2rem 2rem 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.2rem;
+    }
+
+    /* ── 섹션 제목 ── */
+    .section-title {
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: var(--muted);
+      margin-bottom: 0.6rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
 
     /* ── SLO 배너 ── */
     .slo-banner {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 0.75rem;
     }
     .slo-card {
-      background: #1a1d27;
-      border: 1px solid #2d3148;
-      border-radius: 12px;
-      padding: 20px 24px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 0.9rem 1.2rem;
     }
-    .slo-card .label { font-size: 12px; color: #64748b; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
-    .slo-card .value { font-size: 28px; font-weight: 700; }
-    .slo-card .value.green { color: #22c55e; }
-    .slo-card .value.yellow { color: #eab308; }
-    .slo-card .value.red { color: #ef4444; }
-    .slo-card .sub { font-size: 12px; color: #64748b; margin-top: 4px; }
-
-    /* ── 섹션 제목 ── */
-    .section-title {
-      font-size: 14px;
-      font-weight: 600;
-      color: #94a3b8;
-      margin-bottom: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
+    .slo-card .label { font-size: 0.7rem; color: var(--muted); margin-bottom: 0.25rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .slo-card .value { font-size: 1.7rem; font-weight: 700; line-height: 1.2; }
+    .slo-card .value.green { color: var(--green); }
+    .slo-card .value.yellow { color: var(--yellow); }
+    .slo-card .value.red { color: var(--red); }
+    .slo-card .sub { font-size: 0.7rem; color: var(--muted); margin-top: 0.25rem; }
 
     /* ── 서비스 상태 ── */
     .services {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 0.625rem;
     }
     .service-card {
-      background: #1a1d27;
-      border: 1px solid #2d3148;
-      border-radius: 12px;
-      padding: 20px 24px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.625rem;
+      padding: 0.625rem 0.875rem;
       display: flex;
       align-items: center;
-      gap: 16px;
+      gap: 0.625rem;
     }
     .status-dot {
-      width: 12px; height: 12px;
+      width: 0.6rem; height: 0.6rem;
       border-radius: 50%;
       flex-shrink: 0;
     }
-    .status-dot.up { background: #22c55e; box-shadow: 0 0 8px #22c55e88; }
-    .status-dot.down { background: #ef4444; box-shadow: 0 0 8px #ef444488; }
-    .status-dot.pending { background: #eab308; box-shadow: 0 0 8px #eab30888; }
-    .service-info .name { font-size: 15px; font-weight: 600; }
-    .service-info .status-text { font-size: 12px; color: #64748b; margin-top: 2px; }
+    .status-dot.up     { background: var(--green);  box-shadow: 0 0 6px #22c55e88; }
+    .status-dot.down   { background: var(--red);    box-shadow: 0 0 6px #ef444488; }
+    .status-dot.pending{ background: var(--yellow); box-shadow: 0 0 6px #eab30888; }
+    .service-info .name        { font-size: 0.8rem; font-weight: 600; }
+    .service-info .status-text { font-size: 0.7rem; color: var(--muted); margin-top: 1px; }
 
-    /* ── 차트 행 ── */
-    .charts-row {
+    /* ── 하단 행 (차트2 + 알림1) ── */
+    .bottom-row {
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 0.75rem;
     }
-    .chart-card {
-      background: #1a1d27;
-      border: 1px solid #2d3148;
-      border-radius: 12px;
-      padding: 20px 24px;
+    .chart-card, .alerts-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 0.875rem 1.2rem;
     }
-    .chart-card canvas { margin-top: 16px; }
 
     /* ── 알림 ── */
-    .alerts-list { display: flex; flex-direction: column; gap: 10px; }
+    .alerts-list { display: flex; flex-direction: column; gap: 0.5rem; }
     .alert-item {
-      background: #1a1d27;
-      border: 1px solid #2d3148;
-      border-radius: 10px;
-      padding: 14px 20px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      padding: 0.55rem 0.75rem;
       display: flex;
       align-items: center;
-      gap: 14px;
+      gap: 0.625rem;
     }
     .alert-badge {
-      font-size: 11px;
+      font-size: 0.65rem;
       font-weight: 700;
-      padding: 3px 10px;
-      border-radius: 20px;
+      padding: 2px 8px;
+      border-radius: 1rem;
       flex-shrink: 0;
     }
-    .alert-badge.critical { background: #ef444422; color: #ef4444; border: 1px solid #ef444444; }
-    .alert-badge.warning  { background: #eab30822; color: #eab308; border: 1px solid #eab30844; }
-    .alert-badge.resolved { background: #22c55e22; color: #22c55e; border: 1px solid #22c55e44; }
-    .alert-msg { font-size: 14px; flex: 1; }
-    .alert-time { font-size: 12px; color: #64748b; flex-shrink: 0; }
+    .alert-badge.critical { background: #ef444422; color: var(--red);    border: 1px solid #ef444444; }
+    .alert-badge.warning  { background: #eab30822; color: var(--yellow); border: 1px solid #eab30844; }
+    .alert-badge.resolved { background: #22c55e22; color: var(--green);  border: 1px solid #22c55e44; }
+    .alert-msg  { font-size: 0.75rem; flex: 1; }
+    .alert-time { font-size: 0.7rem; color: var(--muted); flex-shrink: 0; }
 
-    /* ── 반응형 ── */
-    @media (max-width: 900px) {
-      .slo-banner { grid-template-columns: repeat(2, 1fr); }
-      .services { grid-template-columns: 1fr 1fr; }
-      .charts-row { grid-template-columns: 1fr; }
+    /* ── 리소스 행 ── */
+    .resource-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 0.75rem;
+      padding-bottom: 1rem;
+    }
+    .resource-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 0.875rem 1.2rem;
+    }
+    .resource-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.6rem;
+    }
+    .resource-header .res-name { font-size: 0.75rem; font-weight: 600; color: var(--sub); }
+    .resource-header .res-val  { font-size: 1rem; font-weight: 700; }
+    .res-val.green  { color: var(--green); }
+    .res-val.yellow { color: var(--yellow); }
+    .res-val.red    { color: var(--red); }
+    .progress-bar {
+      width: 100%;
+      height: 6px;
+      background: #2d3148;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.4s ease;
+    }
+    .progress-fill.green  { background: var(--green); }
+    .progress-fill.yellow { background: var(--yellow); }
+    .progress-fill.red    { background: var(--red); }
+    .res-sub { font-size: 0.68rem; color: var(--muted); margin-top: 0.4rem; }
+
+    @media (max-width: 600px) {
+      main { padding: 0.75rem 1rem; }
+      header { padding: 0.6rem 1rem; }
     }
   </style>
 </head>
@@ -203,50 +264,103 @@
       <div class="service-card">
         <div class="status-dot pending"></div>
         <div class="service-info">
-          <div class="name">BentoML (inference-api)</div>
+          <div class="name">BentoML</div>
           <div class="status-text">배포 대기 중</div>
         </div>
       </div>
       <div class="service-card">
         <div class="status-dot pending"></div>
         <div class="service-info">
-          <div class="name">KServe (predictor)</div>
+          <div class="name">KServe</div>
           <div class="status-text">배포 대기 중</div>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- 차트 -->
-  <div class="charts-row">
-    <div class="chart-card">
-      <div class="section-title">추론 요청 수 (최근 1시간)</div>
-      <canvas id="requestChart" height="120"></canvas>
-    </div>
-    <div class="chart-card">
-      <div class="section-title">에러율 추이 (최근 1시간)</div>
-      <canvas id="errorChart" height="120"></canvas>
+  <!-- 인프라 리소스 -->
+  <div>
+    <div class="section-title">클러스터 리소스 사용률</div>
+    <div class="resource-row">
+      <div class="resource-card">
+        <div class="resource-header">
+          <span class="res-name">CPU 사용률</span>
+          <span class="res-val green" id="cpu-val">34%</span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill green" id="cpu-bar" style="width:34%"></div></div>
+        <div class="res-sub">7 노드 평균 · 요청: 3.5 / 한도: 14 core</div>
+      </div>
+      <div class="resource-card">
+        <div class="resource-header">
+          <span class="res-name">메모리 사용률</span>
+          <span class="res-val yellow" id="mem-val">61%</span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill yellow" id="mem-bar" style="width:61%"></div></div>
+        <div class="res-sub">7 노드 평균 · 사용: 19.5 / 32 GB</div>
+      </div>
+      <div class="resource-card">
+        <div class="resource-header">
+          <span class="res-name">디스크 사용률</span>
+          <span class="res-val green" id="disk-val">28%</span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill green" id="disk-bar" style="width:28%"></div></div>
+        <div class="res-sub">PVC 합계 · 사용: 45 / 160 GB</div>
+      </div>
+      <div class="resource-card">
+        <div class="resource-header">
+          <span class="res-name">실행 중인 파드</span>
+          <span class="res-val green">21 / 21</span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill green" style="width:100%"></div></div>
+        <div class="res-sub">monitoring · hasp · keda · argocd</div>
+      </div>
+      <div class="resource-card">
+        <div class="resource-header">
+          <span class="res-name">노드 상태</span>
+          <span class="res-val green">7 / 7</span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill green" style="width:100%"></div></div>
+        <div class="res-sub">inference × 2 · app × 2 · system × 2 · monitoring × 1</div>
+      </div>
+      <div class="resource-card">
+        <div class="resource-header">
+          <span class="res-name">네트워크 수신</span>
+          <span class="res-val green">2.4 MB/s</span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill green" style="width:24%"></div></div>
+        <div class="res-sub">클러스터 인바운드 트래픽</div>
+      </div>
     </div>
   </div>
 
-  <!-- 최근 알림 -->
-  <div>
-    <div class="section-title">최근 알림</div>
-    <div class="alerts-list">
-      <div class="alert-item">
-        <span class="alert-badge resolved">RESOLVED</span>
-        <span class="alert-msg">KubeNodeNotReady — ip-10-0-11-37 일시적 불응답</span>
-        <span class="alert-time">12분 전</span>
-      </div>
-      <div class="alert-item">
-        <span class="alert-badge warning">WARNING</span>
-        <span class="alert-msg">PrometheusTargetMissing — BentoML scrape 대상 없음 (배포 전)</span>
-        <span class="alert-time">2시간 전</span>
-      </div>
-      <div class="alert-item">
-        <span class="alert-badge resolved">RESOLVED</span>
-        <span class="alert-msg">LokiStorageFull — PVC 재생성으로 해결</span>
-        <span class="alert-time">어제</span>
+  <!-- 차트 + 알림 -->
+  <div class="bottom-row">
+    <div class="chart-card">
+      <div class="section-title">추론 요청 수 (최근 1시간)</div>
+      <canvas id="requestChart" height="140"></canvas>
+    </div>
+    <div class="chart-card">
+      <div class="section-title">에러율 추이 (최근 1시간)</div>
+      <canvas id="errorChart" height="140"></canvas>
+    </div>
+    <div class="alerts-card">
+      <div class="section-title">최근 알림</div>
+      <div class="alerts-list">
+        <div class="alert-item">
+          <span class="alert-badge resolved">RESOLVED</span>
+          <span class="alert-msg">KubeNodeNotReady — ip-10-0-11-37 일시적 불응답</span>
+          <span class="alert-time">12분 전</span>
+        </div>
+        <div class="alert-item">
+          <span class="alert-badge warning">WARNING</span>
+          <span class="alert-msg">PrometheusTargetMissing — BentoML scrape 대상 없음</span>
+          <span class="alert-time">2시간 전</span>
+        </div>
+        <div class="alert-item">
+          <span class="alert-badge resolved">RESOLVED</span>
+          <span class="alert-msg">LokiStorageFull — PVC 재생성으로 해결</span>
+          <span class="alert-time">어제</span>
+        </div>
       </div>
     </div>
   </div>
@@ -254,67 +368,53 @@
 </main>
 
 <script>
-  // 시계
   function updateClock() {
-    const now = new Date();
     document.getElementById('clock').textContent =
-      now.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }) + ' KST';
+      new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }) + ' KST';
   }
   updateClock();
   setInterval(updateClock, 1000);
 
-  // 추론 요청 수 차트
-  const reqCtx = document.getElementById('requestChart').getContext('2d');
-  new Chart(reqCtx, {
+  const commonOpts = (extraY = {}) => ({
+    responsive: true,
+    maintainAspectRatio: true,
+    plugins: { legend: { labels: { color: '#94a3b8', boxWidth: 10, font: { size: 11 } } } },
+    scales: {
+      x: { ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: '#2d3148' } },
+      y: { ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: '#2d3148' }, ...extraY }
+    }
+  });
+
+  const labels = Array.from({length: 12}, (_, i) => `${55 - i * 5}분`).reverse();
+
+  new Chart(document.getElementById('requestChart'), {
     type: 'line',
     data: {
-      labels: Array.from({length: 12}, (_, i) => `${55 - i * 5}분 전`).reverse(),
+      labels,
       datasets: [{
         label: '요청 수/분',
         data: [42, 58, 61, 55, 70, 66, 80, 74, 69, 85, 78, 90],
         borderColor: '#6366f1',
         backgroundColor: '#6366f122',
-        fill: true,
-        tension: 0.4,
-        pointRadius: 3,
+        fill: true, tension: 0.4, pointRadius: 2,
       }]
     },
-    options: {
-      plugins: { legend: { labels: { color: '#94a3b8' } } },
-      scales: {
-        x: { ticks: { color: '#64748b' }, grid: { color: '#2d3148' } },
-        y: { ticks: { color: '#64748b' }, grid: { color: '#2d3148' } }
-      }
-    }
+    options: commonOpts()
   });
 
-  // 에러율 차트
-  const errCtx = document.getElementById('errorChart').getContext('2d');
-  new Chart(errCtx, {
+  new Chart(document.getElementById('errorChart'), {
     type: 'line',
     data: {
-      labels: Array.from({length: 12}, (_, i) => `${55 - i * 5}분 전`).reverse(),
+      labels,
       datasets: [{
         label: '에러율 (%)',
         data: [0.2, 0.3, 0.1, 0.4, 0.2, 0.3, 0.5, 0.2, 0.3, 0.1, 0.4, 0.3],
         borderColor: '#22c55e',
         backgroundColor: '#22c55e22',
-        fill: true,
-        tension: 0.4,
-        pointRadius: 3,
+        fill: true, tension: 0.4, pointRadius: 2,
       }]
     },
-    options: {
-      plugins: { legend: { labels: { color: '#94a3b8' } } },
-      scales: {
-        x: { ticks: { color: '#64748b' }, grid: { color: '#2d3148' } },
-        y: {
-          ticks: { color: '#64748b', callback: v => v + '%' },
-          grid: { color: '#2d3148' },
-          max: 2
-        }
-      }
-    }
+    options: commonOpts({ ticks: { color: '#64748b', callback: v => v + '%', font: { size: 10 } }, max: 2 })
   });
 </script>
 
