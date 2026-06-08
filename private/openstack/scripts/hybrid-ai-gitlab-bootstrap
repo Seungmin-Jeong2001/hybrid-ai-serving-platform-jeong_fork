@@ -125,6 +125,49 @@ ensure_packages() {
   systemctl enable --now docker
 }
 
+ensure_swap() {
+  local swap_file=/swapfile
+  local swap_size_gb=4
+  local swap_size_bytes
+  local current_size_bytes=0
+
+  if [[ -n "${GITLAB_SWAP_SIZE_GB:-}" ]]; then
+    swap_size_gb="${GITLAB_SWAP_SIZE_GB}"
+  fi
+  if ! [[ "$swap_size_gb" =~ ^[0-9]+$ ]]; then
+    echo "GITLAB_SWAP_SIZE_GB must be a non-negative integer" >&2
+    return 1
+  fi
+  if (( swap_size_gb == 0 )); then
+    return 0
+  fi
+
+  swap_size_bytes=$((swap_size_gb * 1024 * 1024 * 1024))
+  if [[ -f "$swap_file" ]]; then
+    current_size_bytes="$(stat -c %s "$swap_file")"
+  fi
+  if swapon --noheadings --raw --show=NAME | grep -qx "$swap_file" \
+    && [[ "$current_size_bytes" -eq "$swap_size_bytes" ]]; then
+    return 0
+  fi
+
+  swapoff "$swap_file" >/dev/null 2>&1 || true
+  if [[ "$current_size_bytes" -ne "$swap_size_bytes" ]]; then
+    rm -f "$swap_file"
+    if ! fallocate -l "${swap_size_gb}G" "$swap_file"; then
+      dd if=/dev/zero of="$swap_file" bs=1M count=$((swap_size_gb * 1024)) status=none
+    fi
+  fi
+  chmod 0600 "$swap_file"
+  mkswap "$swap_file" >/dev/null
+  swapon "$swap_file"
+  if grep -qE "^[^#][[:space:]]+${swap_file//\//\\/}[[:space:]]+" /etc/fstab; then
+    sed -i "s|^[^#][[:space:]]\\+${swap_file//\//\\/}[[:space:]].*|${swap_file} none swap sw 0 0|" /etc/fstab
+  elif ! grep -qE "^[^#]*${swap_file//\//\\/}" /etc/fstab; then
+    printf '%s none swap sw 0 0\n' "$swap_file" >> /etc/fstab
+  fi
+}
+
 write_omnibus_config() {
   install -d -m 0755 /srv/gitlab/config /srv/gitlab/logs /srv/gitlab/data
   if [[ -s "${GITLAB_ROOT_PASSWORD_FILE:-}" && ! -s /srv/gitlab/config/root_password ]]; then
@@ -144,7 +187,7 @@ gitlab_rails['usage_ping_enabled'] = false
 gitlab_rails['time_zone'] = 'UTC'
 puma['worker_processes'] = 1
 puma['min_threads'] = 2
-puma['max_threads'] = 2
+puma['max_threads'] = 3
 sidekiq['concurrency'] = 1
 prometheus_monitoring['enable'] = false
 prometheus['enable'] = false
@@ -232,6 +275,25 @@ ensure_container() {
   if [[ "$current_status" != "running" ]]; then
     docker start gitlab
   fi
+}
+
+ensure_container_config_applied() {
+  local checksum_file="${state_dir}/omnibus_config.sha256"
+  local current_checksum=""
+  local previous_checksum=""
+
+  mkdir -p "$state_dir"
+  current_checksum="$(sha256sum /srv/gitlab/config/omnibus_config.rb | awk '{print $1}')"
+  if [[ -s "$checksum_file" ]]; then
+    previous_checksum="$(cat "$checksum_file")"
+  fi
+  if [[ "$current_checksum" == "$previous_checksum" ]]; then
+    return 0
+  fi
+
+  echo "GitLab omnibus config changed; restarting container to apply runtime defaults"
+  docker restart gitlab >/dev/null
+  printf '%s\n' "$current_checksum" > "$checksum_file"
 }
 
 wait_for_web() {
@@ -631,6 +693,7 @@ main() {
   hostnamectl set-hostname "$GITLAB_DOMAIN" || true
   ensure_apt_config
   ensure_packages
+  ensure_swap
   for package in gitlab-ce gitlab-ee; do
     local package_status=""
     package_status="$(dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null || true)"
@@ -641,6 +704,7 @@ main() {
   rm -rf /opt/gitlab /etc/gitlab /var/opt/gitlab /var/log/gitlab
   write_omnibus_config
   ensure_container
+  ensure_container_config_applied
   wait_for_web
   apply_rails_settings
   ensure_admin_account

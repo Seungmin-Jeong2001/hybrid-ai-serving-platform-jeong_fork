@@ -83,6 +83,7 @@ env:
   TF_VAR_control_plane_flavor_name: ${{ vars.CONTROL_PLANE_FLAVOR_NAME || 'm1.medium' }}
   TF_VAR_build_worker_image_name: ${{ vars.BUILD_WORKER_IMAGE_NAME || 'ubuntu-22.04' }}
   TF_VAR_build_worker_flavor_name: ${{ vars.BUILD_WORKER_FLAVOR_NAME || 'm1.large' }}
+  TF_VAR_gpu_worker_count: ${{ vars.GPU_WORKER_COUNT || '0' }}
   TF_VAR_gpu_worker_image_name: ${{ vars.GPU_WORKER_IMAGE_NAME || 'ubuntu-22.04' }}
   TF_VAR_gpu_worker_flavor_name: ${{ vars.GPU_WORKER_FLAVOR_NAME || 'g1.large' }}
   TF_VAR_gitlab_count: ${{ vars.GITLAB_COUNT || '1' }}
@@ -107,6 +108,10 @@ env:
   HA_DEVSTACK_WORKER_FLAVOR_RAM: "8192"
   HA_DEVSTACK_WORKER_FLAVOR_VCPUS: "4"
   HA_DEVSTACK_WORKER_FLAVOR_DISK: "80"
+  HA_DEVSTACK_GITLAB_FLAVOR_NAME: ha.m1.gitlab
+  HA_DEVSTACK_GITLAB_FLAVOR_RAM: "16384"
+  HA_DEVSTACK_GITLAB_FLAVOR_VCPUS: "4"
+  HA_DEVSTACK_GITLAB_FLAVOR_DISK: "80"
 
 jobs:
   install-openstack:
@@ -644,6 +649,10 @@ jobs:
             "${HA_DEVSTACK_WORKER_FLAVOR_RAM}" \
             "${HA_DEVSTACK_WORKER_FLAVOR_VCPUS}" \
             "${HA_DEVSTACK_WORKER_FLAVOR_DISK}" \
+            "${HA_DEVSTACK_GITLAB_FLAVOR_NAME}" \
+            "${HA_DEVSTACK_GITLAB_FLAVOR_RAM}" \
+            "${HA_DEVSTACK_GITLAB_FLAVOR_VCPUS}" \
+            "${HA_DEVSTACK_GITLAB_FLAVOR_DISK}" \
             "${HA_OPENSTACK_GPU_FLAVOR_NAME}" \
             "${HA_OPENSTACK_GPU_FLAVOR_RAM}" \
             "${HA_OPENSTACK_GPU_FLAVOR_VCPUS}" \
@@ -709,6 +718,7 @@ jobs:
           ensure_flavor "$1" "$2" "$3" "$4"
           ensure_flavor "$5" "$6" "$7" "$8"
           ensure_flavor "$9" "${10}" "${11}" "${12}"
+          ensure_flavor "${13}" "${14}" "${15}" "${16}"
           ENSURE_COMPUTE_FLAVORS
 
       - name: Configure Nova GPU passthrough
@@ -1283,11 +1293,12 @@ jobs:
               printf 'control_plane_flavor_name = "%s"\n' "${HA_DEVSTACK_CONTROL_FLAVOR_NAME}"
               printf 'build_worker_image_name = "%s"\n' "${TF_VAR_build_worker_image_name}"
               printf 'build_worker_flavor_name = "%s"\n' "${HA_DEVSTACK_WORKER_FLAVOR_NAME}"
+              printf 'gpu_worker_count = %s\n' "${TF_VAR_gpu_worker_count}"
               printf 'gpu_worker_image_name = "%s"\n' "${TF_VAR_gpu_worker_image_name}"
               printf 'gpu_worker_flavor_name = "%s"\n' "${HA_OPENSTACK_GPU_FLAVOR_NAME}"
               printf 'gitlab_count = %s\n' "${TF_VAR_gitlab_count}"
               printf 'gitlab_image_name = "%s"\n' "${TF_VAR_gitlab_image_name}"
-              printf 'gitlab_flavor_name = "%s"\n' "${HA_DEVSTACK_WORKER_FLAVOR_NAME}"
+              printf 'gitlab_flavor_name = "%s"\n' "${HA_DEVSTACK_GITLAB_FLAVOR_NAME}"
               printf 'gitlab_container_image = "%s"\n' "${TF_VAR_gitlab_container_image}"
             } > zz-local-devstack.auto.tfvars
             echo "Wrote Terraform DevStack overrides for local OpenStack"
@@ -1816,26 +1827,28 @@ jobs:
             "$target_project_id" \
             "$HA_DEVSTACK_CONTROL_FLAVOR_NAME" \
             "$HA_DEVSTACK_WORKER_FLAVOR_NAME" \
+            "$HA_DEVSTACK_GITLAB_FLAVOR_NAME" \
             "$HA_OPENSTACK_GPU_FLAVOR_NAME" <<'RESIZE_LOCAL_DEVSTACK_INSTANCES'
           set -eo pipefail
           project_name="$1"
           target_project_id="$2"
           control_flavor="$3"
           worker_flavor="$4"
-          gpu_flavor="$5"
+          gitlab_flavor="$5"
+          gpu_flavor="$6"
 
           cd /opt/stack/devstack
           set +u
           source openrc admin admin >/dev/null
           set -u
 
-          python3 - "$project_name" "$target_project_id" "$control_flavor" "$worker_flavor" "$gpu_flavor" <<'PY'
+          python3 - "$project_name" "$target_project_id" "$control_flavor" "$worker_flavor" "$gitlab_flavor" "$gpu_flavor" <<'PY'
           import json
           import subprocess
           import sys
           import time
 
-          project_name, target_project_id, control_flavor, worker_flavor, gpu_flavor = sys.argv[1:6]
+          project_name, target_project_id, control_flavor, worker_flavor, gitlab_flavor, gpu_flavor = sys.argv[1:7]
 
           def openstack_json(*args):
               return json.loads(subprocess.check_output(["openstack", *args, "-f", "json"], text=True))
@@ -1849,8 +1862,10 @@ jobs:
           def desired_flavor_for(name):
               if name.startswith(f"{project_name}-control-"):
                   return control_flavor
-              if name.startswith(f"{project_name}-build-") or name.startswith(f"{project_name}-gitlab-"):
+              if name.startswith(f"{project_name}-build-"):
                   return worker_flavor
+              if name.startswith(f"{project_name}-gitlab-"):
+                  return gitlab_flavor
               if name.startswith(f"{project_name}-gpu-"):
                   return gpu_flavor
               return ""
