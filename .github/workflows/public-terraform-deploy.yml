@@ -244,10 +244,10 @@ jobs:
               f"aws eks update-kubeconfig --region {os.environ['AWS_REGION']} --name {os.environ['EKS_CLUSTER_NAME']} --kubeconfig /tmp/eks-kubeconfig",
               "kubectl get application -n argocd -o name | xargs -I{} kubectl patch {} -n argocd -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge || true",
               "kubectl delete application --all -n argocd --wait --timeout=120s || true",
-              "kubectl get inferenceservice -n inference -o name | xargs -I{} kubectl patch {} -n inference -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge || true",
-              "kubectl delete inferenceservice --all -n inference --wait --timeout=60s || true",
+              "for resource in $(kubectl api-resources --verbs=list --namespaced -o name 2>/dev/null); do kubectl get $resource -n inference -o name 2>/dev/null | xargs -I{} kubectl patch {} -n inference -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge 2>/dev/null || true; done",
+              "kubectl delete all --all -n inference --force --grace-period=0 || true",
               "kubectl patch namespace inference -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge || true",
-              "kubectl delete namespace inference --wait --timeout=60s || true",
+              "kubectl delete namespace inference --force --grace-period=0 || true",
           ]
 
           with open("argocd-cleanup-commands.json", "w") as fp:
