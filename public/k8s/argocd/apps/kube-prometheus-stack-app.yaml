@@ -100,4 +100,6 @@ spec:
       - CreateNamespace=true
       # Prometheus Operator CRDs exceed the client-side apply limit, so sync with server-side apply.
       - ServerSideApply=true
+      # Prometheus Operator CRDs can still fail under client-side patching, so allow replace on this chart.
+      - Replace=true
 
