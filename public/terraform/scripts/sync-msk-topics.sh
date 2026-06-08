@@ -55,13 +55,15 @@ printf '%s' "$MSK_TOPICS_JSON" | jq -r 'to_entries[] | @base64' | while IFS= rea
     --bootstrap-server "$MSK_BOOTSTRAP_BROKERS" \
     --describe \
     --topic "$topic_name" 2>/dev/null \
-    | grep -oE 'PartitionCount:[0-9]+' | cut -d: -f2 || echo "")"
+    | grep "Topic: $topic_name" \
+    | grep -oE 'PartitionCount: ?[0-9]+' | grep -oE '[0-9]+' || echo "")"
 
   if [ -z "$existing_partitions" ]; then
     echo "Creating topic '$topic_name' with $desired_partitions partitions."
     "$KAFKA_TOPICS" \
       --bootstrap-server "$MSK_BOOTSTRAP_BROKERS" \
       --create \
+      --if-not-exists \
       --topic "$topic_name" \
       --partitions "$desired_partitions" \
       --replication-factor "$MSK_TOPIC_REPLICATION_FACTOR"
