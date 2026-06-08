@@ -13,6 +13,7 @@ HA_OPENSTACK_IMAGE_CACHE_HARBOR_FLAVOR="${HA_OPENSTACK_IMAGE_CACHE_HARBOR_FLAVOR
 HA_OPENSTACK_IMAGE_CACHE_NETWORK="${HA_OPENSTACK_IMAGE_CACHE_NETWORK:-private}"
 HA_OPENSTACK_IMAGE_CACHE_FLOATING_POOL="${HA_OPENSTACK_IMAGE_CACHE_FLOATING_POOL:-public}"
 HA_OPENSTACK_IMAGE_CACHE_KEYPAIR="${HA_OPENSTACK_IMAGE_CACHE_KEYPAIR:-hybrid-ai-image-cache-builder}"
+HA_OPENSTACK_IMAGE_CACHE_SECURITY_GROUP="${HA_OPENSTACK_IMAGE_CACHE_SECURITY_GROUP:-}"
 HA_OPENSTACK_IMAGE_CACHE_SSH_USER="${HA_OPENSTACK_IMAGE_CACHE_SSH_USER:-ubuntu}"
 HA_OPENSTACK_IMAGE_CACHE_WAIT_SECONDS="${HA_OPENSTACK_IMAGE_CACHE_WAIT_SECONDS:-5400}"
 HA_OPENSTACK_IMAGE_CACHE_BOOT_WAIT_SECONDS="${HA_OPENSTACK_IMAGE_CACHE_BOOT_WAIT_SECONDS:-900}"
@@ -225,15 +226,26 @@ rm -f "$tmp_key"
 REMOTE
 }
 
+builder_security_group_id() {
+  if [[ -n "$HA_OPENSTACK_IMAGE_CACHE_SECURITY_GROUP" ]]; then
+    os openstack security group show "$HA_OPENSTACK_IMAGE_CACHE_SECURITY_GROUP" -f value -c id
+    return
+  fi
+
+  os openstack security group list --project admin -f value -c ID -c Name \
+    | awk '$2 == "default" {print $1; exit}'
+}
+
 ensure_builder_security_group() {
-  lxc exec ha-openstack -- sudo -u stack -H bash -s <<'REMOTE'
-set -euo pipefail
-cd /opt/stack/devstack
-set +u
-source openrc admin admin >/dev/null
-set -u
-openstack security group rule create --proto tcp --dst-port 22 default >/dev/null 2>&1 || true
-REMOTE
+  local security_group_id
+
+  security_group_id="$(builder_security_group_id)"
+  if [[ -z "$security_group_id" ]]; then
+    echo "unable to resolve image cache builder security group" >&2
+    return 1
+  fi
+
+  os openstack security group rule create --proto tcp --dst-port 22 "$security_group_id" >/dev/null 2>&1 || true
 }
 
 role_env_name() {
@@ -576,6 +588,7 @@ build_cache_image() {
   local manifest="$4"
   local flavor
   local server_name
+  local security_group_id
   local fip=""
   local manifest_b64=""
   local training_packages_b64=""
@@ -584,6 +597,11 @@ build_cache_image() {
   server_name="${image_name}-builder"
   manifest_b64="$(printf '%s' "$manifest" | base64 -w0)"
   training_packages_b64="$(printf '%s' "$HA_OPENSTACK_IMAGE_CACHE_TRAINING_PACKAGES" | base64 -w0)"
+  security_group_id="$(builder_security_group_id)"
+  if [[ -z "$security_group_id" ]]; then
+    echo "unable to resolve image cache builder security group" >&2
+    return 1
+  fi
 
   log "building ${image_name} from ${base_image} using ${flavor}"
   os openstack server delete "$server_name" >/dev/null 2>&1 || true
