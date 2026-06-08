@@ -3,6 +3,7 @@ kind: Kustomization
 resources:
   - cert-manager-app.yaml
   - inference-api-app.yaml
+  - inference-worker-app.yaml
   - metrics-server-app.yaml
   - keda-app.yaml
   - kube-prometheus-stack-app.yaml
