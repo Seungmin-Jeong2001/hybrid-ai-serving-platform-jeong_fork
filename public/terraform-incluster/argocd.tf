@@ -60,5 +60,8 @@ resource "helm_release" "argocd" {
     })
   ]
 
-  depends_on = [kubernetes_namespace.argocd]
+  depends_on = [
+    kubernetes_namespace.argocd,
+    time_sleep.wait_for_aws_load_balancer_controller_webhook,
+  ]
 }
