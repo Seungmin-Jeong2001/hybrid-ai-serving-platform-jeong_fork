@@ -91,24 +91,6 @@ jobs:
         working-directory: public/terraform
         run: terraform apply -auto-approve tfplan
 
-      - name: Sync MSK topics
-        if: ${{ inputs.action == 'apply' }}
-        working-directory: public/terraform
-        run: |
-          MANAGE_MSK_TOPICS=$(terraform output -raw manage_msk_topics)
-          if [[ "${MANAGE_MSK_TOPICS}" != "true" ]]; then
-            echo "MSK topic reconciliation is disabled."
-            exit 0
-          fi
-
-          export AWS_REGION="${AWS_REGION}"
-          export MSK_CLUSTER_ARN="$(terraform output -raw msk_cluster_arn)"
-          export MSK_TOPIC_REPLICATION_FACTOR="$(terraform output -raw msk_topic_replication_factor)"
-          export MSK_TOPIC_CONFIGS_JSON="$(terraform output -json msk_topic_configs)"
-          export MSK_TOPICS_JSON="$(terraform output -json msk_topics)"
-
-          /bin/sh ./scripts/sync-msk-topics.sh
-
       - name: Resolve SSM bootstrap instance
         id: resolve_instance
         run: |
@@ -144,6 +126,102 @@ jobs:
           fi
 
           echo "value=${TARGET_INSTANCE_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Sync MSK topics via SSM
+        if: ${{ inputs.action == 'apply' }}
+        id: sync_msk_topics
+        env:
+          TARGET_INSTANCE_ID: ${{ steps.resolve_instance.outputs.value }}
+        working-directory: public/terraform
+        run: |
+          MANAGE_MSK_TOPICS=$(terraform output -raw manage_msk_topics)
+          if [[ "${MANAGE_MSK_TOPICS}" != "true" ]]; then
+            echo "MSK topic reconciliation is disabled."
+            exit 0
+          fi
+
+          export MSK_BOOTSTRAP_BROKERS="$(terraform output -raw msk_bootstrap_brokers)"
+          export MSK_TOPIC_REPLICATION_FACTOR="$(terraform output -raw msk_topic_replication_factor)"
+          export MSK_TOPIC_CONFIGS_JSON="$(terraform output -json msk_topic_configs)"
+          export MSK_TOPICS_JSON="$(terraform output -json msk_topics)"
+          export SCRIPT_B64="$(base64 -w 0 scripts/sync-msk-topics.sh)"
+
+          python - <<PY
+          import json, os
+
+          commands = [
+              "set -eu",
+              f"echo '{os.environ['SCRIPT_B64']}' | base64 -d > /tmp/sync-msk-topics.sh",
+              "chmod +x /tmp/sync-msk-topics.sh",
+              f"export MSK_BOOTSTRAP_BROKERS='{os.environ['MSK_BOOTSTRAP_BROKERS']}'",
+              f"export MSK_TOPIC_REPLICATION_FACTOR='{os.environ['MSK_TOPIC_REPLICATION_FACTOR']}'",
+              f"export MSK_TOPIC_CONFIGS_JSON='{os.environ['MSK_TOPIC_CONFIGS_JSON']}'",
+              f"export MSK_TOPICS_JSON='{os.environ['MSK_TOPICS_JSON']}'",
+              "/bin/sh /tmp/sync-msk-topics.sh",
+          ]
+
+          with open("msk-commands.json", "w") as fp:
+              json.dump({"commands": commands}, fp)
+          PY
+
+          COMMAND_ID=$(aws ssm send-command \
+            --region "${AWS_REGION}" \
+            --instance-ids "${TARGET_INSTANCE_ID}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Sync MSK topics on ${EKS_CLUSTER_NAME}" \
+            --parameters file://msk-commands.json \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "command_id=${COMMAND_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for MSK topics sync result
+        if: ${{ inputs.action == 'apply' && steps.sync_msk_topics.outputs.command_id != '' }}
+        env:
+          COMMAND_ID: ${{ steps.sync_msk_topics.outputs.command_id }}
+          TARGET_INSTANCE_ID: ${{ steps.resolve_instance.outputs.value }}
+        run: |
+          for ((i=1; i<=SSM_WAIT_ATTEMPTS; i++)); do
+            STATUS=$(aws ssm get-command-invocation \
+              --region "${AWS_REGION}" \
+              --command-id "${COMMAND_ID}" \
+              --instance-id "${TARGET_INSTANCE_ID}" \
+              --query 'Status' \
+              --output text)
+
+            echo "MSK topics sync status (${i}/${SSM_WAIT_ATTEMPTS}): ${STATUS}"
+
+            if [[ "${STATUS}" == "Success" ]]; then
+              aws ssm get-command-invocation \
+                --region "${AWS_REGION}" \
+                --command-id "${COMMAND_ID}" \
+                --instance-id "${TARGET_INSTANCE_ID}" \
+                --query 'StandardOutputContent' \
+                --output text || true
+              exit 0
+            fi
+
+            if [[ "${STATUS}" == "Failed" || "${STATUS}" == "Cancelled" || "${STATUS}" == "TimedOut" || "${STATUS}" == "Undeliverable" || "${STATUS}" == "Terminated" ]]; then
+              aws ssm get-command-invocation \
+                --region "${AWS_REGION}" \
+                --command-id "${COMMAND_ID}" \
+                --instance-id "${TARGET_INSTANCE_ID}" \
+                --query 'StandardOutputContent' \
+                --output text || true
+              aws ssm get-command-invocation \
+                --region "${AWS_REGION}" \
+                --command-id "${COMMAND_ID}" \
+                --instance-id "${TARGET_INSTANCE_ID}" \
+                --query 'StandardErrorContent' \
+                --output text || true
+              exit 1
+            fi
+
+            sleep "${SSM_WAIT_INTERVAL_SECONDS}"
+          done
+
+          echo "MSK topics sync timed out."
+          exit 1
 
       - name: Send in-cluster Terraform command through SSM
         id: send_incluster

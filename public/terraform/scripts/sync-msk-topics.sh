@@ -1,10 +1,16 @@
 #!/bin/sh
-# Terraform 적용 시 필요한 MSK 토픽 생성 및 파티션 수 지정
+# MSK 토픽 생성 및 설정 동기화 (kafka-topics.sh / kafka-configs.sh 사용)
 
 set -eu
 
+KAFKA_VERSION="3.7.1"
+KAFKA_SCALA="2.13"
+KAFKA_DIR="/tmp/kafka-${KAFKA_VERSION}"
+KAFKA_TOPICS="${KAFKA_DIR}/bin/kafka-topics.sh"
+KAFKA_CONFIGS="${KAFKA_DIR}/bin/kafka-configs.sh"
+
 require_env() {
-  var_name="$1" 
+  var_name="$1"
   eval "var_value=\${$var_name:-}"
   if [ -z "$var_value" ]; then
     echo "$var_name must be set." >&2
@@ -12,32 +18,7 @@ require_env() {
   fi
 }
 
-wait_topic_active() {
-  topic_name="$1"
-  attempt=0
-
-  while [ "$attempt" -lt 30 ]; do
-    status="$(aws kafka describe-topic \
-      --region "$AWS_REGION" \
-      --cluster-arn "$MSK_CLUSTER_ARN" \
-      --topic-name "$topic_name" \
-      --query 'Status' \
-      --output text 2>/dev/null || true)"
-
-    if [ "$status" = "ACTIVE" ]; then
-      return 0
-    fi
-
-    sleep 10
-    attempt=$((attempt + 1))
-  done
-
-  echo "Timed out waiting for topic '$topic_name' to become ACTIVE." >&2
-  exit 1
-}
-
-require_env "AWS_REGION"
-require_env "MSK_CLUSTER_ARN"
+require_env "MSK_BOOTSTRAP_BROKERS"
 require_env "MSK_TOPIC_REPLICATION_FACTOR"
 require_env "MSK_TOPIC_CONFIGS_JSON"
 require_env "MSK_TOPICS_JSON"
@@ -47,9 +28,20 @@ if [ "${MSK_TOPIC_REPLICATION_FACTOR}" -lt 1 ]; then
   exit 1
 fi
 
-has_configs="$(printf '%s' "$MSK_TOPIC_CONFIGS_JSON" | jq 'length > 0')"
-topic_configs_b64="$(printf '%s' "$MSK_TOPIC_CONFIGS_JSON" | base64 | tr -d '\n')"
+# Kafka 바이너리 설치
+if [ ! -f "$KAFKA_TOPICS" ]; then
+  if ! java -version >/dev/null 2>&1; then
+    sudo yum install -y java-17-amazon-corretto-headless
+  fi
+  curl -fsSL \
+    "https://downloads.apache.org/kafka/${KAFKA_VERSION}/kafka_${KAFKA_SCALA}-${KAFKA_VERSION}.tgz" \
+    -o /tmp/kafka.tgz
+  tar -xzf /tmp/kafka.tgz -C /tmp
+  mv "/tmp/kafka_${KAFKA_SCALA}-${KAFKA_VERSION}" "$KAFKA_DIR"
+  rm /tmp/kafka.tgz
+fi
 
+# 토픽 생성 및 파티션 조정
 printf '%s' "$MSK_TOPICS_JSON" | jq -r 'to_entries[] | @base64' | while IFS= read -r entry; do
   topic_name="$(printf '%s' "$entry" | base64 -d | jq -r '.key')"
   desired_partitions="$(printf '%s' "$entry" | base64 -d | jq -r '.value')"
@@ -59,59 +51,30 @@ printf '%s' "$MSK_TOPICS_JSON" | jq -r 'to_entries[] | @base64' | while IFS= rea
     exit 1
   fi
 
-  existing_partitions="$(aws kafka describe-topic \
-    --region "$AWS_REGION" \
-    --cluster-arn "$MSK_CLUSTER_ARN" \
-    --topic-name "$topic_name" \
-    --query 'PartitionCount' \
-    --output text 2>/tmp/msk-topic.err || true)"
+  existing_partitions="$("$KAFKA_TOPICS" \
+    --bootstrap-server "$MSK_BOOTSTRAP_BROKERS" \
+    --describe \
+    --topic "$topic_name" 2>/dev/null \
+    | grep -oE 'PartitionCount:[0-9]+' | cut -d: -f2 || echo "")"
 
-  if [ "$existing_partitions" = "None" ] || [ -z "$existing_partitions" ]; then
-    if grep -q "NotFoundException" /tmp/msk-topic.err 2>/dev/null || [ ! -s /tmp/msk-topic.err ]; then
-      echo "Creating topic '$topic_name' with $desired_partitions partitions."
-      if [ "$has_configs" = "true" ]; then
-        aws kafka create-topic \
-          --region "$AWS_REGION" \
-          --cluster-arn "$MSK_CLUSTER_ARN" \
-          --topic-name "$topic_name" \
-          --partition-count "$desired_partitions" \
-          --replication-factor "$MSK_TOPIC_REPLICATION_FACTOR" \
-          --configs "$MSK_TOPIC_CONFIGS_JSON" >/dev/null
-      else
-        aws kafka create-topic \
-          --region "$AWS_REGION" \
-          --cluster-arn "$MSK_CLUSTER_ARN" \
-          --topic-name "$topic_name" \
-          --partition-count "$desired_partitions" \
-          --replication-factor "$MSK_TOPIC_REPLICATION_FACTOR" >/dev/null
-      fi
-
-      wait_topic_active "$topic_name"
-      continue
-    fi
-
-    cat /tmp/msk-topic.err >&2
-    exit 1
+  if [ -z "$existing_partitions" ]; then
+    echo "Creating topic '$topic_name' with $desired_partitions partitions."
+    "$KAFKA_TOPICS" \
+      --bootstrap-server "$MSK_BOOTSTRAP_BROKERS" \
+      --create \
+      --topic "$topic_name" \
+      --partitions "$desired_partitions" \
+      --replication-factor "$MSK_TOPIC_REPLICATION_FACTOR"
+    continue
   fi
 
   if [ "$existing_partitions" -lt "$desired_partitions" ]; then
     echo "Increasing topic '$topic_name' partitions from $existing_partitions to $desired_partitions."
-    if [ "$has_configs" = "true" ]; then
-      aws kafka update-topic \
-        --region "$AWS_REGION" \
-        --cluster-arn "$MSK_CLUSTER_ARN" \
-        --topic-name "$topic_name" \
-        --partition-count "$desired_partitions" \
-        --configs "$topic_configs_b64" >/dev/null
-    else
-      aws kafka update-topic \
-        --region "$AWS_REGION" \
-        --cluster-arn "$MSK_CLUSTER_ARN" \
-        --topic-name "$topic_name" \
-        --partition-count "$desired_partitions" >/dev/null
-    fi
-
-    wait_topic_active "$topic_name"
+    "$KAFKA_TOPICS" \
+      --bootstrap-server "$MSK_BOOTSTRAP_BROKERS" \
+      --alter \
+      --topic "$topic_name" \
+      --partitions "$desired_partitions"
     continue
   fi
 
@@ -120,14 +83,22 @@ printf '%s' "$MSK_TOPICS_JSON" | jq -r 'to_entries[] | @base64' | while IFS= rea
     exit 1
   fi
 
-  if [ "$has_configs" = "true" ]; then
-    aws kafka update-topic \
-      --region "$AWS_REGION" \
-      --cluster-arn "$MSK_CLUSTER_ARN" \
-      --topic-name "$topic_name" \
-      --configs "$topic_configs_b64" >/dev/null
-  fi
-
-  wait_topic_active "$topic_name"
   echo "Topic '$topic_name' already matches desired partition count $desired_partitions."
 done
+
+# 설정 적용 (신규/기존 토픽 모두)
+has_configs="$(printf '%s' "$MSK_TOPIC_CONFIGS_JSON" | jq 'length > 0')"
+if [ "$has_configs" = "true" ]; then
+  config_str="$(printf '%s' "$MSK_TOPIC_CONFIGS_JSON" | \
+    jq -r 'to_entries | map("\(.key)=\(.value)") | join(",")')"
+
+  printf '%s' "$MSK_TOPICS_JSON" | jq -r 'keys[]' | while IFS= read -r topic_name; do
+    echo "Applying configs to topic '$topic_name': $config_str"
+    "$KAFKA_CONFIGS" \
+      --bootstrap-server "$MSK_BOOTSTRAP_BROKERS" \
+      --alter \
+      --entity-type topics \
+      --entity-name "$topic_name" \
+      --add-config "$config_str"
+  done
+fi
