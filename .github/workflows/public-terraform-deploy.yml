@@ -53,13 +53,13 @@ jobs:
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           echo "value=arn:aws:iam::${ACCOUNT_ID}:role/sgs-hasp-eks-bootstrap-admin" >> "$GITHUB_OUTPUT"
 
-      - name: Write terraform.tfvars from secret
+      - name: Write optional tfvars override from secret
         env:
           TFVARS_CONTENT: ${{ secrets.PUBLIC_TERRAFORM_TFVARS }}
         working-directory: public/terraform
         run: |
           if [[ -n "$TFVARS_CONTENT" ]]; then
-            printf '%s\n' "$TFVARS_CONTENT" > terraform.tfvars
+            printf '%s\n' "$TFVARS_CONTENT" > zz-secret.auto.tfvars
           fi
 
       - name: Terraform fmt check
