@@ -421,6 +421,26 @@ jobs:
             --query 'StandardOutputContent' \
             --output text || true
 
+      - name: Clean up ENIs before destroy
+        if: ${{ inputs.action == 'destroy' }}
+        run: |
+          ENI_IDS=$(aws ec2 describe-network-interfaces \
+            --region "${AWS_REGION}" \
+            --filters "Name=tag:kubernetes.io/cluster/${EKS_CLUSTER_NAME},Values=owned" \
+            --query "NetworkInterfaces[].NetworkInterfaceId" \
+            --output text)
+
+          if [[ -z "${ENI_IDS}" || "${ENI_IDS}" == "None" ]]; then
+            echo "No cluster-owned ENIs found."
+          else
+            for ENI_ID in ${ENI_IDS}; do
+              echo "Deleting ENI ${ENI_ID}..."
+              aws ec2 delete-network-interface \
+                --region "${AWS_REGION}" \
+                --network-interface-id "${ENI_ID}" || true
+            done
+          fi
+
       - name: Terraform destroy plan
         if: ${{ inputs.action == 'destroy' }}
         working-directory: public/terraform
