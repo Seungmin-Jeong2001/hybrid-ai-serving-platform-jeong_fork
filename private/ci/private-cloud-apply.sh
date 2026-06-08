@@ -65,6 +65,7 @@ TF_VAR_build_worker_image_name="${TF_VAR_build_worker_image_name:-ubuntu-22.04}"
 TF_VAR_gpu_worker_image_name="${TF_VAR_gpu_worker_image_name:-ubuntu-22.04}"
 TF_VAR_gitlab_image_name="${TF_VAR_gitlab_image_name:-ubuntu-22.04}"
 TF_VAR_harbor_image_name="${TF_VAR_harbor_image_name:-ubuntu-22.04}"
+TF_VAR_build_worker_count="${TF_VAR_build_worker_count:-1}"
 TF_VAR_gpu_worker_count="${TF_VAR_gpu_worker_count:-1}"
 TF_VAR_gitlab_count="${TF_VAR_gitlab_count:-1}"
 TF_VAR_harbor_count="${TF_VAR_harbor_count:-1}"
@@ -132,6 +133,10 @@ HA_OPENSTACK_IMAGE_CACHE_FLAVOR="${HA_OPENSTACK_IMAGE_CACHE_FLAVOR:-${HA_DEVSTAC
 HA_OPENSTACK_IMAGE_CACHE_GITLAB_FLAVOR="${HA_OPENSTACK_IMAGE_CACHE_GITLAB_FLAVOR:-${HA_DEVSTACK_GITLAB_FLAVOR_NAME}}"
 HA_OPENSTACK_IMAGE_CACHE_HARBOR_FLAVOR="${HA_OPENSTACK_IMAGE_CACHE_HARBOR_FLAVOR:-${HA_DEVSTACK_HARBOR_FLAVOR_NAME}}"
 HA_OPENSTACK_IMAGE_CACHE_DRIVER_PACKAGE="${HA_OPENSTACK_IMAGE_CACHE_DRIVER_PACKAGE:-nvidia-driver-595-open}"
+HA_PRIVATE_CLOUD_AUTO_EXPAND_QUOTA="${HA_PRIVATE_CLOUD_AUTO_EXPAND_QUOTA:-true}"
+HA_PRIVATE_CLOUD_QUOTA_HEADROOM_INSTANCES="${HA_PRIVATE_CLOUD_QUOTA_HEADROOM_INSTANCES:-3}"
+HA_PRIVATE_CLOUD_QUOTA_HEADROOM_CORES="${HA_PRIVATE_CLOUD_QUOTA_HEADROOM_CORES:-8}"
+HA_PRIVATE_CLOUD_QUOTA_HEADROOM_RAM_MB="${HA_PRIVATE_CLOUD_QUOTA_HEADROOM_RAM_MB:-16384}"
 
 printf 'phase\tseconds\tstatus\n' >"${TIMINGS}"
 
@@ -688,6 +693,40 @@ terraform_apply_prefix() {
   terraform_var_value project_name hybrid-ai-private private-cloud.auto.tfvars zz-local-devstack.auto.tfvars
 }
 
+terraform_tfvars_has_var() {
+  local name="$1"
+  local file="$2"
+
+  [[ -f "$file" ]] || return 1
+  python3 - "$name" "$file" <<'PY'
+import re
+import sys
+
+name, path = sys.argv[1], sys.argv[2]
+pattern = re.compile(rf"^\s*{re.escape(name)}\s*=")
+with open(path, "r", encoding="utf-8") as handle:
+    for line in handle:
+        if pattern.match(line):
+            sys.exit(0)
+sys.exit(1)
+PY
+}
+
+effective_worker_count() {
+  local name="$1"
+  local default_value="$2"
+  local prefix="$3"
+
+  if [[ -n "${PRIVATE_CLOUD_TFVARS:-}" && "$prefix" == *-actions ]]; then
+    if ! terraform_tfvars_has_var "$name" private-cloud.auto.tfvars; then
+      printf '0\n'
+      return 0
+    fi
+  fi
+
+  terraform_var_value "$name" "$default_value" private-cloud.auto.tfvars
+}
+
 cleanup_openstack_orphans_before_apply() {
   local prefix
 
@@ -795,6 +834,10 @@ preflight_openstack_quota() {
   log "checking OpenStack quota before apply for prefix ${prefix}"
   lxc exec ha-openstack -- sudo -u stack -H bash -s -- \
     "$prefix" \
+    "${HA_PRIVATE_CLOUD_AUTO_EXPAND_QUOTA}" \
+    "${HA_PRIVATE_CLOUD_QUOTA_HEADROOM_INSTANCES}" \
+    "${HA_PRIVATE_CLOUD_QUOTA_HEADROOM_CORES}" \
+    "${HA_PRIVATE_CLOUD_QUOTA_HEADROOM_RAM_MB}" \
     control "$control_count" "$control_flavor" \
     build "$build_count" "$build_flavor" \
     gpu "$gpu_count" "$gpu_flavor" \
@@ -802,7 +845,11 @@ preflight_openstack_quota() {
     harbor "$harbor_count" "$harbor_flavor" <<'PREFLIGHT_OPENSTACK_QUOTA'
 set -euo pipefail
 prefix="$1"
-shift
+auto_expand_quota="$2"
+quota_headroom_instances="$3"
+quota_headroom_cores="$4"
+quota_headroom_ram_mb="$5"
+shift 5
 cd /opt/stack/devstack
 set +u
 source openrc admin admin >/dev/null
@@ -832,8 +879,9 @@ missing_for_role() {
 }
 
 limits_json="$(openstack limits show --absolute -f json)"
-read -r max_cores used_cores max_ram used_ram max_instances used_instances < <(
-  python3 - "$limits_json" <<'PY'
+read_limits() {
+  local json="$1"
+  python3 - "$json" <<'PY'
 import json
 import sys
 
@@ -849,6 +897,9 @@ print(
 )
 PY
 )
+}
+
+read -r max_cores used_cores max_ram used_ram max_instances used_instances < <(read_limits "$limits_json")
 
 need_cores=0
 need_ram=0
@@ -887,6 +938,41 @@ available_instances=999999999
 echo "quota preflight demand for ${prefix}: instances=${need_instances} cores=${need_cores} ram_mb=${need_ram}"
 printf '  %s\n' "${summary[@]}"
 echo "quota preflight available: instances=${available_instances}/${max_instances} cores=${available_cores}/${max_cores} ram_mb=${available_ram}/${max_ram}"
+
+if (( need_instances > available_instances || need_cores > available_cores || need_ram > available_ram )); then
+  if [[ "$auto_expand_quota" == "true" ]]; then
+    quota_project="${OS_PROJECT_NAME:-admin}"
+    target_instances=$((used_instances + need_instances + quota_headroom_instances))
+    target_cores=$((used_cores + need_cores + quota_headroom_cores))
+    target_ram=$((used_ram + need_ram + quota_headroom_ram_mb))
+    if [[ "$max_instances" -gt "$target_instances" ]]; then
+      target_instances="$max_instances"
+    fi
+    if [[ "$max_cores" -gt "$target_cores" ]]; then
+      target_cores="$max_cores"
+    fi
+    if [[ "$max_ram" -gt "$target_ram" ]]; then
+      target_ram="$max_ram"
+    fi
+
+    echo "quota preflight auto-expanding local DevStack quota for project ${quota_project}: instances=${target_instances} cores=${target_cores} ram_mb=${target_ram}"
+    openstack quota set \
+      --instances "$target_instances" \
+      --cores "$target_cores" \
+      --ram "$target_ram" \
+      "$quota_project"
+
+    limits_json="$(openstack limits show --absolute -f json)"
+    read -r max_cores used_cores max_ram used_ram max_instances used_instances < <(read_limits "$limits_json")
+    available_cores=999999999
+    available_ram=999999999
+    available_instances=999999999
+    [[ "$max_cores" -lt 0 ]] || available_cores=$((max_cores - used_cores))
+    [[ "$max_ram" -lt 0 ]] || available_ram=$((max_ram - used_ram))
+    [[ "$max_instances" -lt 0 ]] || available_instances=$((max_instances - used_instances))
+    echo "quota preflight available after expansion: instances=${available_instances}/${max_instances} cores=${available_cores}/${max_cores} ram_mb=${available_ram}/${max_ram}"
+  fi
+fi
 
 if (( need_instances > available_instances || need_cores > available_cores || need_ram > available_ram )); then
   cat >&2 <<EOF
@@ -1182,8 +1268,9 @@ prepare_noninteractive_backend_init() {
 }
 
 terraform_apply() {
-  local effective_gpu_worker_count effective_gitlab_count effective_harbor_count
+  local effective_build_worker_count effective_gpu_worker_count effective_gitlab_count effective_harbor_count
   local key_pair_name
+  local apply_prefix
   ensure_ssh_key
   cd "${ROOT}/private/openstack"
   rm -f backend.generated.tf backend.hcl private-cloud.auto.tfvars zz-local-devstack.auto.tfvars private-cloud.tfplan
@@ -1198,9 +1285,11 @@ terraform_apply() {
   if [[ -n "${PRIVATE_CLOUD_TFVARS:-}" ]]; then
     printf '%s' "${PRIVATE_CLOUD_TFVARS}" > private-cloud.auto.tfvars
   fi
-  effective_gpu_worker_count="$(terraform_var_value gpu_worker_count "${TF_VAR_gpu_worker_count}" private-cloud.auto.tfvars)"
-  effective_gitlab_count="$(terraform_var_value gitlab_count "${TF_VAR_gitlab_count}" private-cloud.auto.tfvars)"
-  effective_harbor_count="$(terraform_var_value harbor_count "${TF_VAR_harbor_count}" private-cloud.auto.tfvars)"
+  apply_prefix="$(terraform_apply_prefix)"
+  effective_build_worker_count="$(effective_worker_count build_worker_count "${TF_VAR_build_worker_count}" "$apply_prefix")"
+  effective_gpu_worker_count="$(effective_worker_count gpu_worker_count "${TF_VAR_gpu_worker_count}" "$apply_prefix")"
+  effective_gitlab_count="$(effective_worker_count gitlab_count "${TF_VAR_gitlab_count}" "$apply_prefix")"
+  effective_harbor_count="$(effective_worker_count harbor_count "${TF_VAR_harbor_count}" "$apply_prefix")"
   public_network_id="$(lxc exec ha-openstack -- sudo -u stack -H bash -lc 'cd /opt/stack/devstack && set +u && source openrc admin admin >/dev/null && set -u && openstack network show public -f value -c id')"
   public_subnet_id="$(lxc exec ha-openstack -- sudo -u stack -H bash -lc 'cd /opt/stack/devstack && set +u && source openrc admin admin >/dev/null && set -u && openstack subnet list --network public --ip-version 4 -f value -c ID | head -n 1')"
   public_subnet_cidr="$(lxc exec ha-openstack -- sudo -u stack -H bash -lc "cd /opt/stack/devstack && set +u && source openrc admin admin >/dev/null && set -u && openstack subnet show '${public_subnet_id}' -f value -c cidr")"
@@ -1212,6 +1301,7 @@ terraform_apply() {
     printf 'gitlab_http_allowed_cidrs = ["%s"]\n' "$public_subnet_cidr"
     printf 'control_plane_image_name = "%s"\n' "${TF_VAR_control_plane_image_name}"
     printf 'control_plane_flavor_name = "%s"\n' "${HA_DEVSTACK_CONTROL_FLAVOR_NAME}"
+    printf 'build_worker_count = %s\n' "${effective_build_worker_count}"
     printf 'build_worker_image_name = "%s"\n' "${TF_VAR_build_worker_image_name}"
     printf 'build_worker_flavor_name = "%s"\n' "${HA_DEVSTACK_WORKER_FLAVOR_NAME}"
     printf 'gpu_worker_count = %s\n' "${effective_gpu_worker_count}"
