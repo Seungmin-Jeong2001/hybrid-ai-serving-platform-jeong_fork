@@ -250,12 +250,17 @@ jobs:
               "read AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN <<< \"$ASSUME_ROLE_OUTPUT\"",
               "export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN",
               f"aws eks update-kubeconfig --region {os.environ['AWS_REGION']} --name {os.environ['EKS_CLUSTER_NAME']} --kubeconfig /tmp/eks-kubeconfig",
+              "kubectl delete ingress --all -n inference --wait --timeout=60s || true",
+              "sleep 15",
               "kubectl get application -n argocd -o name | xargs -I{} kubectl patch {} -n argocd -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge || true",
               "kubectl delete application --all -n argocd --wait --timeout=120s || true",
+              "kubectl get inferenceservice -n inference -o name 2>/dev/null | xargs -I{} kubectl patch {} -n inference -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge || true",
+              "kubectl delete inferenceservice --all -n inference --force --grace-period=0 || true",
               "for resource in $(kubectl api-resources --verbs=list --namespaced -o name 2>/dev/null); do kubectl get $resource -n inference -o name 2>/dev/null | xargs -I{} kubectl patch {} -n inference -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge 2>/dev/null || true; done",
               "kubectl delete all --all -n inference --force --grace-period=0 || true",
               "kubectl patch namespace inference -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge || true",
               "kubectl delete namespace inference --force --grace-period=0 || true",
+              "sleep 30",
           ]
 
           with open("argocd-cleanup-commands.json", "w") as fp:
@@ -423,34 +428,38 @@ jobs:
 
       - name: Clean up ENIs before destroy
         if: ${{ inputs.action == 'destroy' }}
-        working-directory: public/terraform
         run: |
-          SUBNET_IDS=$(terraform output -json vpc_private_subnet_ids 2>/dev/null | jq -r '.[]' | tr '\n' ' ' || echo "")
-          MSK_SUBNET_IDS=$(terraform output -json msk_private_subnet_ids 2>/dev/null | jq -r '.[]' | tr '\n' ' ' || echo "")
-          ALL_SUBNET_IDS="${SUBNET_IDS} ${MSK_SUBNET_IDS}"
+          VPC_ID=$(aws ec2 describe-vpcs \
+            --region "${AWS_REGION}" \
+            --filters "Name=tag:Project,Values=sgs-hasp" \
+            --query "Vpcs[0].VpcId" \
+            --output text)
 
-          if [[ -z "${ALL_SUBNET_IDS// }" ]]; then
-            echo "No subnet IDs found from terraform output."
+          if [[ -z "${VPC_ID}" || "${VPC_ID}" == "None" ]]; then
+            echo "VPC not found, skipping ENI cleanup."
             exit 0
           fi
 
-          for SUBNET_ID in ${ALL_SUBNET_IDS}; do
-            ENI_IDS=$(aws ec2 describe-network-interfaces \
+          echo "Found VPC: ${VPC_ID}"
+
+          ENI_IDS=$(aws ec2 describe-network-interfaces \
+            --region "${AWS_REGION}" \
+            --filters \
+              "Name=vpc-id,Values=${VPC_ID}" \
+              "Name=status,Values=available" \
+            --query "NetworkInterfaces[].NetworkInterfaceId" \
+            --output text)
+
+          if [[ -z "${ENI_IDS}" || "${ENI_IDS}" == "None" ]]; then
+            echo "No available ENIs found."
+            exit 0
+          fi
+
+          for ENI_ID in ${ENI_IDS}; do
+            echo "Deleting ENI ${ENI_ID}..."
+            aws ec2 delete-network-interface \
               --region "${AWS_REGION}" \
-              --filters "Name=subnet-id,Values=${SUBNET_ID}" \
-              --query "NetworkInterfaces[].NetworkInterfaceId" \
-              --output text)
-
-            if [[ -z "${ENI_IDS}" || "${ENI_IDS}" == "None" ]]; then
-              continue
-            fi
-
-            for ENI_ID in ${ENI_IDS}; do
-              echo "Deleting ENI ${ENI_ID} in subnet ${SUBNET_ID}..."
-              aws ec2 delete-network-interface \
-                --region "${AWS_REGION}" \
-                --network-interface-id "${ENI_ID}" || true
-            done
+              --network-interface-id "${ENI_ID}" || true
           done
 
       - name: Terraform destroy plan
