@@ -15,6 +15,10 @@ HA_OPENSTACK_IMAGE_CACHE_FLOATING_POOL="${HA_OPENSTACK_IMAGE_CACHE_FLOATING_POOL
 HA_OPENSTACK_IMAGE_CACHE_KEYPAIR="${HA_OPENSTACK_IMAGE_CACHE_KEYPAIR:-hybrid-ai-image-cache-builder}"
 HA_OPENSTACK_IMAGE_CACHE_SECURITY_GROUP="${HA_OPENSTACK_IMAGE_CACHE_SECURITY_GROUP:-}"
 HA_OPENSTACK_IMAGE_CACHE_SSH_USER="${HA_OPENSTACK_IMAGE_CACHE_SSH_USER:-ubuntu}"
+HA_OPENSTACK_IMAGE_CACHE_DNS_SERVERS="${HA_OPENSTACK_IMAGE_CACHE_DNS_SERVERS:-1.1.1.1 8.8.8.8}"
+HA_OPENSTACK_GLANCE_UPLOAD_TIMEOUT="${HA_OPENSTACK_GLANCE_UPLOAD_TIMEOUT:-3600}"
+HA_OPENSTACK_GLANCE_IMAGE_LIMIT_MB="${HA_OPENSTACK_GLANCE_IMAGE_LIMIT_MB:-200000}"
+HA_OPENSTACK_GLANCE_IMAGE_COUNT_LIMIT="${HA_OPENSTACK_GLANCE_IMAGE_COUNT_LIMIT:-1000}"
 HA_OPENSTACK_IMAGE_CACHE_WAIT_SECONDS="${HA_OPENSTACK_IMAGE_CACHE_WAIT_SECONDS:-5400}"
 HA_OPENSTACK_IMAGE_CACHE_BOOT_WAIT_SECONDS="${HA_OPENSTACK_IMAGE_CACHE_BOOT_WAIT_SECONDS:-900}"
 HA_OPENSTACK_IMAGE_CACHE_DRIVER_PACKAGE="${HA_OPENSTACK_IMAGE_CACHE_DRIVER_PACKAGE:-${TF_VAR_gpu_driver_package:-nvidia-driver-595-open}}"
@@ -140,10 +144,18 @@ ensure_ssh_key() {
 }
 
 ensure_devstack_egress() {
-  local public_cidr public_gateway prefix public_gateway_cidr
+  local public_cidr public_gateway prefix public_gateway_cidr dns_args=() dns_server
 
   public_cidr="$(os openstack subnet show public-subnet -f value -c cidr 2>/dev/null || true)"
   public_gateway="$(os openstack subnet show public-subnet -f value -c gateway_ip 2>/dev/null || true)"
+  if os openstack subnet show private-subnet >/dev/null 2>&1; then
+    for dns_server in $HA_OPENSTACK_IMAGE_CACHE_DNS_SERVERS; do
+      dns_args+=(--dns-nameserver "$dns_server")
+    done
+    if (( ${#dns_args[@]} > 0 )); then
+      os openstack subnet set --no-dns-nameservers "${dns_args[@]}" private-subnet >/dev/null
+    fi
+  fi
   [[ -n "$public_cidr" && -n "$public_gateway" && "$public_gateway" != "None" ]] || return 0
   prefix="${public_cidr#*/}"
   public_gateway_cidr="${public_gateway}/${prefix}"
@@ -246,6 +258,76 @@ ensure_builder_security_group() {
   fi
 
   os openstack security group rule create --proto tcp --dst-port 22 "$security_group_id" >/dev/null 2>&1 || true
+}
+
+ensure_glance_registered_limit() {
+  local resource_name="$1"
+  local default_limit="$2"
+  local region="${OPENSTACK_REGION:-${OS_REGION_NAME:-RegionOne}}"
+  local existing=""
+  local id=""
+  local current_limit=""
+
+  existing="$(os openstack registered limit list -f value -c ID -c "Resource Name" -c "Default Limit" \
+    | awk -v resource="$resource_name" '$2 == resource {print $1 " " $3; exit}')"
+  id="${existing%% *}"
+  current_limit="${existing#* }"
+
+  if [[ -n "$id" && "$id" != "$current_limit" ]]; then
+    if [[ "$current_limit" != "$default_limit" ]]; then
+      log "setting Glance registered limit ${resource_name}=${default_limit}"
+      os openstack registered limit set --default-limit "$default_limit" "$id" >/dev/null
+    fi
+    return 0
+  fi
+
+  log "creating Glance registered limit ${resource_name}=${default_limit}"
+  os openstack registered limit create \
+    --service glance \
+    --region "$region" \
+    --default-limit "$default_limit" \
+    "$resource_name" >/dev/null
+}
+
+ensure_glance_registered_limits() {
+  ensure_glance_registered_limit image_size_total "$HA_OPENSTACK_GLANCE_IMAGE_LIMIT_MB"
+  ensure_glance_registered_limit image_stage_total "$HA_OPENSTACK_GLANCE_IMAGE_LIMIT_MB"
+  ensure_glance_registered_limit image_count_total "$HA_OPENSTACK_GLANCE_IMAGE_COUNT_LIMIT"
+  ensure_glance_registered_limit image_count_uploading "$HA_OPENSTACK_GLANCE_IMAGE_COUNT_LIMIT"
+}
+
+ensure_glance_upload_timeout() {
+  lxc exec ha-openstack -- bash -s -- "$HA_OPENSTACK_GLANCE_UPLOAD_TIMEOUT" <<'REMOTE'
+set -euo pipefail
+timeout="$1"
+uwsgi_conf="/etc/glance/glance-uwsgi.ini"
+if [[ -f "$uwsgi_conf" ]]; then
+  python3 - "$uwsgi_conf" "$timeout" <<'PY'
+import configparser
+import sys
+
+path, timeout = sys.argv[1], sys.argv[2]
+parser = configparser.ConfigParser()
+parser.optionxform = str
+parser.read(path)
+if not parser.has_section("uwsgi"):
+    parser.add_section("uwsgi")
+parser.set("uwsgi", "socket-timeout", timeout)
+with open(path, "w", encoding="utf-8") as handle:
+    parser.write(handle, space_around_delimiters=True)
+PY
+fi
+if [[ -d /etc/apache2/conf-available ]]; then
+  cat >/etc/apache2/conf-available/hybrid-ai-glance-upload-timeout.conf <<EOF
+Timeout ${timeout}
+ProxyTimeout ${timeout}
+RequestReadTimeout body=60,minrate=500
+EOF
+  a2enconf hybrid-ai-glance-upload-timeout >/dev/null 2>&1 || true
+fi
+systemctl restart devstack@g-api.service >/dev/null 2>&1 || true
+systemctl reload apache2 >/dev/null 2>&1 || systemctl restart apache2 >/dev/null 2>&1 || true
+REMOTE
 }
 
 role_env_name() {
@@ -419,6 +501,7 @@ wait_image_active() {
   local image_name="$1"
   local deadline=$((SECONDS + HA_OPENSTACK_IMAGE_CACHE_WAIT_SECONDS))
   local status=""
+  local missing_count=0
 
   while (( SECONDS < deadline )); do
     status="$(os openstack image show "$image_name" -f value -c status 2>/dev/null || true)"
@@ -427,6 +510,15 @@ wait_image_active() {
     fi
     if [[ "$status" == "killed" || "$status" == "deleted" ]]; then
       return 1
+    fi
+    if [[ -z "$status" ]]; then
+      missing_count=$((missing_count + 1))
+      if (( missing_count >= 3 )); then
+        printf 'image %s is missing while waiting for active status\n' "$image_name" >&2
+        return 1
+      fi
+    else
+      missing_count=0
     fi
     sleep 10
   done
@@ -450,6 +542,58 @@ wait_ssh() {
   return 1
 }
 
+cleanup_builder_instance() {
+  local server="$1"
+  local fip="$2"
+  local server_id=""
+  local port_id=""
+  local discovered_fip=""
+
+  server_id="$(os openstack server show "$server" -f value -c id 2>/dev/null || true)"
+  if [[ -z "$fip" && -n "$server_id" ]]; then
+    while read -r port_id; do
+      [[ -n "$port_id" ]] || continue
+      while read -r discovered_fip; do
+        [[ -n "$discovered_fip" ]] || continue
+        os openstack server remove floating ip "$server" "$discovered_fip" >/dev/null 2>&1 || true
+        os openstack floating ip delete "$discovered_fip" >/dev/null 2>&1 || true
+      done < <(os openstack floating ip list -f value -c "Floating IP Address" -c Port | awk -v port="$port_id" '$2 == port {print $1}')
+    done < <(os openstack port list --server "$server_id" -f value -c ID 2>/dev/null || true)
+  fi
+  if [[ -n "$fip" ]]; then
+    os openstack server remove floating ip "$server" "$fip" >/dev/null 2>&1 || true
+    os openstack floating ip delete "$fip" >/dev/null 2>&1 || true
+  fi
+  os openstack server delete "$server" >/dev/null 2>&1 || true
+}
+
+create_image_from_server_disk() {
+  local server="$1"
+  local image_name="$2"
+  local server_id=""
+  local disk_path=""
+  local tmp_image="/tmp/${image_name}.qcow2"
+
+  server_id="$(os openstack server show "$server" -f value -c id)"
+  disk_path="/opt/stack/data/nova/instances/${server_id}/disk"
+  lxc exec ha-openstack -- bash -s -- "$disk_path" "$tmp_image" <<'REMOTE'
+set -euo pipefail
+disk_path="$1"
+tmp_image="$2"
+[[ -s "$disk_path" ]] || { printf 'server disk not found: %s\n' "$disk_path" >&2; exit 1; }
+rm -f "$tmp_image"
+qemu-img convert -p -O qcow2 "$disk_path" "$tmp_image"
+chmod 0644 "$tmp_image"
+REMOTE
+  os openstack image create "$image_name" \
+    --disk-format qcow2 \
+    --container-format bare \
+    --public \
+    --file "$tmp_image" >/dev/null
+  lxc exec ha-openstack -- rm -f "$tmp_image" >/dev/null 2>&1 || true
+  wait_image_active "$image_name"
+}
+
 remote_build_script() {
   cat <<'REMOTE'
 set -Eeuo pipefail
@@ -462,16 +606,46 @@ cuda_toolkit_package="$5"
 cudnn_package="$6"
 pytorch_index="$7"
 training_packages="$8"
-shift 8
+dns_servers="$9"
+shift 9
 common_packages=("$@")
 manifest="$(printf '%s' "$manifest" | base64 -d)"
 training_packages="$(printf '%s' "$training_packages" | base64 -d)"
+dns_servers="$(printf '%s' "$dns_servers" | base64 -d)"
 
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
+export UCF_FORCE_CONFFNEW=1
 
 apt_get() {
-  apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=5 -o Dpkg::Lock::Timeout=900 "$@"
+  apt-get \
+    -o Acquire::ForceIPv4=true \
+    -o Acquire::Retries=5 \
+    -o Dpkg::Lock::Timeout=900 \
+    -o Dpkg::Options::=--force-confdef \
+    -o Dpkg::Options::=--force-confnew \
+    "$@"
+}
+
+configure_network_resolution() {
+  local host short dns_server
+
+  host="$(hostname)"
+  short="$(hostname -s)"
+  if ! grep -Eq "(^|[[:space:]])${short}([[:space:]]|$)" /etc/hosts; then
+    printf '127.0.1.1 %s %s\n' "$host" "$short" >>/etc/hosts
+  fi
+
+  systemctl disable --now systemd-resolved >/dev/null 2>&1 || true
+  rm -f /etc/resolv.conf
+  : >/etc/resolv.conf
+  for dns_server in $dns_servers; do
+    printf 'nameserver %s\n' "$dns_server" >>/etc/resolv.conf
+  done
+  printf 'options timeout:2 attempts:3 rotate\n' >>/etc/resolv.conf
+  printf 'Acquire::ForceIPv4 "true";\nAcquire::Retries "5";\n' >/etc/apt/apt.conf.d/99hybrid-ai-network
+  mkdir -p /etc/cryptsetup-initramfs
+  printf 'CRYPTSETUP=n\n' >/etc/cryptsetup-initramfs/conf-hook
 }
 
 install_nvidia_container_toolkit() {
@@ -536,6 +710,7 @@ install_training_packages() {
 printf 'hybrid-ai image cache build start role=%s\n' "$role"
 printf '%s\n' "$manifest" >/etc/hybrid-ai-image-cache.manifest
 
+configure_network_resolution
 apt_get update
 apt_get install -y "${common_packages[@]}"
 
@@ -592,11 +767,13 @@ build_cache_image() {
   local fip=""
   local manifest_b64=""
   local training_packages_b64=""
+  local dns_servers_b64=""
 
   flavor="$(role_flavor "$role")"
   server_name="${image_name}-builder"
   manifest_b64="$(printf '%s' "$manifest" | base64 -w0)"
   training_packages_b64="$(printf '%s' "$HA_OPENSTACK_IMAGE_CACHE_TRAINING_PACKAGES" | base64 -w0)"
+  dns_servers_b64="$(printf '%s' "$HA_OPENSTACK_IMAGE_CACHE_DNS_SERVERS" | base64 -w0)"
   security_group_id="$(builder_security_group_id)"
   if [[ -z "$security_group_id" ]]; then
     echo "unable to resolve image cache builder security group" >&2
@@ -604,7 +781,7 @@ build_cache_image() {
   fi
 
   log "building ${image_name} from ${base_image} using ${flavor}"
-  os openstack server delete "$server_name" >/dev/null 2>&1 || true
+  cleanup_builder_instance "$server_name" ""
   for _ in {1..60}; do
     if ! os openstack server show "$server_name" >/dev/null 2>&1; then
       break
@@ -612,49 +789,51 @@ build_cache_image() {
     sleep 5
   done
 
-  os openstack server create \
-    --flavor "$flavor" \
-    --image "$base_image" \
-    --network "$HA_OPENSTACK_IMAGE_CACHE_NETWORK" \
-    --key-name "$HA_OPENSTACK_IMAGE_CACHE_KEYPAIR" \
-    --security-group default \
-    "$server_name" >/dev/null
-  wait_server_status "$server_name" ACTIVE
+  if ! {
+    os openstack server create \
+      --flavor "$flavor" \
+      --image "$base_image" \
+      --network "$HA_OPENSTACK_IMAGE_CACHE_NETWORK" \
+      --key-name "$HA_OPENSTACK_IMAGE_CACHE_KEYPAIR" \
+      --security-group "$security_group_id" \
+      "$server_name" >/dev/null
+    wait_server_status "$server_name" ACTIVE
 
-  fip="$(os openstack floating ip create "$HA_OPENSTACK_IMAGE_CACHE_FLOATING_POOL" -f value -c floating_ip_address)"
-  os openstack server add floating ip "$server_name" "$fip"
-  wait_ssh "$fip"
+    fip="$(os openstack floating ip create "$HA_OPENSTACK_IMAGE_CACHE_FLOATING_POOL" -f value -c floating_ip_address)"
+    os openstack server add floating ip "$server_name" "$fip"
+    wait_ssh "$fip"
 
-  ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-    -o "ProxyCommand=lxc exec ha-openstack -- nc %h %p" \
-    -i "$SSH_KEY" "${HA_OPENSTACK_IMAGE_CACHE_SSH_USER}@${fip}" \
-    "cloud-init status --wait >/dev/null 2>&1 || true"
+    ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+      -o "ProxyCommand=lxc exec ha-openstack -- nc %h %p" \
+      -i "$SSH_KEY" "${HA_OPENSTACK_IMAGE_CACHE_SSH_USER}@${fip}" \
+      "cloud-init status --wait >/dev/null 2>&1 || true"
 
-  remote_build_script | ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-    -o "ServerAliveInterval=30" -o "ServerAliveCountMax=20" \
-    -o "ProxyCommand=lxc exec ha-openstack -- nc %h %p" \
-    -i "$SSH_KEY" "${HA_OPENSTACK_IMAGE_CACHE_SSH_USER}@${fip}" \
-    sudo bash -s -- \
-      "$role" \
-      "$manifest_b64" \
-      "$HA_OPENSTACK_IMAGE_CACHE_GITLAB_IMAGE" \
-      "$HA_OPENSTACK_IMAGE_CACHE_DRIVER_PACKAGE" \
-      "$HA_OPENSTACK_IMAGE_CACHE_CUDA_TOOLKIT_PACKAGE" \
-      "$HA_OPENSTACK_IMAGE_CACHE_CUDNN_PACKAGE" \
-      "$HA_OPENSTACK_IMAGE_CACHE_TRAINING_PYTORCH_INDEX" \
-      "$training_packages_b64" \
-      "${COMMON_PACKAGES[@]}"
+    remote_build_script | ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+      -o "ServerAliveInterval=30" -o "ServerAliveCountMax=20" \
+      -o "ProxyCommand=lxc exec ha-openstack -- nc %h %p" \
+      -i "$SSH_KEY" "${HA_OPENSTACK_IMAGE_CACHE_SSH_USER}@${fip}" \
+      sudo bash -s -- \
+        "$role" \
+        "$manifest_b64" \
+        "$HA_OPENSTACK_IMAGE_CACHE_GITLAB_IMAGE" \
+        "$HA_OPENSTACK_IMAGE_CACHE_DRIVER_PACKAGE" \
+        "$HA_OPENSTACK_IMAGE_CACHE_CUDA_TOOLKIT_PACKAGE" \
+        "$HA_OPENSTACK_IMAGE_CACHE_CUDNN_PACKAGE" \
+        "$HA_OPENSTACK_IMAGE_CACHE_TRAINING_PYTORCH_INDEX" \
+        "$training_packages_b64" \
+        "$dns_servers_b64" \
+        "${COMMON_PACKAGES[@]}"
 
-  wait_server_status "$server_name" SHUTOFF
-  os openstack server image create --name "$image_name" --wait "$server_name" >/dev/null
-  wait_image_active "$image_name"
-  set_glance_manifest_properties "$image_name" "$role" "$base_image" "$manifest"
-
-  if [[ -n "$fip" ]]; then
-    os openstack server remove floating ip "$server_name" "$fip" >/dev/null 2>&1 || true
-    os openstack floating ip delete "$fip" >/dev/null 2>&1 || true
+    wait_server_status "$server_name" SHUTOFF
+    create_image_from_server_disk "$server_name" "$image_name"
+    set_glance_manifest_properties "$image_name" "$role" "$base_image" "$manifest"
+  }; then
+    cleanup_builder_instance "$server_name" "$fip"
+    return 1
   fi
-  os openstack server delete "$server_name" >/dev/null 2>&1 || true
+
+  cleanup_builder_instance "$server_name" "$fip"
+  fip=""
 }
 
 prepare_role() {
@@ -721,6 +900,8 @@ main() {
 
   ensure_ssh_key
   ensure_devstack_egress
+  ensure_glance_registered_limits
+  ensure_glance_upload_timeout
   ensure_builder_keypair
   ensure_builder_security_group
 

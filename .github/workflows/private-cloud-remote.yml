@@ -212,7 +212,7 @@ jobs:
           HARBOR_ADMIN_PASSWORD: ${{ secrets.HARBOR_ADMIN_PASSWORD }}
           MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
           CONTROL_PLANE_IMAGE_NAME: ${{ vars.CONTROL_PLANE_IMAGE_NAME || 'ubuntu-22.04' }}
-          CONTROL_PLANE_FLAVOR_NAME: ${{ vars.CONTROL_PLANE_FLAVOR_NAME || 'm1.medium' }}
+          CONTROL_PLANE_FLAVOR_NAME: ${{ vars.CONTROL_PLANE_FLAVOR_NAME || 'm1.large' }}
           BUILD_WORKER_COUNT: ${{ vars.BUILD_WORKER_COUNT || '1' }}
           BUILD_WORKER_IMAGE_NAME: ${{ vars.BUILD_WORKER_IMAGE_NAME || 'ubuntu-22.04' }}
           BUILD_WORKER_FLAVOR_NAME: ${{ vars.BUILD_WORKER_FLAVOR_NAME || 'm1.large' }}

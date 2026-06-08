@@ -65,11 +65,11 @@ TF_VAR_build_worker_image_name="${TF_VAR_build_worker_image_name:-ubuntu-22.04}"
 TF_VAR_gpu_worker_image_name="${TF_VAR_gpu_worker_image_name:-ubuntu-22.04}"
 TF_VAR_gitlab_image_name="${TF_VAR_gitlab_image_name:-ubuntu-22.04}"
 TF_VAR_harbor_image_name="${TF_VAR_harbor_image_name:-ubuntu-22.04}"
-TF_VAR_gpu_worker_count="${TF_VAR_gpu_worker_count:-0}"
+TF_VAR_gpu_worker_count="${TF_VAR_gpu_worker_count:-1}"
 TF_VAR_gitlab_count="${TF_VAR_gitlab_count:-1}"
 TF_VAR_harbor_count="${TF_VAR_harbor_count:-1}"
 TF_VAR_gitlab_container_image="${TF_VAR_gitlab_container_image:-gitlab/gitlab-ce:18.11.4-ce.0}"
-HA_DEVSTACK_CONTROL_FLAVOR_NAME="${HA_DEVSTACK_CONTROL_FLAVOR_NAME:-ha.m1.medium}"
+HA_DEVSTACK_CONTROL_FLAVOR_NAME="${HA_DEVSTACK_CONTROL_FLAVOR_NAME:-ha.m1.large}"
 HA_DEVSTACK_CONTROL_FLAVOR_RAM="${HA_DEVSTACK_CONTROL_FLAVOR_RAM:-8192}"
 HA_DEVSTACK_CONTROL_FLAVOR_VCPUS="${HA_DEVSTACK_CONTROL_FLAVOR_VCPUS:-4}"
 HA_DEVSTACK_CONTROL_FLAVOR_DISK="${HA_DEVSTACK_CONTROL_FLAVOR_DISK:-80}"
@@ -624,6 +624,12 @@ prepare_cached_images() {
   fi
 
   "${ROOT}/private/openstack/scripts/cache-openstack-images.sh" "${args[@]}"
+  load_cached_image_overrides
+}
+
+load_cached_image_overrides() {
+  [[ "${HA_OPENSTACK_IMAGE_CACHE_ENABLED}" == "true" ]] || return 0
+  [[ -s "${IMAGE_CACHE_ENV}" ]] || return 0
   # shellcheck disable=SC1090
   source "${IMAGE_CACHE_ENV}"
   export TF_VAR_control_plane_image_name TF_VAR_build_worker_image_name TF_VAR_gpu_worker_image_name TF_VAR_gitlab_image_name TF_VAR_harbor_image_name
@@ -916,6 +922,7 @@ terraform_apply() {
   cd "${ROOT}/private/openstack"
   rm -f backend.generated.tf backend.hcl private-cloud.auto.tfvars zz-local-devstack.auto.tfvars private-cloud.tfplan
   use_local_devstack_openstack_env
+  load_cached_image_overrides
   check_openstack_auth
   export TF_VAR_ssh_public_key
   TF_VAR_ssh_public_key="$(cat "${SSH_KEY}.pub")"

@@ -86,7 +86,7 @@ env:
   # Terraform variables
   TF_VAR_ssh_public_key: ${{ secrets.PRIVATE_CLOUD_SSH_PUBLIC_KEY }}
   TF_VAR_control_plane_image_name: ${{ vars.CONTROL_PLANE_IMAGE_NAME || 'ubuntu-22.04' }}
-  TF_VAR_control_plane_flavor_name: ${{ vars.CONTROL_PLANE_FLAVOR_NAME || 'm1.medium' }}
+  TF_VAR_control_plane_flavor_name: ${{ vars.CONTROL_PLANE_FLAVOR_NAME || 'm1.large' }}
   TF_VAR_build_worker_count: ${{ vars.BUILD_WORKER_COUNT || '1' }}
   TF_VAR_build_worker_image_name: ${{ vars.BUILD_WORKER_IMAGE_NAME || 'ubuntu-22.04' }}
   TF_VAR_build_worker_flavor_name: ${{ vars.BUILD_WORKER_FLAVOR_NAME || 'm1.large' }}
@@ -115,7 +115,7 @@ env:
   HA_OPENSTACK_GPU_FLAVOR_RAM: ${{ vars.OPENSTACK_GPU_FLAVOR_RAM || '8192' }}
   HA_OPENSTACK_GPU_FLAVOR_VCPUS: ${{ vars.OPENSTACK_GPU_FLAVOR_VCPUS || '4' }}
   HA_OPENSTACK_GPU_FLAVOR_DISK: ${{ vars.OPENSTACK_GPU_FLAVOR_DISK || '40' }}
-  HA_DEVSTACK_CONTROL_FLAVOR_NAME: ha.m1.medium
+  HA_DEVSTACK_CONTROL_FLAVOR_NAME: ha.m1.large
   HA_DEVSTACK_CONTROL_FLAVOR_RAM: "8192"
   HA_DEVSTACK_CONTROL_FLAVOR_VCPUS: "4"
   HA_DEVSTACK_CONTROL_FLAVOR_DISK: "80"
