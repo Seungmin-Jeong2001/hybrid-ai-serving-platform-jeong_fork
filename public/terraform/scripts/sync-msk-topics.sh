@@ -48,6 +48,7 @@ if [ "${MSK_TOPIC_REPLICATION_FACTOR}" -lt 1 ]; then
 fi
 
 has_configs="$(printf '%s' "$MSK_TOPIC_CONFIGS_JSON" | jq 'length > 0')"
+topic_configs_b64="$(printf '%s' "$MSK_TOPIC_CONFIGS_JSON" | jq -r 'to_entries | map("\(.key)=\(.value)") | join("\n")' | base64 | tr -d '\n')"
 
 printf '%s' "$MSK_TOPICS_JSON" | jq -r 'to_entries[] | @base64' | while IFS= read -r entry; do
   topic_name="$(printf '%s' "$entry" | base64 -d | jq -r '.key')"
@@ -101,7 +102,7 @@ printf '%s' "$MSK_TOPICS_JSON" | jq -r 'to_entries[] | @base64' | while IFS= rea
         --cluster-arn "$MSK_CLUSTER_ARN" \
         --topic-name "$topic_name" \
         --partition-count "$desired_partitions" \
-        --configs "$MSK_TOPIC_CONFIGS_JSON" >/dev/null
+        --configs "$topic_configs_b64" >/dev/null
     else
       aws kafka update-topic \
         --region "$AWS_REGION" \
@@ -124,7 +125,7 @@ printf '%s' "$MSK_TOPICS_JSON" | jq -r 'to_entries[] | @base64' | while IFS= rea
       --region "$AWS_REGION" \
       --cluster-arn "$MSK_CLUSTER_ARN" \
       --topic-name "$topic_name" \
-      --configs "$MSK_TOPIC_CONFIGS_JSON" >/dev/null
+      --configs "$topic_configs_b64" >/dev/null
   fi
 
   wait_topic_active "$topic_name"
