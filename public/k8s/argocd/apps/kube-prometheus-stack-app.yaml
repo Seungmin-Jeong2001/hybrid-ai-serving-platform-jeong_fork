@@ -1,0 +1,107 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-prometheus-stack
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    targetRevision: 77.12.0
+    helm:
+      releaseName: kube-prometheus-stack
+      valuesObject:
+        grafana:
+          adminUser: admin
+          adminPassword: changeme123!
+          defaultDashboardsTimezone: Asia/Seoul
+          service:
+            type: ClusterIP
+          persistence:
+            enabled: true
+            size: 10Gi
+            storageClassName: gp2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 300m
+              memory: 512Mi
+          grafana.ini:
+            users:
+              viewers_can_edit: false
+            auth.anonymous:
+              enabled: false
+          sidecar:
+            dashboards:
+              enabled: true
+            datasources:
+              enabled: true
+        prometheus:
+          prometheusSpec:
+            retention: 10d
+            scrapeInterval: 30s
+            evaluationInterval: 30s
+            resources:
+              requests:
+                cpu: 200m
+                memory: 512Mi
+              limits:
+                cpu: 500m
+                memory: 1Gi
+            storageSpec:
+              volumeClaimTemplate:
+                spec:
+                  accessModes:
+                    - ReadWriteOnce
+                  storageClassName: gp2
+                  resources:
+                    requests:
+                      storage: 20Gi
+        alertmanager:
+          alertmanagerSpec:
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: 300m
+                memory: 512Mi
+        kube-state-metrics:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+        prometheus-node-exporter:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+        prometheusOperator:
+          admissionWebhooks:
+            enabled: true
+            certManager:
+              enabled: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: 300m
+              memory: 384Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # Prometheus Operator CRDs exceed the client-side apply limit, so sync with server-side apply.
+      - ServerSideApply=true
+

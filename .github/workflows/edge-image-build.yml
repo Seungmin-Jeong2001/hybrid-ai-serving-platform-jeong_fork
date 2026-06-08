@@ -1,0 +1,42 @@
+name: Edge Image Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE || 'kimsewon' }}
+  DEFAULT_IMAGE_NAME: edge-simulator
+
+concurrency:
+  group: edge-image-dispatch-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+          IMAGE_REPO: ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DEFAULT_IMAGE_NAME }}
+        run: |
+          docker build \
+            -t "${IMAGE_REPO}:${IMAGE_TAG}" \
+            edge
+          docker push "${IMAGE_REPO}:${IMAGE_TAG}"
+          docker tag \
+            "${IMAGE_REPO}:${IMAGE_TAG}" \
+            "${IMAGE_REPO}:latest"
+          docker push "${IMAGE_REPO}:latest"

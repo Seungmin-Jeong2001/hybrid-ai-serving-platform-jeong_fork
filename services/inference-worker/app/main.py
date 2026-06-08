@@ -1,3 +1,6 @@
+# Kafka 요청을 소비해 추론을 수행하고 결과 저장 및 재처리를 담당하는 워커
+# 역할 : Kafka consumer + predictor 호출 + DynamoDB 저장 + retry/DLQ용 Kafka producer
+
 import json
 import logging
 import os
@@ -27,11 +30,17 @@ def _bootstrap_servers() -> str:
 
 
 def _predict_url() -> str:
+    # 기본값은 KServe InferenceService(metadata.name=pdm, RawDeployment) 관례를 따름:
+    #   pdm = Predictive Maintenance(예지보전) 모델
+    #   호스트 = <name>-predictor 서비스(pdm-predictor), 경로의 모델명 = <name>(pdm)
+    # [주의] KServe가 만드는 실제 Service 이름은 버전에 따라 다를 수 있으니
+    # 첫 배포 후 `kubectl get svc -n inference`로 확인하고 다르면 아래 기본값(또는 env)을 맞춰야 함.
+    # InferenceService의 metadata.name을 바꾸면 호스트/모델명 둘 다 같이 바꿔야 함.
     base_url = os.getenv(
         "PREDICTOR_URL",
-        "http://kserve-predictor.hasp.svc.cluster.local",
+        "http://pdm-predictor.inference.svc.cluster.local",
     ).rstrip("/")
-    endpoint = os.getenv("PREDICTOR_ENDPOINT", "/v1/models/default:predict")
+    endpoint = os.getenv("PREDICTOR_ENDPOINT", "/v1/models/pdm:predict")
     return f"{base_url}{endpoint}"
 
 

@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: inference-api
-  namespace: hasp
+  namespace: inference
 spec:
   replicas: 1
   selector:
@@ -13,13 +13,49 @@ spec:
       labels:
         app: inference-api
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      nodeSelector:
+        workload: inference
       containers:
         - name: inference-api
           image: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/inference-api:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: false
           env:
+            # Terraform provisions the shared inference-config ConfigMap from MSK outputs.
             - name: BOOTSTRAP_SERVERS
-              value: replace-me:9092
+              valueFrom:
+                configMapKeyRef:
+                  name: inference-config
+                  key: BOOTSTRAP_SERVERS
             - name: REQUEST_TOPIC
               value: inference-request
           ports:
             - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

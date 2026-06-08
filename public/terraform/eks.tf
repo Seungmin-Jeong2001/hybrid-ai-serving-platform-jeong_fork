@@ -4,14 +4,19 @@ resource "aws_eks_cluster" "main" {
   role_arn = aws_iam_role.eks_cluster.arn
   version  = var.eks_cluster_version
 
+  access_config {
+    authentication_mode                         = "API_AND_CONFIG_MAP"
+    bootstrap_cluster_creator_admin_permissions = true
+  }
+
   vpc_config {
     subnet_ids = concat(
       aws_subnet.public[*].id,
       aws_subnet.eks_private[*].id,
     )
-    endpoint_private_access      = true
-    endpoint_public_access       = true
-    public_access_cidrs          = var.eks_public_access_cidrs
+    endpoint_private_access = true
+    endpoint_public_access  = true
+    public_access_cidrs     = var.eks_public_access_cidrs
   }
 
   depends_on = [

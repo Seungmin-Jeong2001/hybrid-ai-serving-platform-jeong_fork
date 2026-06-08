@@ -1,0 +1,48 @@
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  # [주의] worker는 이 주소를 services/inference-worker/app/main.py의 _predict_url()
+  #   기본값(또는 PREDICTOR_URL/PREDICTOR_ENDPOINT env)으로 들고 있음. 둘이 묶여 있어
+  #   name을 바꾸면 worker 쪽 값도 반드시 같이 변경해야 함.
+  # [미확정] 첫 배포 후 `kubectl get svc -n inference`로 KServe가 만든 실제 Service 이름을
+  #   확인하고, main.py 기본값과 다르면 그 값으로 맞출 것.
+  # pdm = Predictive Maintenance(예지보전) 모델
+  # 이 name=pdm 기준 예상값: 호스트 pdm-predictor, 경로 /v1/models/pdm:predict
+  name: pdm
+  namespace: inference
+  annotations:
+    serving.kserve.io/deploymentMode: RawDeployment
+spec:
+  predictor:
+    nodeSelector:
+      workload: inference
+    minReplicas: 1
+    maxReplicas: 3
+    containers:
+      - name: kserve-container
+        image: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/predictive-model:latest
+        ports:
+          - containerPort: 8080
+            protocol: TCP
+        env:
+          - name: MODEL_NAME
+            value: pdm
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+          limits:
+            cpu: "1"
+            memory: "512Mi"

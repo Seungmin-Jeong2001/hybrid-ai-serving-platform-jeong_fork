@@ -108,7 +108,7 @@ variable "eks_node_groups" {
     inference = {
       instance_types = ["m7i-flex.large"] # ["c6i.xlarge"]
       az_count       = 3
-      desired_size   = 2
+      desired_size   = 1 # original: 2
       min_size       = 1
       max_size       = 10
       labels         = { workload = "inference" }
@@ -117,7 +117,7 @@ variable "eks_node_groups" {
     app = {
       instance_types = ["m7i-flex.large"] # ["t3.medium"]
       az_count       = 3
-      desired_size   = 2
+      desired_size   = 1 # original: 2
       min_size       = 1
       max_size       = 10
       labels         = { workload = "app" }
@@ -126,8 +126,8 @@ variable "eks_node_groups" {
     system = {
       instance_types = ["m7i-flex.large"] # ["t3.medium"]
       az_count       = 2
-      desired_size   = 2
-      min_size       = 2
+      desired_size   = 1 # original: 2
+      min_size       = 1 # original: 2
       max_size       = 3
       labels         = { workload = "system" }
       taints         = []
@@ -135,7 +135,7 @@ variable "eks_node_groups" {
     monitoring = {
       instance_types = ["m7i-flex.large"] # ["t3.large"]
       az_count       = 2
-      desired_size   = 1
+      desired_size   = 1 # original: 1
       min_size       = 1
       max_size       = 2
       labels         = { workload = "monitoring" }
@@ -215,30 +215,6 @@ variable "artifacts_s3_force_destroy" {
 }
 
 # ALB 변수
-variable "internal_alb_deletion_protection" {
-  description = "Whether to enable deletion protection for the internal ALB"
-  type        = bool
-  default     = false
-}
-
-variable "internal_alb_target_port" {
-  description = "Target port for the internal ALB target group"
-  type        = number
-  default     = 80
-}
-
-variable "internal_alb_target_type" {
-  description = "Target type for the internal ALB target group"
-  type        = string
-  default     = "ip"
-}
-
-variable "internal_alb_health_check_path" {
-  description = "Health check path for the internal ALB target group"
-  type        = string
-  default     = "/"
-}
-
 variable "private_cloud_cidrs" {
   description = "Private Cloud 사이트 CIDR (VPCE 경유로 ECR/S3/STS 등 AWS 서비스 접근 허용)"
   type        = list(string)
@@ -252,6 +228,12 @@ variable "edge_network_cidrs" {
 }
 
 # VPN 변수
+variable "argocd_chart_version" {
+  description = "Argo CD Helm chart version"
+  type        = string
+  default     = "7.8.23"
+}
+
 variable "enable_site_to_site_vpn" {
   description = "Whether to create the Site-to-Site VPN resources"
   type        = bool

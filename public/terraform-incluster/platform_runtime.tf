@@ -1,0 +1,49 @@
+resource "kubernetes_namespace" "inference" {
+  metadata {
+    name = "inference"
+  }
+}
+
+resource "kubernetes_config_map" "inference_config" {
+  metadata {
+    name      = "inference-config"
+    namespace = kubernetes_namespace.inference.metadata[0].name
+  }
+
+  data = {
+    BOOTSTRAP_SERVERS = data.terraform_remote_state.platform.outputs.msk_bootstrap_brokers
+  }
+}
+
+resource "helm_release" "aws_load_balancer_controller" {
+  name       = "aws-load-balancer-controller"
+  repository = "https://aws.github.io/eks-charts"
+  chart      = "aws-load-balancer-controller"
+  version    = "1.13.4"
+  namespace  = "kube-system"
+  wait       = true
+  timeout    = 900
+
+  values = [
+    yamlencode({
+      clusterName = data.terraform_remote_state.platform.outputs.eks_cluster_name
+      region      = var.aws_region
+      vpcId       = data.terraform_remote_state.platform.outputs.vpc_id
+      serviceAccount = {
+        create = true
+        name   = "aws-load-balancer-controller"
+        annotations = {
+          "eks.amazonaws.com/role-arn" = data.terraform_remote_state.platform.outputs.aws_load_balancer_controller_role_arn
+        }
+      }
+      nodeSelector = {
+        workload = "system"
+      }
+    })
+  ]
+}
+
+resource "time_sleep" "wait_for_aws_load_balancer_controller_webhook" {
+  depends_on      = [helm_release.aws_load_balancer_controller]
+  create_duration = "30s"
+}
