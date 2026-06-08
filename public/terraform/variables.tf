@@ -234,6 +234,12 @@ variable "argocd_chart_version" {
   default     = "7.8.23"
 }
 
+variable "additional_eks_admin_role_arns" {
+  description = "Additional IAM role ARNs that should receive EKS cluster admin access"
+  type        = list(string)
+  default     = []
+}
+
 variable "enable_site_to_site_vpn" {
   description = "Whether to create the Site-to-Site VPN resources"
   type        = bool
