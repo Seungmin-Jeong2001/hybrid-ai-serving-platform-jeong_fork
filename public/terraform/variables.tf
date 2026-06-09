@@ -124,10 +124,10 @@ variable "eks_node_groups" {
       taints         = []
     }
     system = {
-      instance_types = ["t3.small"]
+      instance_types = ["t3.medium"] # 임시 비용 절감, 원래 값: m7i-flex.large (ArgoCD 등 system 워크로드 메모리 요구로 small 불가)
       az_count       = 2
-      desired_size   = 1 # ★ 원래 값 : 2 (나중에 복구) ★
-      min_size       = 1 # ★ 원래 값 : 2 (나중에 복구) ★
+      desired_size   = 1 # 원래 값: 2 (나중에 복구)
+      min_size       = 1 # 원래 값: 2 (나중에 복구)
       max_size       = 3
       labels         = { workload = "system" }
       taints         = []
