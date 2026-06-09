@@ -170,6 +170,7 @@ resource "openstack_compute_instance_v2" "control_plane" {
 
   lifecycle {
     ignore_changes = [
+      flavor_name,
       image_name,
       user_data,
     ]
@@ -224,6 +225,7 @@ resource "openstack_compute_instance_v2" "build_worker" {
 
   lifecycle {
     ignore_changes = [
+      flavor_name,
       image_name,
       user_data,
     ]
@@ -278,6 +280,7 @@ resource "openstack_compute_instance_v2" "gpu_worker" {
 
   lifecycle {
     ignore_changes = [
+      flavor_name,
       image_name,
       user_data,
     ]
@@ -332,6 +335,7 @@ resource "openstack_compute_instance_v2" "gitlab" {
 
   lifecycle {
     ignore_changes = [
+      flavor_name,
       image_name,
       user_data,
     ]
@@ -386,6 +390,7 @@ resource "openstack_compute_instance_v2" "harbor" {
 
   lifecycle {
     ignore_changes = [
+      flavor_name,
       image_name,
       user_data,
     ]

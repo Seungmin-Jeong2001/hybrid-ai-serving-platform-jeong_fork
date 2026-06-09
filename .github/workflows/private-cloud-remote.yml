@@ -213,10 +213,10 @@ jobs:
           HARBOR_ADMIN_PASSWORD: ${{ secrets.HARBOR_ADMIN_PASSWORD }}
           MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
           CONTROL_PLANE_IMAGE_NAME: ${{ vars.CONTROL_PLANE_IMAGE_NAME || 'ubuntu-22.04' }}
-          CONTROL_PLANE_FLAVOR_NAME: ${{ vars.CONTROL_PLANE_FLAVOR_NAME || 'm1.large' }}
+          CONTROL_PLANE_FLAVOR_NAME: ${{ vars.CONTROL_PLANE_FLAVOR_NAME || 'ha.m1.large' }}
           BUILD_WORKER_COUNT: ${{ vars.BUILD_WORKER_COUNT || '1' }}
           BUILD_WORKER_IMAGE_NAME: ${{ vars.BUILD_WORKER_IMAGE_NAME || 'ubuntu-22.04' }}
-          BUILD_WORKER_FLAVOR_NAME: ${{ vars.BUILD_WORKER_FLAVOR_NAME || 'm1.large' }}
+          BUILD_WORKER_FLAVOR_NAME: ${{ vars.BUILD_WORKER_FLAVOR_NAME || 'ha.m1.large' }}
           GPU_WORKER_COUNT: ${{ vars.GPU_WORKER_COUNT || '1' }}
           GPU_WORKER_IMAGE_NAME: ${{ vars.GPU_WORKER_IMAGE_NAME || 'ubuntu-22.04' }}
           GPU_WORKER_FLAVOR_NAME: ${{ vars.GPU_WORKER_FLAVOR_NAME || 'g1.large' }}
@@ -227,11 +227,11 @@ jobs:
           GPU_TRAINING_PYTHON_PACKAGES_JSON: ${{ vars.GPU_TRAINING_PYTHON_PACKAGES_JSON || '["torch==2.1.0+cu121","torchvision==0.16.0+cu121","torchaudio==2.1.0+cu121","numpy==1.26.4","pandas==2.2.2","scipy==1.11.4","scikit-learn==1.4.2","matplotlib==3.8.4","seaborn==0.13.2","notebook==7.2.2","ipykernel==6.29.5","minio==7.2.8"]' }}
           GITLAB_COUNT: ${{ vars.GITLAB_COUNT || '1' }}
           GITLAB_IMAGE_NAME: ${{ vars.GITLAB_IMAGE_NAME || 'ubuntu-22.04' }}
-          GITLAB_FLAVOR_NAME: ${{ vars.GITLAB_FLAVOR_NAME || 'm1.large' }}
+          GITLAB_FLAVOR_NAME: ${{ vars.GITLAB_FLAVOR_NAME || 'ha.m1.gitlab' }}
           GITLAB_IMAGE: ${{ vars.GITLAB_IMAGE || 'gitlab/gitlab-ce:18.11.4-ce.0' }}
           HARBOR_COUNT: ${{ vars.HARBOR_COUNT || '1' }}
           HARBOR_IMAGE_NAME: ${{ vars.HARBOR_IMAGE_NAME || 'ubuntu-22.04' }}
-          HARBOR_FLAVOR_NAME: ${{ vars.HARBOR_FLAVOR_NAME || 'm1.large' }}
+          HARBOR_FLAVOR_NAME: ${{ vars.HARBOR_FLAVOR_NAME || 'ha.m1.harbor' }}
           OPENSTACK_GPU_PCI_ALIAS: ${{ vars.OPENSTACK_GPU_PCI_ALIAS || 'nvidia-gpu' }}
           OPENSTACK_GPU_PCI_VENDOR_ID: ${{ vars.OPENSTACK_GPU_PCI_VENDOR_ID || '10de' }}
           OPENSTACK_GPU_PCI_PRODUCT_ID: ${{ vars.OPENSTACK_GPU_PCI_PRODUCT_ID || 'auto' }}

@@ -102,6 +102,11 @@ HA_DEVSTACK_HARBOR_FLAVOR_NAME="${HA_DEVSTACK_HARBOR_FLAVOR_NAME:-ha.m1.harbor}"
 HA_DEVSTACK_HARBOR_FLAVOR_RAM="${HA_DEVSTACK_HARBOR_FLAVOR_RAM:-8192}"
 HA_DEVSTACK_HARBOR_FLAVOR_VCPUS="${HA_DEVSTACK_HARBOR_FLAVOR_VCPUS:-4}"
 HA_DEVSTACK_HARBOR_FLAVOR_DISK="${HA_DEVSTACK_HARBOR_FLAVOR_DISK:-80}"
+TF_VAR_control_plane_flavor_name="${TF_VAR_control_plane_flavor_name:-${HA_DEVSTACK_CONTROL_FLAVOR_NAME}}"
+TF_VAR_build_worker_flavor_name="${TF_VAR_build_worker_flavor_name:-${HA_DEVSTACK_WORKER_FLAVOR_NAME}}"
+TF_VAR_gpu_worker_flavor_name="${TF_VAR_gpu_worker_flavor_name:-${HA_OPENSTACK_GPU_FLAVOR_NAME:-g1.large}}"
+TF_VAR_gitlab_flavor_name="${TF_VAR_gitlab_flavor_name:-${HA_DEVSTACK_GITLAB_FLAVOR_NAME}}"
+TF_VAR_harbor_flavor_name="${TF_VAR_harbor_flavor_name:-${HA_DEVSTACK_HARBOR_FLAVOR_NAME}}"
 HA_OPENSTACK_GPU_PCI_ALIAS="${HA_OPENSTACK_GPU_PCI_ALIAS:-nvidia-gpu}"
 HA_OPENSTACK_GPU_PCI_VENDOR_ID="${HA_OPENSTACK_GPU_PCI_VENDOR_ID:-10de}"
 HA_OPENSTACK_GPU_PCI_PRODUCT_ID="${HA_OPENSTACK_GPU_PCI_PRODUCT_ID:-auto}"
@@ -145,9 +150,9 @@ IMAGE_CACHE_ENV="${ROOT}/.ha/openstack/image-cache/images.env"
 HA_OPENSTACK_IMAGE_CACHE_ENABLED="${HA_OPENSTACK_IMAGE_CACHE_ENABLED:-true}"
 HA_OPENSTACK_IMAGE_CACHE_DIR="${HA_OPENSTACK_IMAGE_CACHE_DIR:-${ROOT}/.ha/openstack/image-cache}"
 HA_OPENSTACK_IMAGE_CACHE_PREFIX="${HA_OPENSTACK_IMAGE_CACHE_PREFIX:-hybrid-ai-cache}"
-HA_OPENSTACK_IMAGE_CACHE_FLAVOR="${HA_OPENSTACK_IMAGE_CACHE_FLAVOR:-${HA_DEVSTACK_WORKER_FLAVOR_NAME}}"
-HA_OPENSTACK_IMAGE_CACHE_GITLAB_FLAVOR="${HA_OPENSTACK_IMAGE_CACHE_GITLAB_FLAVOR:-${HA_DEVSTACK_GITLAB_FLAVOR_NAME}}"
-HA_OPENSTACK_IMAGE_CACHE_HARBOR_FLAVOR="${HA_OPENSTACK_IMAGE_CACHE_HARBOR_FLAVOR:-${HA_DEVSTACK_HARBOR_FLAVOR_NAME}}"
+HA_OPENSTACK_IMAGE_CACHE_FLAVOR="${HA_OPENSTACK_IMAGE_CACHE_FLAVOR:-${TF_VAR_build_worker_flavor_name}}"
+HA_OPENSTACK_IMAGE_CACHE_GITLAB_FLAVOR="${HA_OPENSTACK_IMAGE_CACHE_GITLAB_FLAVOR:-${TF_VAR_gitlab_flavor_name}}"
+HA_OPENSTACK_IMAGE_CACHE_HARBOR_FLAVOR="${HA_OPENSTACK_IMAGE_CACHE_HARBOR_FLAVOR:-${TF_VAR_harbor_flavor_name}}"
 HA_OPENSTACK_IMAGE_CACHE_DRIVER_PACKAGE="${HA_OPENSTACK_IMAGE_CACHE_DRIVER_PACKAGE:-nvidia-driver-595-open}"
 HA_PRIVATE_CLOUD_AUTO_EXPAND_QUOTA="${HA_PRIVATE_CLOUD_AUTO_EXPAND_QUOTA:-true}"
 HA_PRIVATE_CLOUD_QUOTA_HEADROOM_INSTANCES="${HA_PRIVATE_CLOUD_QUOTA_HEADROOM_INSTANCES:-3}"
@@ -1416,6 +1421,7 @@ prepare_noninteractive_backend_init() {
 terraform_apply() {
   local effective_build_worker_count effective_gpu_worker_count effective_gitlab_count effective_harbor_count
   local effective_install_node_dependencies
+  local effective_control_plane_flavor effective_build_worker_flavor effective_gpu_worker_flavor effective_gitlab_flavor effective_harbor_flavor
   local key_pair_name
   local apply_prefix
   ensure_ssh_key
@@ -1428,6 +1434,8 @@ terraform_apply() {
   TF_VAR_ssh_public_key="$(cat "${SSH_KEY}.pub")"
   export TF_VAR_control_plane_image_name TF_VAR_build_worker_image_name TF_VAR_gpu_worker_image_name TF_VAR_gitlab_image_name
   export TF_VAR_harbor_image_name
+  export TF_VAR_control_plane_flavor_name TF_VAR_build_worker_flavor_name TF_VAR_gpu_worker_flavor_name
+  export TF_VAR_gitlab_flavor_name TF_VAR_harbor_flavor_name
   export TF_VAR_gpu_worker_count TF_VAR_gitlab_count TF_VAR_harbor_count TF_VAR_gitlab_container_image
   if [[ -n "${PRIVATE_CLOUD_TFVARS:-}" ]]; then
     printf '%s' "${PRIVATE_CLOUD_TFVARS}" > private-cloud.auto.tfvars
@@ -1437,6 +1445,11 @@ terraform_apply() {
   effective_gpu_worker_count="$(effective_worker_count gpu_worker_count "${TF_VAR_gpu_worker_count}" "$apply_prefix")"
   effective_gitlab_count="$(effective_worker_count gitlab_count "${TF_VAR_gitlab_count}" "$apply_prefix")"
   effective_harbor_count="$(effective_worker_count harbor_count "${TF_VAR_harbor_count}" "$apply_prefix")"
+  effective_control_plane_flavor="$(terraform_var_value control_plane_flavor_name "${TF_VAR_control_plane_flavor_name}" private-cloud.auto.tfvars)"
+  effective_build_worker_flavor="$(terraform_var_value build_worker_flavor_name "${TF_VAR_build_worker_flavor_name}" private-cloud.auto.tfvars)"
+  effective_gpu_worker_flavor="$(terraform_var_value gpu_worker_flavor_name "${TF_VAR_gpu_worker_flavor_name}" private-cloud.auto.tfvars)"
+  effective_gitlab_flavor="$(terraform_var_value gitlab_flavor_name "${TF_VAR_gitlab_flavor_name}" private-cloud.auto.tfvars)"
+  effective_harbor_flavor="$(terraform_var_value harbor_flavor_name "${TF_VAR_harbor_flavor_name}" private-cloud.auto.tfvars)"
   effective_install_node_dependencies="$(terraform_var_value install_node_dependencies true private-cloud.auto.tfvars)"
   if [[ -n "${PRIVATE_CLOUD_TFVARS:-}" && "$apply_prefix" == *-actions ]]; then
     if ! terraform_tfvars_has_var install_node_dependencies private-cloud.auto.tfvars; then
@@ -1454,20 +1467,20 @@ terraform_apply() {
     printf 'ssh_allowed_cidrs = ["%s"]\n' "$public_subnet_cidr"
     printf 'gitlab_http_allowed_cidrs = ["%s"]\n' "$public_subnet_cidr"
     printf 'control_plane_image_name = "%s"\n' "${TF_VAR_control_plane_image_name}"
-    printf 'control_plane_flavor_name = "%s"\n' "${HA_DEVSTACK_CONTROL_FLAVOR_NAME}"
+    printf 'control_plane_flavor_name = "%s"\n' "${effective_control_plane_flavor}"
     printf 'build_worker_count = %s\n' "${effective_build_worker_count}"
     printf 'build_worker_image_name = "%s"\n' "${TF_VAR_build_worker_image_name}"
-    printf 'build_worker_flavor_name = "%s"\n' "${HA_DEVSTACK_WORKER_FLAVOR_NAME}"
+    printf 'build_worker_flavor_name = "%s"\n' "${effective_build_worker_flavor}"
     printf 'gpu_worker_count = %s\n' "${effective_gpu_worker_count}"
     printf 'gpu_worker_image_name = "%s"\n' "${TF_VAR_gpu_worker_image_name}"
-    printf 'gpu_worker_flavor_name = "%s"\n' "${HA_OPENSTACK_GPU_FLAVOR_NAME}"
+    printf 'gpu_worker_flavor_name = "%s"\n' "${effective_gpu_worker_flavor}"
     printf 'gitlab_count = %s\n' "${effective_gitlab_count}"
     printf 'gitlab_image_name = "%s"\n' "${TF_VAR_gitlab_image_name}"
-    printf 'gitlab_flavor_name = "%s"\n' "${HA_DEVSTACK_GITLAB_FLAVOR_NAME}"
+    printf 'gitlab_flavor_name = "%s"\n' "${effective_gitlab_flavor}"
     printf 'gitlab_container_image = "%s"\n' "${TF_VAR_gitlab_container_image}"
     printf 'harbor_count = %s\n' "${effective_harbor_count}"
     printf 'harbor_image_name = "%s"\n' "${TF_VAR_harbor_image_name}"
-    printf 'harbor_flavor_name = "%s"\n' "${HA_DEVSTACK_HARBOR_FLAVOR_NAME}"
+    printf 'harbor_flavor_name = "%s"\n' "${effective_harbor_flavor}"
     printf 'harbor_http_allowed_cidrs = ["%s"]\n' "$public_subnet_cidr"
   } >zz-local-devstack.auto.tfvars
   cleanup_openstack_orphans_before_apply
