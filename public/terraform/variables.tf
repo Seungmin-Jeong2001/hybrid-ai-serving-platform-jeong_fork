@@ -68,7 +68,6 @@ variable "ecr_repositories" {
     "predictive-model",
     "inference-api",
     "inference-worker",
-    "kserve-predictor",
   ]
 }
 
