@@ -66,6 +66,15 @@ resource "aws_launch_template" "node_groups" {
       Name = "${var.project_name}-${each.key}"
     })
   }
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      volume_size           = 30 # 기본값 20GB에서 증가, /tmp Terraform/Kafka 바이너리 공간 확보용
+      volume_type           = "gp3"
+      delete_on_termination = true
+    }
+  }
 }
 
 # EKS 노드 그룹 (워크로드별: inference, app, system, monitoring)
