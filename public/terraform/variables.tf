@@ -135,8 +135,8 @@ variable "eks_node_groups" {
     monitoring = {
       instance_types = ["c7i-flex.large"] # 임시 비용 절감, 원래 값: m7i-flex.large
       az_count       = 1                  # 임시 비용 절감, 원래 값: 2 (나중에 복구)
-      desired_size   = 1
-      min_size       = 1
+      desired_size   = 0                  # 임시로 0 (비용 절감), 원래 값: 1 (나중에 복구)
+      min_size       = 0                  # 임시로 0 (비용 절감), 원래 값: 1 (나중에 복구)
       max_size       = 2
       labels         = { workload = "monitoring" }
       taints         = []
