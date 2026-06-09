@@ -92,9 +92,6 @@ prepare_local_devstack_env() {
   export OS_PROJECT_DOMAIN_NAME="${HA_DEVSTACK_PROJECT_DOMAIN_NAME:-Default}"
   export OS_REGION_NAME="${HA_DEVSTACK_REGION_NAME:-RegionOne}"
   export OS_IDENTITY_API_VERSION="${OS_IDENTITY_API_VERSION:-3}"
-  # Use internal endpoints so Terraform doesn't re-auth against the public domain
-  # (which may differ from the local DevStack proxy used for initial auth)
-  export OS_ENDPOINT_TYPE="${OS_ENDPOINT_TYPE:-internalURL}"
 }
 
 check_openstack_auth() {

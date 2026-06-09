@@ -266,7 +266,7 @@ wait_lxc_ip() {
 }
 
 ensure_devstack_container_running() {
-  local status
+  local status device
 
   if ! lxc info ha-openstack >/dev/null 2>&1; then
     printf 'DevStack container ha-openstack is missing; rerun with run_mode=reinstall.\n' >&2
@@ -276,6 +276,15 @@ ensure_devstack_container_running() {
   status="$(lxc list ha-openstack -c s --format csv | tr -d '"')"
   if [[ "$status" != "RUNNING" ]]; then
     log "starting DevStack container ha-openstack (current status: ${status:-unknown})"
+    # Remove all vfio-group-* devices before start — they will be re-added by
+    # bind_gpu_vfio + configure_lxc_devices once the container is running.
+    # This prevents start failures when a VFIO device was added in a previous run
+    # but the GPU is no longer bound (device path disappeared between prune and start).
+    while IFS= read -r device; do
+      case "$device" in
+        vfio-group-*) lxc config device remove ha-openstack "$device" >/dev/null 2>&1 || true ;;
+      esac
+    done < <(lxc config device list ha-openstack 2>/dev/null || true)
     configure_lxc_devices
     lxc start ha-openstack
     wait_lxc_ip
@@ -1130,7 +1139,6 @@ echo "quota preflight available: instances=${available_instances}/${max_instance
 
 if (( need_instances > available_instances || need_cores > available_cores || need_ram > available_ram )); then
   if [[ "$auto_expand_quota" == "true" ]]; then
-    quota_project="${OS_PROJECT_NAME:-admin}"
     target_instances=$((used_instances + need_instances + quota_headroom_instances))
     target_cores=$((used_cores + need_cores + quota_headroom_cores))
     target_ram=$((used_ram + need_ram + quota_headroom_ram_mb))
@@ -1172,6 +1180,7 @@ EOF
   exit 1
 fi
 
+quota_project="${OS_PROJECT_NAME:-admin}"
 fip_limit="$(openstack network quota show "$quota_project" -f value -c floatingip 2>/dev/null || true)"
 if [[ "$fip_limit" =~ ^[0-9]+$ ]]; then
   used_fips="$(openstack floating ip list --project "$quota_project" -f value -c ID 2>/dev/null | wc -l | tr -d ' ' || echo 0)"
@@ -1454,9 +1463,6 @@ use_local_devstack_openstack_env() {
   export OS_PROJECT_DOMAIN_NAME="${HA_DEVSTACK_PROJECT_DOMAIN_NAME:-Default}"
   export OS_REGION_NAME="${HA_DEVSTACK_REGION_NAME:-RegionOne}"
   export OS_IDENTITY_API_VERSION="${OS_IDENTITY_API_VERSION:-3}"
-  # Use internal endpoints so Terraform doesn't re-auth against the public domain
-  # (which may differ from the local DevStack proxy path used for initial auth)
-  export OS_ENDPOINT_TYPE="${OS_ENDPOINT_TYPE:-internalURL}"
 }
 
 check_openstack_auth() {
