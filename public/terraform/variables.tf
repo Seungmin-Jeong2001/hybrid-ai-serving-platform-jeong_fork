@@ -134,7 +134,7 @@ variable "eks_node_groups" {
     }
     monitoring = {
       instance_types = ["t3.large"] # 임시 비용 절감, 원래 값: m7i-flex.large (Prometheus+Grafana+Loki 메모리 요구)
-      az_count       = 1 # 임시 비용 절감, 원래 값: 2 (나중에 복구)
+      az_count       = 1            # 임시 비용 절감, 원래 값: 2 (나중에 복구)
       desired_size   = 1
       min_size       = 1
       max_size       = 2
