@@ -32,7 +32,7 @@ resource "aws_msk_cluster" "main" {
 
   broker_node_group_info {
     instance_type   = var.msk_broker_instance_type
-    client_subnets  = aws_subnet.msk_private[*].id
+    client_subnets  = [aws_subnet.msk_private[0].id] # ★ 임시 비용 절감 (브로커 1개), 원래 값: aws_subnet.msk_private[*].id (3 AZ, 나중에 복구) ★
     security_groups = [aws_security_group.msk.id]
 
     storage_info {
