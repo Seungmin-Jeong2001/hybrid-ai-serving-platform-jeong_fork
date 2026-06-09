@@ -85,10 +85,9 @@ async def infer(request: InferenceRequest) -> dict[str, Any]:
     if producer is None:
         raise HTTPException(status_code=503, detail="kafka producer is not ready")
 
-    job_id = request.request_id or str(uuid4())
+    request_id = request.request_id or str(uuid4())
     payload = {
-        "request_id": job_id,
-        "job_id": job_id,
+        "request_id": request_id,
         "factory_id": request.factory_id,
         "equipment_id": request.equipment_id,
         "timestamp": request.timestamp,
@@ -98,7 +97,7 @@ async def infer(request: InferenceRequest) -> dict[str, Any]:
     }
 
     try:
-        future = producer.send(_request_topic(), key=job_id, value=payload)
+        future = producer.send(_request_topic(), key=request.equipment_id, value=payload)
         record_metadata = future.get(timeout=30)
     except KafkaError as exc:
         logger.exception("failed to publish inference request: %s", exc)
@@ -106,7 +105,7 @@ async def infer(request: InferenceRequest) -> dict[str, Any]:
 
     return {
         "status": "accepted",
-        "job_id": job_id,
+        "request_id": request_id,
         "request_topic": record_metadata.topic,
         "partition": record_metadata.partition,
         "offset": record_metadata.offset,

@@ -203,10 +203,11 @@ def _should_route_immediately_to_dlq(payload: dict[str, Any]) -> bool:
 def _publish(
     producer: KafkaProducer,
     topic: str,
-    job_id: str,
+    request_id: str,
     payload: dict[str, Any],
 ) -> None:
-    producer.send(topic, key=job_id, value=payload).get(timeout=30)
+    key = payload.get("equipment_id") or request_id  # 파티션 키: equipment_id (같은 장비 메시지 순서 보장)
+    producer.send(topic, key=key, value=payload).get(timeout=30)
 
 
 def _build_failure_payload(
@@ -281,11 +282,9 @@ def run() -> None:
                     payload = record.value
                     request_id = (
                         payload.get("request_id")
-                        or payload.get("job_id")
                         or record.key
                         or "unknown-job"
                     )
-                    job_id = request_id
                     retry_count = int(payload.get("retry_count", 0))
                     next_attempt_at = int(payload.get("next_attempt_at", 0) or 0)
 
@@ -330,7 +329,7 @@ def run() -> None:
                                 source_topic=record.topic,
                                 failure_stage="pre-validation",
                             )
-                            _publish(producer, _dlq_topic(), job_id, dlq_payload)
+                            _publish(producer, _dlq_topic(), request_id, dlq_payload)
                             _update_job_status(
                                 jobs_table,
                                 request_id,
@@ -340,7 +339,7 @@ def run() -> None:
                                 last_error="message met immediate dlq criteria",
                             )
                             consumer.commit()
-                            logger.info("message routed immediately to dlq job_id=%s", job_id)
+                            logger.info("message routed immediately to dlq request_id=%s", request_id)
                             continue
 
                         result = _process_message(payload)
@@ -353,8 +352,8 @@ def run() -> None:
                         )
                         consumer.commit()
                         logger.info(
-                            "processed inference job_id=%s source_topic=%s result=%s",
-                            job_id,
+                            "processed inference request_id=%s source_topic=%s result=%s",
+                            request_id,
                             record.topic,
                             json.dumps(result),
                         )
@@ -371,7 +370,7 @@ def run() -> None:
                         if next_retry_count <= _max_retry_count():
                             next_attempt_at = _compute_next_attempt_at(next_retry_count)
                             failure_payload["next_attempt_at"] = next_attempt_at
-                            _publish(producer, _retry_topic(), job_id, failure_payload)
+                            _publish(producer, _retry_topic(), request_id, failure_payload)
                             _update_job_status(
                                 jobs_table,
                                 request_id,
@@ -381,14 +380,14 @@ def run() -> None:
                                 last_error=str(exc),
                             )
                             logger.warning(
-                                "published retry message job_id=%s retry_count=%s next_attempt_at=%s",
-                                job_id,
+                                "published retry message request_id=%s retry_count=%s next_attempt_at=%s",
+                                request_id,
                                 next_retry_count,
                                 next_attempt_at,
                             )
                         else:
                             failure_payload["dlq_reason"] = "retry_exhausted"
-                            _publish(producer, _dlq_topic(), job_id, failure_payload)
+                            _publish(producer, _dlq_topic(), request_id, failure_payload)
                             _update_job_status(
                                 jobs_table,
                                 request_id,
@@ -398,14 +397,14 @@ def run() -> None:
                                 last_error=str(exc),
                             )
                             logger.warning(
-                                "published dlq message after retries job_id=%s retry_count=%s",
-                                job_id,
+                                "published dlq message after retries request_id=%s retry_count=%s",
+                                request_id,
                                 next_retry_count,
                             )
 
                         consumer.commit()
                     except KafkaError:
-                        logger.exception("failed to publish retry/dlq message job_id=%s", job_id)
+                        logger.exception("failed to publish retry/dlq message request_id=%s", request_id)
                     except Exception as exc:  # noqa: BLE001
                         failure_payload = _build_failure_payload(
                             payload,
@@ -415,7 +414,7 @@ def run() -> None:
                             failure_stage="worker-unhandled",
                         )
                         failure_payload["dlq_reason"] = "unhandled_worker_error"
-                        _publish(producer, _dlq_topic(), job_id, failure_payload)
+                        _publish(producer, _dlq_topic(), request_id, failure_payload)
                         _update_job_status(
                             jobs_table,
                             request_id,
@@ -425,7 +424,7 @@ def run() -> None:
                             last_error=str(exc),
                         )
                         consumer.commit()
-                        logger.exception("worker failed and routed to dlq job_id=%s", job_id)
+                        logger.exception("worker failed and routed to dlq request_id=%s", request_id)
                 if not should_continue_polling:
                     break
     finally:
