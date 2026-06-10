@@ -62,7 +62,7 @@ data "aws_iam_policy_document" "inference_worker_dynamodb" {
       "dynamodb:PutItem",
       "dynamodb:UpdateItem",
     ]
-    resources = [aws_dynamodb_table.inference_jobs.arn]
+    resources = [aws_dynamodb_table.inference_results.arn]
   }
 }
 

@@ -27,7 +27,7 @@ output "nat_gateway_id" {
 # Data store outputs
 output "dynamodb_table_name" {
   description = "Inference jobs DynamoDB table name"
-  value       = aws_dynamodb_table.inference_jobs.name
+  value       = aws_dynamodb_table.inference_results.name
 }
 
 output "account_id" {
