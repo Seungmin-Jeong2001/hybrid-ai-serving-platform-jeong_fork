@@ -13,6 +13,7 @@ spec:
       labels:
         app: dashboard-frontend
     spec:
+      priorityClassName: app-high
       nodeSelector:
         workload: general
       containers:

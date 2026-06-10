@@ -1,0 +1,29 @@
+# PriorityClass: 자원 부족 시 우선순위에 따라 파드 축출(Eviction) 순서 결정
+# 높은 값 = 높은 우선순위 = 마지막에 축출
+
+# inference: AI 추론 서비스 (핵심 비즈니스 로직)
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: inference-high
+value: 900
+globalDefault: false
+description: "inference-api, inference-worker, pdm-predictor"
+---
+# app: 고객사 대시보드 (사용자 접점)
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: app-high
+value: 800
+globalDefault: false
+description: "dashboard-frontend, dashboard-backend"
+---
+# general: 모니터링/시스템 툴 (운영 지원)
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: general-medium
+value: 500
+globalDefault: false
+description: "Prometheus, Grafana, Loki, ArgoCD, KEDA, cert-manager"
