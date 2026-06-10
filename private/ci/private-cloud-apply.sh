@@ -2929,7 +2929,7 @@ installed_root_password_file=""
 if [[ -n "$gitlab_root_password_file" && -s "$gitlab_root_password_file" ]]; then
   installed_root_password_file="/etc/hybrid-ai/gitlab-root-password"
   sudo install -m 0600 -o root -g root "$gitlab_root_password_file" "$installed_root_password_file"
-elif [[ -s /etc/hybrid-ai/gitlab-root-password ]]; then
+elif sudo test -s /etc/hybrid-ai/gitlab-root-password; then
   installed_root_password_file="/etc/hybrid-ai/gitlab-root-password"
 fi
 env_file_tmp="$(mktemp)"

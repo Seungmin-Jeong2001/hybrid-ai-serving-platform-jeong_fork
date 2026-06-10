@@ -439,16 +439,16 @@ wait_for_web() {
 }
 
 apply_root_password() {
-  local container_root_password_file="/tmp/hybrid-ai-root-password"
+  local container_root_password_file="/root/hybrid-ai-root-password"
 
   [[ -s "${GITLAB_ROOT_PASSWORD_FILE:-}" ]] || return 0
 
   docker cp "$GITLAB_ROOT_PASSWORD_FILE" "gitlab:${container_root_password_file}" >/dev/null
   docker exec gitlab chmod 600 "$container_root_password_file"
-  docker exec -i gitlab /opt/gitlab/embedded/bin/ruby -rbcrypt <<'RUBY'
+  docker exec -i -e HYBRID_AI_ROOT_PASSWORD_FILE="$container_root_password_file" gitlab /opt/gitlab/embedded/bin/ruby -rbcrypt <<'RUBY'
 require 'open3'
 
-password_file = '/tmp/hybrid-ai-root-password'
+password_file = ENV.fetch('HYBRID_AI_ROOT_PASSWORD_FILE')
 password = File.read(password_file).strip
 abort('root password file is empty') if password.empty?
 
