@@ -5,9 +5,8 @@
 ## Workflow 범위
 
 ```text
-private-cloud-plan      # 변경 검토, Terraform plan, DNS dry-run
 private-cloud-controller # apply/destroy 선택, OpenStack lifecycle 선택, VM별 apply job DAG
-private-cloud-remote     # reusable SSH executor workflow
+private-cloud-remote     # controller에서만 호출하는 reusable SSH executor workflow
 ```
 
 ## 환경 구분 계획

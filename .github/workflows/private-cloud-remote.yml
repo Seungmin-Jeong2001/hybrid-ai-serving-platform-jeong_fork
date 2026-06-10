@@ -51,6 +51,9 @@ jobs:
       REMOTE_USER: ${{ vars.PRIVATE_CLOUD_HOST_USER }}
       REMOTE_PORT: ${{ vars.PRIVATE_CLOUD_HOST_PORT || '22' }}
       REMOTE_REPO: ${{ vars.PRIVATE_CLOUD_REMOTE_REPO || '' }}
+      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+      TAILSCALE_OAUTH_TAGS: ${{ vars.TAILSCALE_OAUTH_TAGS || vars.TAILSCALE_TAGS || 'tag:github-actions' }}
     steps:
       - name: Validate remote executor inputs
         run: |
@@ -83,22 +86,54 @@ jobs:
               missing=1
             fi
           done
-          for name in TAILSCALE_AUTHKEY PRIVATE_CLOUD_HOST_SSH_PRIVATE_KEY; do
+          for name in PRIVATE_CLOUD_HOST_SSH_PRIVATE_KEY; do
             if [[ -z "${!name:-}" ]]; then
               echo "::error::Missing required repository secret: ${name}"
               missing=1
             fi
           done
+          if [[ -z "${TS_OAUTH_CLIENT_ID:-}" || -z "${TS_OAUTH_SECRET:-}" ]]; then
+            if [[ -z "${TAILSCALE_AUTHKEY:-}" ]]; then
+              echo "::error::Missing Tailscale credentials: set TS_OAUTH_CLIENT_ID/TS_OAUTH_SECRET or TAILSCALE_AUTHKEY"
+              missing=1
+            fi
+          fi
           exit "$missing"
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
           PRIVATE_CLOUD_HOST_SSH_PRIVATE_KEY: ${{ secrets.PRIVATE_CLOUD_HOST_SSH_PRIVATE_KEY }}
 
-      - name: Connect Tailscale
+      - name: Connect Tailscale with OAuth
+        if: ${{ env.TS_OAUTH_CLIENT_ID != '' && env.TS_OAUTH_SECRET != '' }}
         uses: tailscale/github-action@v4
         with:
-          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          oauth-client-id: ${{ env.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ env.TS_OAUTH_SECRET }}
+          tags: ${{ env.TAILSCALE_OAUTH_TAGS }}
           ping: ${{ env.REMOTE_HOST }}
+
+      - name: Connect Tailscale with auth key
+        if: ${{ env.TS_OAUTH_CLIENT_ID == '' || env.TS_OAUTH_SECRET == '' }}
+        run: |
+          set -euo pipefail
+          curl -fsSL https://tailscale.com/install.sh | sh
+          hostname="gha-${GITHUB_RUN_ID}-${GITHUB_JOB}"
+          hostname="${hostname//[^[:alnum:]-]/-}"
+          sudo tailscale up \
+            --auth-key="$TAILSCALE_AUTHKEY" \
+            --hostname="${hostname:0:63}" \
+            --accept-routes \
+            --reset
+          for _ in {1..30}; do
+            if tailscale ping --timeout=5s "$REMOTE_HOST"; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Tailscale could not reach ${REMOTE_HOST}"
+          exit 1
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
 
       - name: Setup SSH
         run: |
@@ -438,3 +473,7 @@ jobs:
               ;;
           esac
           REMOTE
+
+      - name: Disconnect Tailscale auth key session
+        if: ${{ always() && (env.TS_OAUTH_CLIENT_ID == '' || env.TS_OAUTH_SECRET == '') }}
+        run: sudo tailscale logout || true

@@ -254,7 +254,6 @@ required_project_paths() {
     "${HA_PROJECT_ROOT}/private/storage/kustomization.yaml" \
     "${HA_PROJECT_ROOT}/private/gpu-worker/kustomization.yaml" \
     "${HA_PROJECT_ROOT}/.github/workflows/private-cloud-remote.yml" \
-    "${HA_PROJECT_ROOT}/.github/workflows/private-cloud-plan.yml" \
     "${HA_PROJECT_ROOT}/.github/workflows/private-cloud-controller.yml"
 }
 

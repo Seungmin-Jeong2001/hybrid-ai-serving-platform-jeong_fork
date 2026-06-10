@@ -78,7 +78,12 @@ ensure_horizon_proxy_if_available() {
 
 prepare_local_devstack_env() {
   export OS_AUTH_URL="${HA_DEVSTACK_AUTH_URL:-http://127.0.0.1:18081/identity/v3}"
-  export OS_USERNAME="${HA_DEVSTACK_USERNAME:-admin}"
+  local login_username="${HA_OPENSTACK_LOGIN_USERNAME:-${OS_USERNAME:-${HA_DEVSTACK_USERNAME:-admin}}}"
+  local login_project="${HA_OPENSTACK_LOGIN_PROJECT_NAME:-${OS_PROJECT_NAME:-${HA_DEVSTACK_PROJECT_NAME:-admin}}}"
+  local login_user_domain="${HA_OPENSTACK_LOGIN_USER_DOMAIN_NAME:-${OS_USER_DOMAIN_NAME:-${HA_DEVSTACK_USER_DOMAIN_NAME:-Default}}}"
+  local login_project_domain="${HA_OPENSTACK_LOGIN_PROJECT_DOMAIN_NAME:-${OS_PROJECT_DOMAIN_NAME:-${HA_DEVSTACK_PROJECT_DOMAIN_NAME:-Default}}}"
+  local login_password="${HA_OPENSTACK_LOGIN_PASSWORD:-${OS_PASSWORD:-}}"
+  export OS_USERNAME="$login_username"
   local devstack_password
   local openrc_password
 
@@ -87,10 +92,13 @@ prepare_local_devstack_env() {
   if [[ -n "$openrc_password" ]]; then
     devstack_password="$openrc_password"
   fi
+  if [[ -n "$login_password" ]]; then
+    devstack_password="$login_password"
+  fi
   export OS_PASSWORD="$devstack_password"
-  export OS_PROJECT_NAME="${HA_DEVSTACK_PROJECT_NAME:-admin}"
-  export OS_USER_DOMAIN_NAME="${HA_DEVSTACK_USER_DOMAIN_NAME:-Default}"
-  export OS_PROJECT_DOMAIN_NAME="${HA_DEVSTACK_PROJECT_DOMAIN_NAME:-Default}"
+  export OS_PROJECT_NAME="$login_project"
+  export OS_USER_DOMAIN_NAME="$login_user_domain"
+  export OS_PROJECT_DOMAIN_NAME="$login_project_domain"
   export OS_REGION_NAME="${HA_DEVSTACK_REGION_NAME:-RegionOne}"
   export OS_IDENTITY_API_VERSION="${OS_IDENTITY_API_VERSION:-3}"
 }
@@ -318,13 +326,13 @@ if [[ -n "$network_port_ids" ]]; then
   fi
 fi
 
-server_ids="$(openstack server list -f value -c ID -c Name | awk -v p="$prefix" '$2 ~ "^" p {print $1}')"
+server_ids="$(openstack server list --all-projects -f value -c ID -c Name | awk -v p="$prefix" '$2 ~ "^" p {print $1}')"
 if [[ -n "$server_ids" ]]; then
   while IFS= read -r id; do
     [[ -n "$id" ]] && openstack server delete "$id" || true
   done <<<"$server_ids"
   for _ in {1..60}; do
-    remaining="$(openstack server list -f value -c ID -c Name | awk -v p="$prefix" '$2 ~ "^" p {print $1}' | wc -l)"
+    remaining="$(openstack server list --all-projects -f value -c ID -c Name | awk -v p="$prefix" '$2 ~ "^" p {print $1}' | wc -l)"
     [[ "$remaining" -eq 0 ]] && break
     sleep 5
   done
@@ -377,6 +385,24 @@ done
 CLEANUP_OPENSTACK_ORPHANS
 }
 
+prefixed_openstack_servers_exist() {
+  local prefix="${HA_PRIVATE_CLOUD_RESOURCE_PREFIX:-${TF_VAR_project_name:-hybrid-ai-private}}"
+
+  command -v lxc >/dev/null 2>&1 || return 1
+  lxc info ha-openstack >/dev/null 2>&1 || return 1
+
+  lxc exec ha-openstack -- sudo -u stack -H bash -s -- "$prefix" <<'CHECK_OPENSTACK_SERVERS'
+set -euo pipefail
+prefix="$1"
+cd /opt/stack/devstack
+set +u
+source openrc admin admin >/dev/null
+set -u
+openstack server list --all-projects -f value -c Name \
+  | awk -v p="$prefix" '$1 ~ "^" p {found=1} END {exit found ? 0 : 1}'
+CHECK_OPENSTACK_SERVERS
+}
+
 main() {
   require_tool terraform
   require_tool python3
@@ -395,6 +421,12 @@ main() {
   destroy_rc=0
   terraform -chdir="$OPENSTACK_DIR" destroy -input=false -auto-approve || destroy_rc="$?"
   cleanup_openstack_orphans_best_effort
+  if [[ "$destroy_rc" -ne 0 ]]; then
+    if ! prefixed_openstack_servers_exist; then
+      log "terraform destroy returned ${destroy_rc}, but no prefixed OpenStack servers remain after cleanup; continuing"
+      destroy_rc=0
+    fi
+  fi
   if [[ "$destroy_rc" -ne 0 ]]; then
     exit "$destroy_rc"
   fi

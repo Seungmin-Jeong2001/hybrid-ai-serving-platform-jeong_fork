@@ -1469,6 +1469,7 @@ preflight_openstack_quota() {
     "${HA_PRIVATE_CLOUD_QUOTA_HEADROOM_INSTANCES}" \
     "${HA_PRIVATE_CLOUD_QUOTA_HEADROOM_CORES}" \
     "${HA_PRIVATE_CLOUD_QUOTA_HEADROOM_RAM_MB}" \
+    "${OS_PROJECT_NAME:-admin}" \
     control "$control_count" "$control_flavor" \
     build "$build_count" "$build_flavor" \
     gpu "$gpu_count" "$gpu_flavor" \
@@ -1480,11 +1481,13 @@ auto_expand_quota="$2"
 quota_headroom_instances="$3"
 quota_headroom_cores="$4"
 quota_headroom_ram_mb="$5"
-shift 5
+quota_project="$6"
+shift 6
 cd /opt/stack/devstack
 set +u
 source openrc admin admin >/dev/null
 set -u
+quota_project_id="$(openstack project show "$quota_project" -f value -c id)"
 
 flavor_vcpus() {
   openstack flavor show "$1" -f value -c vcpus
@@ -1495,7 +1498,13 @@ flavor_ram() {
 }
 
 server_exists() {
-  openstack server show "$1" >/dev/null 2>&1
+  local name="$1" id server_name project_id
+  while read -r id server_name; do
+    [[ -n "$id" && "$server_name" == "$name" ]] || continue
+    project_id="$(openstack server show "$id" -f value -c project_id)"
+    [[ "$project_id" == "$quota_project_id" ]] && return 0
+  done < <(openstack server list --all-projects -f value -c ID -c Name)
+  return 1
 }
 
 missing_for_role() {
@@ -1530,7 +1539,6 @@ PY
 }
 
 read -r max_cores used_cores max_ram used_ram max_instances used_instances < <(read_limits "$limits_json")
-quota_project="${OS_PROJECT_NAME:-admin}"
 
 need_cores=0
 need_ram=0
@@ -1842,6 +1850,7 @@ else
 fi
 if [[ "$target_username" != "admin" ]]; then
   openstack role add --project "$target_project" --project-domain "$target_project_domain" --user "$target_username" --user-domain "$target_user_domain" member
+  openstack role add --project "$target_project" --project-domain "$target_project_domain" --user "$target_username" --user-domain "$target_user_domain" admin
 fi
 ENSURE_OPENSTACK_USER
 }
@@ -2278,7 +2287,7 @@ devstack_openrc_password() {
 
 use_local_devstack_openstack_env() {
   export OS_AUTH_URL="${HA_DEVSTACK_AUTH_URL:-http://127.0.0.1:18081/identity/v3}"
-  export OS_USERNAME="${HA_DEVSTACK_USERNAME:-admin}"
+  export OS_USERNAME="${HA_OPENSTACK_LOGIN_USERNAME:-${HA_DEVSTACK_USERNAME:-admin}}"
   local devstack_password
   local openrc_password
 
@@ -2294,10 +2303,14 @@ use_local_devstack_openstack_env() {
     && "${HA_OPENSTACK_LOGIN_PASSWORD_INPUT_PROVIDED}" == "true" ]]; then
     devstack_password="${HA_OPENSTACK_LOGIN_PASSWORD}"
   fi
+  if [[ "${OS_USERNAME}" == "${HA_OPENSTACK_LOGIN_USERNAME}" \
+    && "${HA_OPENSTACK_LOGIN_PASSWORD_INPUT_PROVIDED}" == "true" ]]; then
+    devstack_password="${HA_OPENSTACK_LOGIN_PASSWORD}"
+  fi
   export OS_PASSWORD="$devstack_password"
-  export OS_PROJECT_NAME="${HA_DEVSTACK_PROJECT_NAME:-admin}"
-  export OS_USER_DOMAIN_NAME="${HA_DEVSTACK_USER_DOMAIN_NAME:-Default}"
-  export OS_PROJECT_DOMAIN_NAME="${HA_DEVSTACK_PROJECT_DOMAIN_NAME:-Default}"
+  export OS_PROJECT_NAME="${HA_OPENSTACK_LOGIN_PROJECT_NAME:-${HA_DEVSTACK_PROJECT_NAME:-admin}}"
+  export OS_USER_DOMAIN_NAME="${HA_OPENSTACK_LOGIN_USER_DOMAIN_NAME:-${HA_DEVSTACK_USER_DOMAIN_NAME:-Default}}"
+  export OS_PROJECT_DOMAIN_NAME="${HA_OPENSTACK_LOGIN_PROJECT_DOMAIN_NAME:-${HA_DEVSTACK_PROJECT_DOMAIN_NAME:-Default}}"
   export OS_REGION_NAME="${HA_DEVSTACK_REGION_NAME:-RegionOne}"
   export OS_IDENTITY_API_VERSION="${OS_IDENTITY_API_VERSION:-3}"
 }
