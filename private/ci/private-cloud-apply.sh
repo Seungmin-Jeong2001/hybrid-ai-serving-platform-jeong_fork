@@ -2155,12 +2155,12 @@ devstack_reinstall() {
   bind_gpu_vfio "${product_id}"
   clone_and_configure_devstack "${product_id}"
   run_devstack
+  ensure_horizon_proxy
   ensure_flavors
   configure_gpu_passthrough
   ensure_images
   sync_openstack_login_user
   ensure_devstack_egress
-  ensure_horizon_proxy
   configure_horizon_proxy_settings
   verify_devstack
 }
@@ -2169,6 +2169,7 @@ devstack_apply_check() {
   local product_id
   ensure_devstack_container_running
   verify_devstack
+  ensure_horizon_proxy
   sync_openstack_login_user
   configure_lxc_devices
   product_id="$(detect_gpu_product)"
@@ -2180,7 +2181,6 @@ devstack_apply_check() {
     log "warning: gpu_worker_count=${TF_VAR_gpu_worker_count} but no NVIDIA GPU detected in the LXC container — GPU workers will be created without PCI passthrough"
   fi
   ensure_devstack_egress
-  ensure_horizon_proxy
   configure_horizon_proxy_settings
   verify_devstack
 }
