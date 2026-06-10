@@ -14,7 +14,7 @@ spec:
         app: dashboard-backend
     spec:
       nodeSelector:
-        workload: app
+        workload: general
       containers:
         - name: dashboard-backend
           image: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/dashboard-backend:latest

@@ -13,6 +13,9 @@ spec:
     targetRevision: 2.19.0
     helm:
       releaseName: keda
+      valuesObject:
+        nodeSelector:
+          workload: general
   destination:
     server: https://kubernetes.default.svc
     namespace: keda

@@ -115,31 +115,16 @@ variable "eks_node_groups" {
       labels         = { workload = "inference" }
       taints         = []
     }
-    app = {
-      instance_types = ["t3.small"]
-      az_count       = 3
-      desired_size   = 0 # ★ 임시로 0 , 원래 값 : 1 (나중에 복구) ★
-      min_size       = 0 # ★ 임시로 0 , 원래 값 : 1 (나중에 복구) ★
-      max_size       = 10
-      labels         = { workload = "app" }
-      taints         = []
-    }
-    system = {
-      instance_types = ["t3.medium"] # 임시 비용 절감, 원래 값: m7i-flex.large (ArgoCD 등 system 워크로드 메모리 요구로 small 불가)
+    general = {
+      # system(ArgoCD, KEDA, cert-manager) + monitoring(Prometheus, Grafana, Loki) + app(dashboard) 통합
+      # KEDA(제어부)와 inference(실행부) 장애 전파 격리 목적
+      # 원래 값: system=m7i-flex.large, monitoring=m7i-flex.large (나중에 복구)
+      instance_types = ["t3.medium"] # 임시 비용 절감, 원래 값: m5.large
       az_count       = 2
-      desired_size   = 1 # 원래 값: 2 (나중에 복구)
-      min_size       = 1 # 원래 값: 2 (나중에 복구)
-      max_size       = 3
-      labels         = { workload = "system" }
-      taints         = []
-    }
-    monitoring = {
-      instance_types = ["c7i-flex.large"] # 임시 비용 절감, 원래 값: m7i-flex.large
-      az_count       = 1                  # 임시 비용 절감, 원래 값: 2 (나중에 복구)
-      desired_size   = 0                  # 임시로 0 (비용 절감), 원래 값: 1 (나중에 복구)
-      min_size       = 0                  # 임시로 0 (비용 절감), 원래 값: 1 (나중에 복구)
-      max_size       = 2
-      labels         = { workload = "monitoring" }
+      desired_size   = 1 # ★ 원래 값: 2 (나중에 복구) ★
+      min_size       = 1
+      max_size       = 5
+      labels         = { workload = "general" }
       taints         = []
     }
   }

@@ -32,6 +32,8 @@ spec:
             type: filesystem
         singleBinary:
           replicas: 1
+          nodeSelector:
+            workload: general
           persistence:
             enabled: true
             size: 20Gi

@@ -16,6 +16,8 @@ spec:
       valuesObject:
         crds:
           enabled: true
+        nodeSelector:
+          workload: general
   destination:
     server: https://kubernetes.default.svc
     namespace: cert-manager
