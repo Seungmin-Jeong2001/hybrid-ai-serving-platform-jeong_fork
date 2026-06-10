@@ -20,8 +20,10 @@ export const options = {
 
 export default function () {
   const payload = JSON.stringify({
-    job_id: `spike-${Date.now()}`,
-    sensor_data: [0.1, 0.2, 0.3, 0.4, 0.5],
+    factory_id: "factory-test-01",
+    equipment_id: `equipment-${__VU}`,
+    timestamp: Math.floor(Date.now() / 1000),
+    inputs: [0.1, 0.2, 0.3, 0.4, 0.5],
   });
 
   const res = http.post(`${BASE_URL}/infer`, payload, {
