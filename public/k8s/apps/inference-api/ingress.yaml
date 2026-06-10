@@ -11,8 +11,10 @@ metadata:
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
     alb.ingress.kubernetes.io/healthcheck-path: /healthz
     alb.ingress.kubernetes.io/success-codes: "200"
-    # Update this CIDR list when additional on-premise networks such as OpenStack are connected.
     alb.ingress.kubernetes.io/inbound-cidrs: 10.0.0.0/16,192.168.0.0/24
+    # IngressGroup: 여러 네임스페이스의 Ingress를 ALB 하나로 통합
+    alb.ingress.kubernetes.io/group.name: internal
+    alb.ingress.kubernetes.io/group.order: "10"
 spec:
   ingressClassName: alb
   rules:

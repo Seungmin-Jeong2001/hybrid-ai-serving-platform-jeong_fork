@@ -70,10 +70,10 @@ metadata:
   namespace: monitoring
 spec:
   hard:
-    requests.cpu: "1"
-    requests.memory: "2Gi"
-    limits.cpu: "4"
-    limits.memory: "4Gi"
+    requests.cpu: "2"
+    requests.memory: "3Gi"
+    limits.cpu: "6"
+    limits.memory: "6Gi"
     pods: "20"
 ---
 apiVersion: v1
@@ -86,13 +86,13 @@ spec:
     - type: Container
       default:
         cpu: "300m"
-        memory: "512Mi"
+        memory: "1Gi"
       defaultRequest:
         cpu: "100m"
-        memory: "256Mi"
+        memory: "512Mi"
       max:
-        cpu: "1"
-        memory: "2Gi"
+        cpu: "2"
+        memory: "4Gi"
 ---
 # logging 네임스페이스
 apiVersion: v1

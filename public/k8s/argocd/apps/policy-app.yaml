@@ -13,10 +13,11 @@ spec:
     path: public/k8s/policy
   destination:
     server: https://kubernetes.default.svc
-    namespace: default
+    namespace: monitoring  # 클러스터 범위 리소스 배포 기준 네임스페이스 (각 리소스의 metadata.namespace가 실제 적용 위치)
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
     syncOptions:
-      - CreateNamespace=true
+      - CreateNamespace=false
+      - ServerSideApply=true
