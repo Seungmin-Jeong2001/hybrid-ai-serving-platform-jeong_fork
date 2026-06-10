@@ -20,7 +20,7 @@ spec:
     maxReplicas: 3
     containers:
       - name: kserve-container
-        image: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/predictive-model:latest
+        image: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/predictive-model:v1.0.0
         ports:
           - containerPort: 8080
             protocol: TCP
@@ -29,13 +29,13 @@ spec:
             value: pdm
         readinessProbe:
           httpGet:
-            path: /healthz
+            path: /ping
             port: 8080
           initialDelaySeconds: 5
           periodSeconds: 10
         livenessProbe:
           httpGet:
-            path: /healthz
+            path: /ping
             port: 8080
           initialDelaySeconds: 10
           periodSeconds: 20
