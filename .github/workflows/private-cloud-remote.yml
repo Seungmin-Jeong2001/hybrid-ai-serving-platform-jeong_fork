@@ -168,6 +168,7 @@ jobs:
           write_env PRIVATE_CLOUD_SSH_USER "$PRIVATE_CLOUD_SSH_USER"
           write_env PRIVATE_CLOUD_KUBECONFIG_B64 "$PRIVATE_CLOUD_KUBECONFIG_B64"
           write_env GITLAB_ROOT_PASSWORD "$GITLAB_ROOT_PASSWORD"
+          write_env GITLAB_ADMIN_USERNAME "$GITLAB_ADMIN_USERNAME"
           write_env GITLAB_LOGS_TMPFS "$GITLAB_LOGS_TMPFS"
           write_env GITLAB_LOGS_TMPFS_SIZE "$GITLAB_LOGS_TMPFS_SIZE"
           write_env GITLAB_TMPFS_SIZE "$GITLAB_TMPFS_SIZE"
@@ -246,6 +247,7 @@ jobs:
           PRIVATE_CLOUD_SSH_USER: ${{ vars.PRIVATE_CLOUD_SSH_USER || 'ubuntu' }}
           PRIVATE_CLOUD_KUBECONFIG_B64: ${{ secrets.PRIVATE_CLOUD_KUBECONFIG_B64 }}
           GITLAB_ROOT_PASSWORD: ${{ secrets.GITLAB_ROOT_PASSWORD }}
+          GITLAB_ADMIN_USERNAME: ${{ vars.GITLAB_ADMIN_USERNAME || 'root' }}
           GITLAB_LOGS_TMPFS: ${{ vars.GITLAB_LOGS_TMPFS || 'true' }}
           GITLAB_LOGS_TMPFS_SIZE: ${{ vars.GITLAB_LOGS_TMPFS_SIZE || '512m' }}
           GITLAB_TMPFS_SIZE: ${{ vars.GITLAB_TMPFS_SIZE || '1g' }}
@@ -258,10 +260,10 @@ jobs:
           HARBOR_ADMIN_PASSWORD: ${{ secrets.HARBOR_ADMIN_PASSWORD }}
           MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
           CONTROL_PLANE_IMAGE_NAME: ${{ vars.CONTROL_PLANE_IMAGE_NAME || 'ubuntu-22.04' }}
-          CONTROL_PLANE_FLAVOR_NAME: ${{ vars.CONTROL_PLANE_FLAVOR_NAME || 'ha.m1.large' }}
+          CONTROL_PLANE_FLAVOR_NAME: ${{ vars.CONTROL_PLANE_FLAVOR_NAME || 'ha.m1.control' }}
           BUILD_WORKER_COUNT: ${{ vars.BUILD_WORKER_COUNT || '1' }}
           BUILD_WORKER_IMAGE_NAME: ${{ vars.BUILD_WORKER_IMAGE_NAME || 'ubuntu-22.04' }}
-          BUILD_WORKER_FLAVOR_NAME: ${{ vars.BUILD_WORKER_FLAVOR_NAME || 'ha.m1.large' }}
+          BUILD_WORKER_FLAVOR_NAME: ${{ vars.BUILD_WORKER_FLAVOR_NAME || 'ha.m1.build' }}
           GPU_WORKER_COUNT: ${{ vars.GPU_WORKER_COUNT || '1' }}
           GPU_WORKER_IMAGE_NAME: ${{ vars.GPU_WORKER_IMAGE_NAME || 'ubuntu-22.04' }}
           GPU_WORKER_FLAVOR_NAME: ${{ vars.GPU_WORKER_FLAVOR_NAME || 'g1.large' }}

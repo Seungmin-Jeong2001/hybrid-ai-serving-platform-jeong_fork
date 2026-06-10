@@ -1347,6 +1347,11 @@ export HA_K8S_KUBEADM_IGNORE_PREFLIGHT="${HA_K8S_KUBEADM_IGNORE_PREFLIGHT:-NumCP
 export HA_OPENSTACK_LXD_IMAGE="${HA_OPENSTACK_LXD_IMAGE:-ubuntu:24.04}"
 export HA_DEVSTACK_BRANCH="${HA_DEVSTACK_BRANCH:-master}"
 export HA_DEVSTACK_PASSWORD="${HA_DEVSTACK_PASSWORD:-hybrid-ai-devstack}"
+export HA_DEVSTACK_LIBVIRT_TYPE="${HA_DEVSTACK_LIBVIRT_TYPE:-auto}"
+export HA_OPENSTACK_PERSISTENT_STORAGE="${HA_OPENSTACK_PERSISTENT_STORAGE:-true}"
+export HA_OPENSTACK_PERSISTENT_DIR="${HA_OPENSTACK_PERSISTENT_DIR:-.ha/openstack/persistent}"
+export HA_OPENSTACK_GLANCE_STORE_DIR="${HA_OPENSTACK_GLANCE_STORE_DIR:-${HA_OPENSTACK_PERSISTENT_DIR}/glance-images}"
+export HA_OPENSTACK_NOVA_INSTANCES_DIR="${HA_OPENSTACK_NOVA_INSTANCES_DIR:-${HA_OPENSTACK_PERSISTENT_DIR}/nova-instances}"
 export TF_BACKEND_TYPE="${TF_BACKEND_TYPE:-s3}"
 
 # OpenStack VM Kubernetes bootstrap settings.
@@ -2424,15 +2429,93 @@ ensure_openstack_lxd_kernel_modules() {
   ' || die "failed to load Open vSwitch kernel modules in ${name}; make sure linux-modules-extra-$(uname -r) is installed on the host"
 }
 
+openstack_persistent_path() {
+  local path="$1"
+  if [[ "$path" == /* ]]; then
+    printf '%s\n' "$path"
+  else
+    printf '%s/%s\n' "$HA_PROJECT_ROOT" "$path"
+  fi
+}
+
+configure_openstack_persistent_mount() {
+  local name="$1"
+  local device="$2"
+  local host_dir="$3"
+  local container_dir="$4"
+  local container_parent source path
+
+  [[ "${HA_OPENSTACK_PERSISTENT_STORAGE:-true}" == "true" ]] || return 0
+
+  mkdir -p "$host_dir"
+  container_parent="${container_dir%/*}"
+  lxc exec "$name" -- mkdir -p "$container_parent" >/dev/null
+
+  source="$(lxc config device get "$name" "$device" source 2>/dev/null || true)"
+  path="$(lxc config device get "$name" "$device" path 2>/dev/null || true)"
+  if [[ -n "$source" || -n "$path" ]]; then
+    if [[ "$source" != "$host_dir" || "$path" != "$container_dir" ]]; then
+      lxc config device remove "$name" "$device" >/dev/null
+      source=""
+      path=""
+    fi
+  fi
+  if [[ -z "$source" && -z "$path" ]]; then
+    lxc config device add "$name" "$device" disk \
+      source="$host_dir" \
+      path="$container_dir" >/dev/null
+  fi
+
+  lxc exec "$name" -- bash -s -- "$container_dir" <<'EOS'
+set -euo pipefail
+container_dir="$1"
+container_parent="${container_dir%/*}"
+mkdir -p "$container_dir"
+if id stack >/dev/null 2>&1; then
+  mkdir -p /opt/stack/data "$container_parent"
+  chown stack:stack /opt/stack /opt/stack/data "$container_parent"
+  chown -R stack:stack "$container_dir"
+fi
+chmod 0755 "$container_dir"
+EOS
+}
+
+configure_openstack_persistent_storage() {
+  local name="$1"
+  local persistent_dir glance_dir nova_dir
+
+  [[ "${HA_OPENSTACK_PERSISTENT_STORAGE:-true}" == "true" ]] || return 0
+
+  persistent_dir="$(openstack_persistent_path "${HA_OPENSTACK_PERSISTENT_DIR:-.ha/openstack/persistent}")"
+  glance_dir="$(openstack_persistent_path "${HA_OPENSTACK_GLANCE_STORE_DIR:-${persistent_dir}/glance-images}")"
+  nova_dir="$(openstack_persistent_path "${HA_OPENSTACK_NOVA_INSTANCES_DIR:-${persistent_dir}/nova-instances}")"
+
+  info "Configuring persistent OpenStack storage mounts"
+  configure_openstack_persistent_mount "$name" hybrid-ai-glance-store "$glance_dir" /opt/stack/data/glance/images
+  configure_openstack_persistent_mount "$name" hybrid-ai-nova-instances "$nova_dir" /opt/stack/data/nova/instances
+}
+
 write_devstack_local_conf() {
   local name="$1"
   local host_ip="$2"
   local password="$3"
+  local libvirt_type="${HA_DEVSTACK_LIBVIRT_TYPE:-auto}"
 
-  lxc exec "$name" -- bash -s -- "$host_ip" "$password" <<'EOS'
+  lxc exec "$name" -- bash -s -- "$host_ip" "$password" "$libvirt_type" <<'EOS'
 set -euo pipefail
 host_ip="$1"
 password="$2"
+requested_libvirt_type="$3"
+if [[ "$requested_libvirt_type" == "auto" ]]; then
+  if [[ -e /dev/kvm ]]; then
+    libvirt_type="kvm"
+  else
+    libvirt_type="qemu"
+  fi
+else
+  libvirt_type="$requested_libvirt_type"
+fi
+printf 'DevStack libvirt type: %s\n' "$libvirt_type"
 install -d -o stack -g stack /opt/stack/devstack
 cat >/opt/stack/devstack/local.conf <<EOF
 [[local|localrc]]
@@ -2445,9 +2528,29 @@ SERVICE_HOST=${host_ip}
 LOGFILE=/opt/stack/logs/stack.sh.log
 LOG_COLOR=False
 VERBOSE=True
-LIBVIRT_TYPE=qemu
+LIBVIRT_TYPE=${libvirt_type}
 ENABLE_VOLUME_BACKING_FILE=True
 disable_service tempest
+
+[[post-config|\$NOVA_CONF]]
+[DEFAULT]
+instances_path = /opt/stack/data/nova/instances
+force_raw_images = False
+
+[neutron]
+project_domain_name = Default
+
+[[post-config|/etc/nova/nova-cpu.conf]]
+[DEFAULT]
+instances_path = /opt/stack/data/nova/instances
+force_raw_images = False
+
+[neutron]
+project_domain_name = Default
+
+[[post-config|\$GLANCE_API_CONF]]
+[glance_store]
+filesystem_store_datadir = /opt/stack/data/glance/images
 EOF
 chown stack:stack /opt/stack/devstack/local.conf
 chmod 600 /opt/stack/devstack/local.conf
@@ -2513,6 +2616,7 @@ install_lxd_devstack() {
     chmod 440 /etc/sudoers.d/stack
     chown -R stack:stack /opt/stack
   '
+  configure_openstack_persistent_storage "$name"
 
   if ! lxc exec "$name" -- test -d /opt/stack/devstack/.git; then
     lxc exec "$name" -- sudo -u stack -H bash -lc \

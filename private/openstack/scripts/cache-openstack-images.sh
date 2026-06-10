@@ -7,6 +7,10 @@ HA_OPENSTACK_IMAGE_CACHE_ENABLED="${HA_OPENSTACK_IMAGE_CACHE_ENABLED:-true}"
 HA_OPENSTACK_IMAGE_CACHE_DIR="${HA_OPENSTACK_IMAGE_CACHE_DIR:-${ROOT}/.ha/openstack/image-cache}"
 HA_OPENSTACK_IMAGE_CACHE_ENV="${HA_OPENSTACK_IMAGE_CACHE_ENV:-${HA_OPENSTACK_IMAGE_CACHE_DIR}/images.env}"
 HA_OPENSTACK_IMAGE_CACHE_PREFIX="${HA_OPENSTACK_IMAGE_CACHE_PREFIX:-hybrid-ai-cache}"
+HA_OPENSTACK_IMAGE_CACHE_DIRECT_MOUNT="${HA_OPENSTACK_IMAGE_CACHE_DIRECT_MOUNT:-true}"
+HA_OPENSTACK_IMAGE_CACHE_LXD_DEVICE="${HA_OPENSTACK_IMAGE_CACHE_LXD_DEVICE:-hybrid-ai-image-cache}"
+HA_OPENSTACK_IMAGE_CACHE_CONTAINER_DIR="${HA_OPENSTACK_IMAGE_CACHE_CONTAINER_DIR:-/mnt/hybrid-ai-image-cache}"
+HA_OPENSTACK_IMAGE_CACHE_UUID_NAMESPACE="${HA_OPENSTACK_IMAGE_CACHE_UUID_NAMESPACE:-37c4d89e-b36c-5d9a-b96e-0a957ab39fd2}"
 HA_OPENSTACK_IMAGE_CACHE_FLAVOR="${HA_OPENSTACK_IMAGE_CACHE_FLAVOR:-ha.m1.large}"
 HA_OPENSTACK_IMAGE_CACHE_GITLAB_FLAVOR="${HA_OPENSTACK_IMAGE_CACHE_GITLAB_FLAVOR:-ha.m1.gitlab}"
 HA_OPENSTACK_IMAGE_CACHE_HARBOR_FLAVOR="${HA_OPENSTACK_IMAGE_CACHE_HARBOR_FLAVOR:-ha.m1.harbor}"
@@ -137,6 +141,31 @@ ensure_cache_dirs() {
   : >"$HA_OPENSTACK_IMAGE_CACHE_ENV"
 }
 
+ensure_image_cache_mount() {
+  [[ "$HA_OPENSTACK_IMAGE_CACHE_DIRECT_MOUNT" == "true" ]] || return 1
+
+  local host_dir source path
+  mkdir -p "$HA_OPENSTACK_IMAGE_CACHE_DIR"
+  host_dir="$(cd "$HA_OPENSTACK_IMAGE_CACHE_DIR" && pwd -P)"
+  source="$(lxc config device get ha-openstack "$HA_OPENSTACK_IMAGE_CACHE_LXD_DEVICE" source 2>/dev/null || true)"
+  path="$(lxc config device get ha-openstack "$HA_OPENSTACK_IMAGE_CACHE_LXD_DEVICE" path 2>/dev/null || true)"
+
+  if [[ -n "$source" || -n "$path" ]]; then
+    if [[ "$source" != "$host_dir" || "$path" != "$HA_OPENSTACK_IMAGE_CACHE_CONTAINER_DIR" ]]; then
+      lxc config device remove ha-openstack "$HA_OPENSTACK_IMAGE_CACHE_LXD_DEVICE" >/dev/null
+      lxc config device add ha-openstack "$HA_OPENSTACK_IMAGE_CACHE_LXD_DEVICE" disk \
+        source="$host_dir" \
+        path="$HA_OPENSTACK_IMAGE_CACHE_CONTAINER_DIR" >/dev/null
+    fi
+  else
+    lxc config device add ha-openstack "$HA_OPENSTACK_IMAGE_CACHE_LXD_DEVICE" disk \
+      source="$host_dir" \
+      path="$HA_OPENSTACK_IMAGE_CACHE_CONTAINER_DIR" >/dev/null
+  fi
+
+  lxc exec ha-openstack -- test -d "$HA_OPENSTACK_IMAGE_CACHE_CONTAINER_DIR"
+}
+
 ensure_ssh_key() {
   mkdir -p "$(dirname "$SSH_KEY")"
   if [[ ! -f "$SSH_KEY" ]]; then
@@ -181,6 +210,7 @@ ensure_base_image() {
   local image_name="$1"
   local image_url=""
   local image_file=""
+  local image_id=""
 
   [[ -n "$image_name" ]] || return 0
   if os openstack image show "$image_name" >/dev/null 2>&1; then
@@ -202,11 +232,15 @@ ensure_base_image() {
       ;;
   esac
 
-  lxc exec ha-openstack -- sudo -u stack -H bash -s -- "$image_name" "$image_url" "$image_file" <<'REMOTE'
+  image_id="$(base_image_id "$image_name" "$image_url")"
+  remove_stale_glance_store_file "$image_id"
+
+  lxc exec ha-openstack -- sudo -u stack -H bash -s -- "$image_name" "$image_url" "$image_file" "$image_id" <<'REMOTE'
 set -euo pipefail
 image_name="$1"
 image_url="$2"
 image_file="$3"
+image_id="$4"
 cd /opt/stack/devstack
 set +u
 source openrc admin admin >/dev/null
@@ -215,7 +249,7 @@ mkdir -p /opt/stack/images
 if [[ ! -f "$image_file" ]]; then
   curl -fL --retry 3 --retry-delay 5 -o "$image_file" "$image_url"
 fi
-openstack image create "$image_name" --disk-format qcow2 --container-format bare --public --file "$image_file" >/dev/null
+openstack image create "$image_name" --id "$image_id" --disk-format qcow2 --container-format bare --public --file "$image_file" >/dev/null
 REMOTE
 }
 
@@ -399,12 +433,53 @@ manifest_sha256() {
   sha256sum | awk '{print $1}'
 }
 
+deterministic_uuid() {
+  local seed="$1"
+  python3 - "$HA_OPENSTACK_IMAGE_CACHE_UUID_NAMESPACE" "$seed" <<'PY'
+import sys
+import uuid
+
+namespace = uuid.UUID(sys.argv[1])
+seed = sys.argv[2]
+print(uuid.uuid5(namespace, seed))
+PY
+}
+
 cache_image_name() {
   local role="$1"
   local base_image="$2"
   local hash
   hash="$(role_manifest "$role" "$base_image" | manifest_sha256 | awk '{print substr($1, 1, 16)}')"
   printf '%s-%s-%s' "$HA_OPENSTACK_IMAGE_CACHE_PREFIX" "$role" "$hash"
+}
+
+cache_image_id() {
+  local image_name="$1"
+  local manifest="$2"
+  local manifest_hash
+
+  manifest_hash="$(printf '%s\n' "$manifest" | manifest_sha256)"
+  deterministic_uuid "cache:${image_name}:${manifest_hash}"
+}
+
+base_image_id() {
+  local image_name="$1"
+  local image_url="$2"
+
+  deterministic_uuid "base:${image_name}:${image_url}"
+}
+
+remove_stale_glance_store_file() {
+  local image_id="$1"
+
+  [[ -n "$image_id" ]] || return 0
+  lxc exec ha-openstack -- bash -s -- "$image_id" <<'REMOTE'
+set -euo pipefail
+image_id="$1"
+store_dir="$(awk -F= '/^[[:space:]]*filesystem_store_datadir[[:space:]]*=/ {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit}' /etc/glance/glance-api.conf 2>/dev/null || true)"
+store_dir="${store_dir:-/opt/stack/data/glance/images}"
+rm -f "${store_dir%/}/${image_id}"
+REMOTE
 }
 
 manifest_sidecar_file() {
@@ -458,15 +533,43 @@ download_glance_image_to_cache() {
   local image_name="$1"
   local cache_file="$2"
   local manifest="$3"
+  local cache_tmp="${cache_file}.tmp"
   local inside_file="/tmp/${image_name}.qcow2"
+  local container_tmp="${HA_OPENSTACK_IMAGE_CACHE_CONTAINER_DIR}/$(basename "$cache_tmp")"
+  local cache_uid cache_gid
 
   mkdir -p "$(dirname "$cache_file")"
-  lxc exec ha-openstack -- rm -f "$inside_file" >/dev/null 2>&1 || true
-  os openstack image save --file "$inside_file" "$image_name"
-  lxc file pull "ha-openstack${inside_file}" "${cache_file}.tmp"
-  mv "${cache_file}.tmp" "$cache_file"
+  rm -f "$cache_tmp"
+
+  if ensure_image_cache_mount; then
+    cache_uid="$(stat -c '%u' "$(dirname "$cache_file")")"
+    cache_gid="$(stat -c '%g' "$(dirname "$cache_file")")"
+    log "saving Glance image directly to local cache mount: ${cache_tmp}"
+    lxc exec ha-openstack -- rm -f "$container_tmp" >/dev/null 2>&1 || true
+    lxc exec ha-openstack -- bash -s -- "$image_name" "$container_tmp" "$cache_uid" "$cache_gid" <<'REMOTE'
+set -Eeuo pipefail
+image_name="$1"
+output_file="$2"
+cache_uid="$3"
+cache_gid="$4"
+
+cd /opt/stack/devstack
+set +u
+source openrc admin admin >/dev/null
+set -u
+openstack image save --file "$output_file" "$image_name"
+chmod 0664 "$output_file"
+chown "${cache_uid}:${cache_gid}" "$output_file" 2>/dev/null || true
+REMOTE
+  else
+    lxc exec ha-openstack -- rm -f "$inside_file" >/dev/null 2>&1 || true
+    os openstack image save --file "$inside_file" "$image_name"
+    lxc file pull "ha-openstack${inside_file}" "$cache_tmp"
+    lxc exec ha-openstack -- rm -f "$inside_file" >/dev/null 2>&1 || true
+  fi
+
+  mv "$cache_tmp" "$cache_file"
   write_local_manifest "$cache_file" "$manifest"
-  lxc exec ha-openstack -- rm -f "$inside_file" >/dev/null 2>&1 || true
 }
 
 upload_cache_file_to_glance() {
@@ -474,21 +577,40 @@ upload_cache_file_to_glance() {
   local cache_file="$2"
   local manifest="$3"
   local inside_file="/tmp/${image_name}.qcow2"
+  local container_file="${HA_OPENSTACK_IMAGE_CACHE_CONTAINER_DIR}/$(basename "$cache_file")"
   local manifest_hash
+  local image_id
 
   manifest_hash="$(printf '%s\n' "$manifest" | manifest_sha256)"
+  image_id="$(cache_image_id "$image_name" "$manifest")"
+  remove_stale_glance_store_file "$image_id"
 
-  lxc file push "$cache_file" "ha-openstack${inside_file}"
-  os openstack image create "$image_name" \
-    --disk-format qcow2 \
-    --container-format bare \
-    --public \
-    --property hybrid_ai_cache=true \
-    --property hybrid_ai_cache_schema=5 \
-    --property hybrid_ai_cache_manifest_sha256="$manifest_hash" \
-    --property hybrid_ai_cache_file="$(basename "$cache_file")" \
-    --file "$inside_file" >/dev/null
-  lxc exec ha-openstack -- rm -f "$inside_file" >/dev/null 2>&1 || true
+  if ensure_image_cache_mount && lxc exec ha-openstack -- sudo -u stack -H test -r "$container_file"; then
+    log "uploading local cache via direct cache mount: ${cache_file}"
+    os openstack image create "$image_name" \
+      --id "$image_id" \
+      --disk-format qcow2 \
+      --container-format bare \
+      --public \
+      --property hybrid_ai_cache=true \
+      --property hybrid_ai_cache_schema=5 \
+      --property hybrid_ai_cache_manifest_sha256="$manifest_hash" \
+      --property hybrid_ai_cache_file="$(basename "$cache_file")" \
+      --file "$container_file" >/dev/null
+  else
+    lxc file push "$cache_file" "ha-openstack${inside_file}"
+    os openstack image create "$image_name" \
+      --id "$image_id" \
+      --disk-format qcow2 \
+      --container-format bare \
+      --public \
+      --property hybrid_ai_cache=true \
+      --property hybrid_ai_cache_schema=5 \
+      --property hybrid_ai_cache_manifest_sha256="$manifest_hash" \
+      --property hybrid_ai_cache_file="$(basename "$cache_file")" \
+      --file "$inside_file" >/dev/null
+    lxc exec ha-openstack -- rm -f "$inside_file" >/dev/null 2>&1 || true
+  fi
   write_local_manifest "$cache_file" "$manifest"
 }
 
@@ -586,27 +708,69 @@ cleanup_builder_instance() {
 create_image_from_server_disk() {
   local server="$1"
   local image_name="$2"
+  local cache_file="${3:-}"
+  local manifest="${4:-}"
   local server_id=""
   local disk_path=""
   local tmp_image="/tmp/${image_name}.qcow2"
+  local output_image="$tmp_image"
+  local cache_tmp=""
+  local container_cache_tmp=""
+  local cache_uid=""
+  local cache_gid=""
+  local direct_cache=false
+  local image_id=""
 
   server_id="$(os openstack server show "$server" -f value -c id)"
   disk_path="/opt/stack/data/nova/instances/${server_id}/disk"
-  lxc exec ha-openstack -- bash -s -- "$disk_path" "$tmp_image" <<'REMOTE'
+
+  if [[ -n "$cache_file" ]] && ensure_image_cache_mount; then
+    mkdir -p "$(dirname "$cache_file")"
+    cache_tmp="${cache_file}.tmp"
+    container_cache_tmp="${HA_OPENSTACK_IMAGE_CACHE_CONTAINER_DIR}/$(basename "$cache_tmp")"
+    cache_uid="$(stat -c '%u' "$(dirname "$cache_file")")"
+    cache_gid="$(stat -c '%g' "$(dirname "$cache_file")")"
+    output_image="$container_cache_tmp"
+    direct_cache=true
+    rm -f "$cache_tmp"
+    lxc exec ha-openstack -- rm -f "$container_cache_tmp" >/dev/null 2>&1 || true
+    log "converting server disk directly to local cache mount: ${cache_tmp}"
+  fi
+
+  lxc exec ha-openstack -- bash -s -- "$disk_path" "$output_image" "$cache_uid" "$cache_gid" <<'REMOTE'
 set -euo pipefail
 disk_path="$1"
-tmp_image="$2"
+output_image="$2"
+cache_uid="$3"
+cache_gid="$4"
 [[ -s "$disk_path" ]] || { printf 'server disk not found: %s\n' "$disk_path" >&2; exit 1; }
-rm -f "$tmp_image"
-qemu-img convert -p -O qcow2 "$disk_path" "$tmp_image"
-chmod 0644 "$tmp_image"
+rm -f "$output_image"
+qemu-img convert -p -O qcow2 "$disk_path" "$output_image"
+chmod 0644 "$output_image"
+if [[ -n "$cache_uid" && -n "$cache_gid" ]]; then
+  chown "${cache_uid}:${cache_gid}" "$output_image" 2>/dev/null || true
+fi
 REMOTE
+
+  if [[ -n "$manifest" ]]; then
+    image_id="$(cache_image_id "$image_name" "$manifest")"
+  else
+    image_id="$(deterministic_uuid "image:${image_name}")"
+  fi
+  remove_stale_glance_store_file "$image_id"
+
   os openstack image create "$image_name" \
+    --id "$image_id" \
     --disk-format qcow2 \
     --container-format bare \
     --public \
-    --file "$tmp_image" >/dev/null
-  lxc exec ha-openstack -- rm -f "$tmp_image" >/dev/null 2>&1 || true
+    --file "$output_image" >/dev/null
+  if [[ "$direct_cache" == "true" ]]; then
+    mv "$cache_tmp" "$cache_file"
+    [[ -z "$manifest" ]] || write_local_manifest "$cache_file" "$manifest"
+  else
+    lxc exec ha-openstack -- rm -f "$tmp_image" >/dev/null 2>&1 || true
+  fi
   wait_image_active "$image_name"
 }
 
@@ -785,6 +949,7 @@ build_cache_image() {
   local base_image="$2"
   local image_name="$3"
   local manifest="$4"
+  local cache_file="${5:-}"
   local flavor
   local server_name
   local security_group_id
@@ -850,7 +1015,7 @@ build_cache_image() {
         "${COMMON_PACKAGES[@]}"
 
     wait_server_status "$server_name" SHUTOFF
-    create_image_from_server_disk "$server_name" "$image_name"
+    create_image_from_server_disk "$server_name" "$image_name" "$cache_file" "$manifest"
     set_glance_manifest_properties "$image_name" "$role" "$base_image" "$manifest"
   }; then
     cleanup_builder_instance "$server_name" "$fip"
@@ -900,8 +1065,12 @@ prepare_role() {
     rm -f "$cache_file" "$(manifest_sidecar_file "$cache_file")"
   fi
 
-  build_cache_image "$role" "$base_image" "$image_name" "$manifest"
-  download_glance_image_to_cache "$image_name" "$cache_file" "$manifest"
+  build_cache_image "$role" "$base_image" "$image_name" "$manifest" "$cache_file"
+  if [[ ! -s "$cache_file" ]]; then
+    download_glance_image_to_cache "$image_name" "$cache_file" "$manifest"
+  elif ! local_cache_manifest_matches "$cache_file" "$manifest"; then
+    write_local_manifest "$cache_file" "$manifest"
+  fi
   write_env_assignment "$env_name" "$image_name"
 }
 

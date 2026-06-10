@@ -103,9 +103,9 @@ ha k8s render kubernetes
 - `ha env check`는 provider와 로컬 프로비저닝 가능 상태를 확인합니다.
 - `ha proxy validate`는 Caddy reverse proxy 설정을 검증합니다.
 - `ha proxy path cloudflare`는 Cloudflare DNS-01 HTTPS용 Caddyfile 경로를 출력합니다.
-- `ha up all --auto-approve`는 기본값으로 현재 서버 또는 LXD 컨테이너에 k3s Kubernetes를 프로비저닝하고 baseline manifest를 적용합니다.
+- `ha up all --auto-approve`는 기본값으로 현재 서버 또는 LXD 컨테이너에 Kubernetes를 프로비저닝하고 baseline manifest를 적용합니다.
 - `ha up openstack --auto-approve`는 `HA_PROVIDER=openstack`일 때만 OpenStack Terraform 리소스를 생성/변경합니다.
-- `ha up openstack-kubernetes --auto-approve`는 Terraform output을 기준으로 OpenStack VM에 k3s를 bootstrap합니다.
+- `ha up openstack-kubernetes --auto-approve`는 Terraform output을 기준으로 OpenStack VM에 Kubernetes를 bootstrap합니다.
 - `ha tf ...`는 `private/openstack`에서 Terraform을 실행합니다.
 - `ha k8s render|diff|apply`는 `kubernetes`, `storage`, `gpu`, `all` target을 지원합니다.
 
@@ -169,7 +169,7 @@ ha test --integration
 ```
 
 `ha`는 `.env`와 `.env.secret`이 있으면 자동으로 읽습니다. 기본 `.env`에는 `HA_PROVIDER=auto`와
-k3s/LXD provisioning 옵션만 둡니다. OpenStack credential은 `HA_PROVIDER=openstack`을 명시할 때만 필요합니다.
+Kubernetes/LXD provisioning 옵션만 둡니다. OpenStack credential은 `HA_PROVIDER=openstack`을 명시할 때만 필요합니다.
 
 ## 실제 반영 방법
 

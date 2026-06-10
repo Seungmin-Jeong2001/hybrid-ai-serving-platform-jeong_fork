@@ -159,6 +159,7 @@ resource "openstack_compute_instance_v2" "control_plane" {
   key_pair          = openstack_compute_keypair_v2.admin.name
   availability_zone = var.availability_zone
   user_data         = templatefile("${path.module}/cloud-init/base.yaml.tftpl", merge(local.cloud_init_common, { node_role = "control-plane" }))
+  config_drive      = true
 
   metadata = merge(local.common_metadata, {
     role = "control-plane"
@@ -220,6 +221,7 @@ resource "openstack_compute_instance_v2" "build_worker" {
   key_pair          = openstack_compute_keypair_v2.admin.name
   availability_zone = var.availability_zone
   user_data         = templatefile("${path.module}/cloud-init/base.yaml.tftpl", merge(local.cloud_init_common, { node_role = "build-worker" }))
+  config_drive      = true
 
   metadata = merge(local.common_metadata, {
     role = "build-worker"
@@ -281,6 +283,7 @@ resource "openstack_compute_instance_v2" "gpu_worker" {
   key_pair          = openstack_compute_keypair_v2.admin.name
   availability_zone = var.availability_zone
   user_data         = templatefile("${path.module}/cloud-init/base.yaml.tftpl", merge(local.cloud_init_common, { node_role = "gpu-worker" }))
+  config_drive      = true
 
   metadata = merge(local.common_metadata, {
     role = "gpu-worker"
@@ -342,6 +345,7 @@ resource "openstack_compute_instance_v2" "gitlab" {
   key_pair          = openstack_compute_keypair_v2.admin.name
   availability_zone = var.availability_zone
   user_data         = templatefile("${path.module}/cloud-init/base.yaml.tftpl", merge(local.cloud_init_common, { node_role = "gitlab" }))
+  config_drive      = true
 
   metadata = merge(local.common_metadata, {
     role = "gitlab"
@@ -403,6 +407,7 @@ resource "openstack_compute_instance_v2" "harbor" {
   key_pair          = openstack_compute_keypair_v2.admin.name
   availability_zone = var.availability_zone
   user_data         = templatefile("${path.module}/cloud-init/base.yaml.tftpl", merge(local.cloud_init_common, { node_role = "harbor" }))
+  config_drive      = true
 
   metadata = merge(local.common_metadata, {
     role = "harbor"

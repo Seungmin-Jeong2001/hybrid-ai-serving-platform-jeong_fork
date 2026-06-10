@@ -7,6 +7,15 @@ CONTAINER="${HA_OPENSTACK_CONTAINER:-ha-openstack}"
 IMAGE="${HA_OPENSTACK_LXD_IMAGE:-ubuntu:24.04}"
 BRANCH="${HA_DEVSTACK_BRANCH:-master}"
 PASSWORD="${HA_DEVSTACK_PASSWORD:-hybrid-ai-devstack}"
+LIBVIRT_TYPE="${HA_DEVSTACK_LIBVIRT_TYPE:-auto}"
+PERSISTENT_STORAGE="${HA_OPENSTACK_PERSISTENT_STORAGE:-true}"
+PERSISTENT_DIR="${HA_OPENSTACK_PERSISTENT_DIR:-${PROJECT_ROOT}/.ha/openstack/persistent}"
+GLANCE_STORE_DIR="${HA_OPENSTACK_GLANCE_STORE_DIR:-${PERSISTENT_DIR}/glance-images}"
+NOVA_INSTANCES_DIR="${HA_OPENSTACK_NOVA_INSTANCES_DIR:-${PERSISTENT_DIR}/nova-instances}"
+GLANCE_STORE_LXD_DEVICE="${HA_OPENSTACK_GLANCE_STORE_LXD_DEVICE:-hybrid-ai-glance-store}"
+NOVA_INSTANCES_LXD_DEVICE="${HA_OPENSTACK_NOVA_INSTANCES_LXD_DEVICE:-hybrid-ai-nova-instances}"
+GLANCE_STORE_CONTAINER_DIR="${HA_OPENSTACK_GLANCE_STORE_CONTAINER_DIR:-/opt/stack/data/glance/images}"
+NOVA_INSTANCES_CONTAINER_DIR="${HA_OPENSTACK_NOVA_INSTANCES_CONTAINER_DIR:-/opt/stack/data/nova/instances}"
 GPU_PCI_ALIAS="${HA_OPENSTACK_GPU_PCI_ALIAS:-nvidia-gpu}"
 GPU_PCI_VENDOR_ID="$(printf '%s' "${HA_OPENSTACK_GPU_PCI_VENDOR_ID:-10de}" | tr '[:upper:]' '[:lower:]' | sed 's/^0x//')"
 GPU_PCI_PRODUCT_ID="${HA_OPENSTACK_GPU_PCI_PRODUCT_ID:-auto}"
@@ -131,6 +140,64 @@ configure_lxc_devices() {
   if [[ -d /dev/vfio ]]; then
     lxc config device add "$CONTAINER" vfio disk source=/dev/vfio path=/dev/vfio >/dev/null 2>&1 || true
   fi
+}
+
+persistent_host_path() {
+  local path="$1"
+  if [[ "$path" == /* ]]; then
+    printf '%s\n' "$path"
+  else
+    printf '%s/%s\n' "$PROJECT_ROOT" "$path"
+  fi
+}
+
+configure_persistent_mount() {
+  local device="$1"
+  local host_dir="$2"
+  local container_dir="$3"
+  local container_parent source path
+
+  [[ "$PERSISTENT_STORAGE" == "true" ]] || return 0
+
+  mkdir -p "$host_dir"
+  container_parent="${container_dir%/*}"
+  lxc exec "$CONTAINER" -- mkdir -p "$container_parent" >/dev/null
+
+  source="$(lxc config device get "$CONTAINER" "$device" source 2>/dev/null || true)"
+  path="$(lxc config device get "$CONTAINER" "$device" path 2>/dev/null || true)"
+  if [[ -n "$source" || -n "$path" ]]; then
+    if [[ "$source" != "$host_dir" || "$path" != "$container_dir" ]]; then
+      lxc config device remove "$CONTAINER" "$device" >/dev/null
+      source=""
+      path=""
+    fi
+  fi
+  if [[ -z "$source" && -z "$path" ]]; then
+    lxc config device add "$CONTAINER" "$device" disk \
+      source="$host_dir" \
+      path="$container_dir" >/dev/null
+  fi
+
+  lxc exec "$CONTAINER" -- bash -s -- "$container_dir" <<'EOS'
+set -euo pipefail
+container_dir="$1"
+container_parent="${container_dir%/*}"
+mkdir -p "$container_dir"
+if id stack >/dev/null 2>&1; then
+  mkdir -p /opt/stack/data "$container_parent"
+  chown stack:stack /opt/stack /opt/stack/data "$container_parent"
+  chown -R stack:stack "$container_dir"
+fi
+chmod 0755 "$container_dir"
+EOS
+}
+
+configure_persistent_storage() {
+  [[ "$PERSISTENT_STORAGE" == "true" ]] || return 0
+
+  info "Configuring persistent OpenStack storage mounts"
+  configure_persistent_mount "$GLANCE_STORE_LXD_DEVICE" "$(persistent_host_path "$GLANCE_STORE_DIR")" "$GLANCE_STORE_CONTAINER_DIR"
+  configure_persistent_mount "$NOVA_INSTANCES_LXD_DEVICE" "$(persistent_host_path "$NOVA_INSTANCES_DIR")" "$NOVA_INSTANCES_CONTAINER_DIR"
 }
 
 ensure_container() {
@@ -340,7 +407,10 @@ write_local_conf() {
     "$GPU_PCI_VENDOR_ID" \
     "$gpu_product_id" \
     "$GPU_PCI_DEVICE_TYPE" \
-    "$GPU_PCI_NUMA_POLICY" <<'EOS'
+    "$GPU_PCI_NUMA_POLICY" \
+    "$LIBVIRT_TYPE" \
+    "$NOVA_INSTANCES_CONTAINER_DIR" \
+    "$GLANCE_STORE_CONTAINER_DIR" <<'EOS'
 set -euo pipefail
 host_ip="$1"
 password="$2"
@@ -349,6 +419,19 @@ gpu_vendor_id="$4"
 gpu_product_id="$5"
 gpu_device_type="$6"
 gpu_numa_policy="$7"
+requested_libvirt_type="$8"
+nova_instances_dir="$9"
+glance_store_dir="${10}"
+if [[ "$requested_libvirt_type" == "auto" ]]; then
+  if [[ -e /dev/kvm ]]; then
+    libvirt_type="kvm"
+  else
+    libvirt_type="qemu"
+  fi
+else
+  libvirt_type="$requested_libvirt_type"
+fi
+printf 'DevStack libvirt type: %s\n' "$libvirt_type"
 install -d -o stack -g stack /opt/stack/devstack
 cat >/opt/stack/devstack/local.conf <<EOF
 [[local|localrc]]
@@ -361,14 +444,33 @@ SERVICE_HOST=${host_ip}
 LOGFILE=/opt/stack/logs/stack.sh.log
 LOG_COLOR=False
 VERBOSE=True
-LIBVIRT_TYPE=qemu
+LIBVIRT_TYPE=${libvirt_type}
 ENABLE_VOLUME_BACKING_FILE=True
 disable_service tempest
+
+[[post-config|\$NOVA_CONF]]
+[DEFAULT]
+instances_path = ${nova_instances_dir}
+force_raw_images = False
+
+[neutron]
+project_domain_name = Default
+
+[[post-config|/etc/nova/nova-cpu.conf]]
+[DEFAULT]
+instances_path = ${nova_instances_dir}
+force_raw_images = False
+
+[neutron]
+project_domain_name = Default
+
+[[post-config|\$GLANCE_API_CONF]]
+[glance_store]
+filesystem_store_datadir = ${glance_store_dir}
 EOF
 if [[ -n "$gpu_product_id" ]]; then
   cat >>/opt/stack/devstack/local.conf <<EOF
 
-[[post-config|\$NOVA_CONF]]
 [pci]
 EOF
   if [[ -n "$gpu_device_type" ]]; then
@@ -534,6 +636,9 @@ main() {
   bind_gpu_iommu_group_to_vfio "$gpu_product_id"
 
   prepare_container
+  if ! openstack_ready; then
+    configure_persistent_storage
+  fi
   clone_devstack
   write_local_conf "$host_ip" "$gpu_product_id"
   ensure_kernel_modules

@@ -69,6 +69,15 @@ export TF_IN_AUTOMATION="${TF_IN_AUTOMATION:-true}"
 export TF_INPUT="${TF_INPUT:-false}"
 
 HA_DEVSTACK_PASSWORD="${HA_DEVSTACK_PASSWORD:-hybrid-ai-devstack}"
+HA_DEVSTACK_LIBVIRT_TYPE="${HA_DEVSTACK_LIBVIRT_TYPE:-auto}"
+HA_OPENSTACK_PERSISTENT_STORAGE="${HA_OPENSTACK_PERSISTENT_STORAGE:-true}"
+HA_OPENSTACK_PERSISTENT_DIR="${HA_OPENSTACK_PERSISTENT_DIR:-${ROOT}/.ha/openstack/persistent}"
+HA_OPENSTACK_GLANCE_STORE_DIR="${HA_OPENSTACK_GLANCE_STORE_DIR:-${HA_OPENSTACK_PERSISTENT_DIR}/glance-images}"
+HA_OPENSTACK_NOVA_INSTANCES_DIR="${HA_OPENSTACK_NOVA_INSTANCES_DIR:-${HA_OPENSTACK_PERSISTENT_DIR}/nova-instances}"
+HA_OPENSTACK_GLANCE_STORE_LXD_DEVICE="${HA_OPENSTACK_GLANCE_STORE_LXD_DEVICE:-hybrid-ai-glance-store}"
+HA_OPENSTACK_NOVA_INSTANCES_LXD_DEVICE="${HA_OPENSTACK_NOVA_INSTANCES_LXD_DEVICE:-hybrid-ai-nova-instances}"
+HA_OPENSTACK_GLANCE_STORE_CONTAINER_DIR="${HA_OPENSTACK_GLANCE_STORE_CONTAINER_DIR:-/opt/stack/data/glance/images}"
+HA_OPENSTACK_NOVA_INSTANCES_CONTAINER_DIR="${HA_OPENSTACK_NOVA_INSTANCES_CONTAINER_DIR:-/opt/stack/data/nova/instances}"
 PRIVATE_CLOUD_BASE_DOMAIN="${PRIVATE_CLOUD_BASE_DOMAIN:-intp.me}"
 OS_PASSWORD_INPUT_PROVIDED=false
 [[ -n "${OS_PASSWORD+x}" ]] && OS_PASSWORD_INPUT_PROVIDED=true
@@ -109,21 +118,21 @@ TF_VAR_gpu_worker_count="${TF_VAR_gpu_worker_count:-1}"
 TF_VAR_gitlab_count="${TF_VAR_gitlab_count:-1}"
 TF_VAR_harbor_count="${TF_VAR_harbor_count:-1}"
 TF_VAR_gitlab_container_image="${TF_VAR_gitlab_container_image:-gitlab/gitlab-ce:18.11.4-ce.0}"
-HA_DEVSTACK_CONTROL_FLAVOR_NAME="${HA_DEVSTACK_CONTROL_FLAVOR_NAME:-ha.m1.large}"
+HA_DEVSTACK_CONTROL_FLAVOR_NAME="${HA_DEVSTACK_CONTROL_FLAVOR_NAME:-ha.m1.control}"
 HA_DEVSTACK_CONTROL_FLAVOR_RAM="${HA_DEVSTACK_CONTROL_FLAVOR_RAM:-8192}"
-HA_DEVSTACK_CONTROL_FLAVOR_VCPUS="${HA_DEVSTACK_CONTROL_FLAVOR_VCPUS:-4}"
+HA_DEVSTACK_CONTROL_FLAVOR_VCPUS="${HA_DEVSTACK_CONTROL_FLAVOR_VCPUS:-3}"
 HA_DEVSTACK_CONTROL_FLAVOR_DISK="${HA_DEVSTACK_CONTROL_FLAVOR_DISK:-80}"
-HA_DEVSTACK_WORKER_FLAVOR_NAME="${HA_DEVSTACK_WORKER_FLAVOR_NAME:-ha.m1.large}"
-HA_DEVSTACK_WORKER_FLAVOR_RAM="${HA_DEVSTACK_WORKER_FLAVOR_RAM:-8192}"
-HA_DEVSTACK_WORKER_FLAVOR_VCPUS="${HA_DEVSTACK_WORKER_FLAVOR_VCPUS:-4}"
+HA_DEVSTACK_WORKER_FLAVOR_NAME="${HA_DEVSTACK_WORKER_FLAVOR_NAME:-ha.m1.build}"
+HA_DEVSTACK_WORKER_FLAVOR_RAM="${HA_DEVSTACK_WORKER_FLAVOR_RAM:-6144}"
+HA_DEVSTACK_WORKER_FLAVOR_VCPUS="${HA_DEVSTACK_WORKER_FLAVOR_VCPUS:-2}"
 HA_DEVSTACK_WORKER_FLAVOR_DISK="${HA_DEVSTACK_WORKER_FLAVOR_DISK:-80}"
 HA_DEVSTACK_GITLAB_FLAVOR_NAME="${HA_DEVSTACK_GITLAB_FLAVOR_NAME:-ha.m1.gitlab}"
-HA_DEVSTACK_GITLAB_FLAVOR_RAM="${HA_DEVSTACK_GITLAB_FLAVOR_RAM:-16384}"
-HA_DEVSTACK_GITLAB_FLAVOR_VCPUS="${HA_DEVSTACK_GITLAB_FLAVOR_VCPUS:-4}"
+HA_DEVSTACK_GITLAB_FLAVOR_RAM="${HA_DEVSTACK_GITLAB_FLAVOR_RAM:-12288}"
+HA_DEVSTACK_GITLAB_FLAVOR_VCPUS="${HA_DEVSTACK_GITLAB_FLAVOR_VCPUS:-3}"
 HA_DEVSTACK_GITLAB_FLAVOR_DISK="${HA_DEVSTACK_GITLAB_FLAVOR_DISK:-80}"
 HA_DEVSTACK_HARBOR_FLAVOR_NAME="${HA_DEVSTACK_HARBOR_FLAVOR_NAME:-ha.m1.harbor}"
-HA_DEVSTACK_HARBOR_FLAVOR_RAM="${HA_DEVSTACK_HARBOR_FLAVOR_RAM:-8192}"
-HA_DEVSTACK_HARBOR_FLAVOR_VCPUS="${HA_DEVSTACK_HARBOR_FLAVOR_VCPUS:-4}"
+HA_DEVSTACK_HARBOR_FLAVOR_RAM="${HA_DEVSTACK_HARBOR_FLAVOR_RAM:-4096}"
+HA_DEVSTACK_HARBOR_FLAVOR_VCPUS="${HA_DEVSTACK_HARBOR_FLAVOR_VCPUS:-2}"
 HA_DEVSTACK_HARBOR_FLAVOR_DISK="${HA_DEVSTACK_HARBOR_FLAVOR_DISK:-80}"
 TF_VAR_control_plane_flavor_name="${TF_VAR_control_plane_flavor_name:-${HA_DEVSTACK_CONTROL_FLAVOR_NAME}}"
 TF_VAR_build_worker_flavor_name="${TF_VAR_build_worker_flavor_name:-${HA_DEVSTACK_WORKER_FLAVOR_NAME}}"
@@ -189,9 +198,13 @@ HA_OPENSTACK_IMAGE_CACHE_GITLAB_FLAVOR="${HA_OPENSTACK_IMAGE_CACHE_GITLAB_FLAVOR
 HA_OPENSTACK_IMAGE_CACHE_HARBOR_FLAVOR="${HA_OPENSTACK_IMAGE_CACHE_HARBOR_FLAVOR:-${TF_VAR_harbor_flavor_name}}"
 HA_OPENSTACK_IMAGE_CACHE_DRIVER_PACKAGE="${HA_OPENSTACK_IMAGE_CACHE_DRIVER_PACKAGE:-nvidia-driver-595-open}"
 HA_PRIVATE_CLOUD_AUTO_EXPAND_QUOTA="${HA_PRIVATE_CLOUD_AUTO_EXPAND_QUOTA:-true}"
-HA_PRIVATE_CLOUD_QUOTA_HEADROOM_INSTANCES="${HA_PRIVATE_CLOUD_QUOTA_HEADROOM_INSTANCES:-3}"
-HA_PRIVATE_CLOUD_QUOTA_HEADROOM_CORES="${HA_PRIVATE_CLOUD_QUOTA_HEADROOM_CORES:-8}"
-HA_PRIVATE_CLOUD_QUOTA_HEADROOM_RAM_MB="${HA_PRIVATE_CLOUD_QUOTA_HEADROOM_RAM_MB:-16384}"
+HA_PRIVATE_CLOUD_QUOTA_HEADROOM_INSTANCES="${HA_PRIVATE_CLOUD_QUOTA_HEADROOM_INSTANCES:-0}"
+HA_PRIVATE_CLOUD_QUOTA_HEADROOM_CORES="${HA_PRIVATE_CLOUD_QUOTA_HEADROOM_CORES:-0}"
+HA_PRIVATE_CLOUD_QUOTA_HEADROOM_RAM_MB="${HA_PRIVATE_CLOUD_QUOTA_HEADROOM_RAM_MB:-0}"
+HA_PRIVATE_CLOUD_HOST_RESOURCE_PREFLIGHT="${HA_PRIVATE_CLOUD_HOST_RESOURCE_PREFLIGHT:-true}"
+HA_PRIVATE_CLOUD_HOST_VCPU_RESERVE="${HA_PRIVATE_CLOUD_HOST_VCPU_RESERVE:-2}"
+HA_PRIVATE_CLOUD_HOST_RAM_RESERVE_MB="${HA_PRIVATE_CLOUD_HOST_RAM_RESERVE_MB:-20480}"
+HA_PRIVATE_CLOUD_HOST_DISK_RESERVE_GB="${HA_PRIVATE_CLOUD_HOST_DISK_RESERVE_GB:-160}"
 HA_PRIVATE_CLOUD_SETUP_STORAGE="${HA_PRIVATE_CLOUD_SETUP_STORAGE:-auto}"
 HA_PRIVATE_CLOUD_SETUP_REGISTRY="${HA_PRIVATE_CLOUD_SETUP_REGISTRY:-auto}"
 HA_PRIVATE_CLOUD_SETUP_MODEL_BUILD="${HA_PRIVATE_CLOUD_SETUP_MODEL_BUILD:-auto}"
@@ -333,6 +346,37 @@ wait_lxc_ip() {
     sleep 2
   done
   return 1
+}
+
+ensure_lxc_proxy_device_unlocked() {
+  local device="$1" listen="$2" connect="$3" attempt rc output
+
+  rc=1
+  output=""
+  for attempt in {1..6}; do
+    lxc config device remove ha-openstack "${device}" >/dev/null 2>&1 || true
+    if output="$(lxc config device add ha-openstack "${device}" proxy "listen=${listen}" "connect=${connect}" 2>&1 >/dev/null)"; then
+      return 0
+    fi
+    rc=$?
+    sleep "$((attempt * 2))"
+  done
+
+  printf 'failed to configure LXC proxy device %s: %s\n' "${device}" "${output}" >&2
+  return "${rc}"
+}
+
+ensure_lxc_proxy_device() {
+  local lock_file lock_fd rc
+  lock_file="${ROOT}/.ha/openstack/lxc-config.lock"
+  mkdir -p "$(dirname "${lock_file}")"
+  exec {lock_fd}>"${lock_file}"
+  flock "${lock_fd}"
+  ensure_lxc_proxy_device_unlocked "$@"
+  rc=$?
+  flock -u "${lock_fd}"
+  exec {lock_fd}>&-
+  return "${rc}"
 }
 
 ensure_devstack_container_running() {
@@ -614,6 +658,61 @@ create_devstack_container() {
   lxc list ha-openstack
 }
 
+configure_devstack_persistent_mount() {
+  local device="$1"
+  local host_dir="$2"
+  local container_dir="$3"
+  local container_parent source path
+
+  [[ "${HA_OPENSTACK_PERSISTENT_STORAGE}" == "true" ]] || return 0
+
+  mkdir -p "$host_dir"
+  container_parent="${container_dir%/*}"
+  lxc exec ha-openstack -- mkdir -p "$container_parent" >/dev/null
+
+  source="$(lxc config device get ha-openstack "$device" source 2>/dev/null || true)"
+  path="$(lxc config device get ha-openstack "$device" path 2>/dev/null || true)"
+  if [[ -n "$source" || -n "$path" ]]; then
+    if [[ "$source" != "$host_dir" || "$path" != "$container_dir" ]]; then
+      lxc config device remove ha-openstack "$device" >/dev/null
+      source=""
+      path=""
+    fi
+  fi
+  if [[ -z "$source" && -z "$path" ]]; then
+    lxc config device add ha-openstack "$device" disk \
+      source="$host_dir" \
+      path="$container_dir" >/dev/null
+  fi
+
+  lxc exec ha-openstack -- bash -s -- "$container_dir" <<'PERSISTENT_MOUNT_PERMS'
+set -euo pipefail
+container_dir="$1"
+container_parent="${container_dir%/*}"
+mkdir -p "$container_dir"
+if id stack >/dev/null 2>&1; then
+  mkdir -p /opt/stack/data "$container_parent"
+  chown stack:stack /opt/stack /opt/stack/data "$container_parent"
+  chown -R stack:stack "$container_dir"
+fi
+chmod 0755 "$container_dir"
+PERSISTENT_MOUNT_PERMS
+}
+
+configure_devstack_persistent_storage() {
+  [[ "${HA_OPENSTACK_PERSISTENT_STORAGE}" == "true" ]] || return 0
+
+  log "configuring persistent OpenStack storage mounts"
+  configure_devstack_persistent_mount \
+    "$HA_OPENSTACK_GLANCE_STORE_LXD_DEVICE" \
+    "$HA_OPENSTACK_GLANCE_STORE_DIR" \
+    "$HA_OPENSTACK_GLANCE_STORE_CONTAINER_DIR"
+  configure_devstack_persistent_mount \
+    "$HA_OPENSTACK_NOVA_INSTANCES_LXD_DEVICE" \
+    "$HA_OPENSTACK_NOVA_INSTANCES_DIR" \
+    "$HA_OPENSTACK_NOVA_INSTANCES_CONTAINER_DIR"
+}
+
 install_devstack_prereqs() {
   lxc exec ha-openstack -- bash -lc '
     set -euo pipefail
@@ -628,6 +727,7 @@ install_devstack_prereqs() {
     chmod 440 /etc/sudoers.d/stack
     chown -R stack:stack /opt/stack
   '
+  configure_devstack_persistent_storage
 }
 
 detect_gpu_product() {
@@ -720,10 +820,26 @@ clone_and_configure_devstack() {
   printf '%s' "${HA_DEVSTACK_PASSWORD}" \
     | lxc exec ha-openstack -- sudo -u stack -H bash -lc 'umask 077 && cat > /opt/stack/devstack/.devstack-password'
   lxc exec ha-openstack -- sudo -u stack -H bash -s -- \
-    "${ip}" <<'WRITE_LOCAL_CONF'
+    "${ip}" \
+    "${HA_DEVSTACK_LIBVIRT_TYPE}" \
+    "${HA_OPENSTACK_NOVA_INSTANCES_CONTAINER_DIR}" \
+    "${HA_OPENSTACK_GLANCE_STORE_CONTAINER_DIR}" <<'WRITE_LOCAL_CONF'
 set -euo pipefail
 IP="$1"
+requested_libvirt_type="$2"
+nova_instances_dir="$3"
+glance_store_dir="$4"
 PASSWORD="$(cat /opt/stack/devstack/.devstack-password)"
+if [[ "$requested_libvirt_type" == "auto" ]]; then
+  if [[ -e /dev/kvm ]]; then
+    libvirt_type="kvm"
+  else
+    libvirt_type="qemu"
+  fi
+else
+  libvirt_type="$requested_libvirt_type"
+fi
+printf 'DevStack libvirt type: %s\n' "$libvirt_type"
 {
   printf '%s\n' '[[local|localrc]]'
   printf 'ADMIN_PASSWORD=%s\n' "$PASSWORD"
@@ -737,7 +853,7 @@ PASSWORD="$(cat /opt/stack/devstack/.devstack-password)"
   printf '%s\n' 'LOGFILE=/opt/stack/logs/stack.sh.log'
   printf '%s\n' 'LOG_COLOR=False'
   printf '%s\n' 'VERBOSE=True'
-  printf '%s\n' 'LIBVIRT_TYPE=qemu'
+  printf 'LIBVIRT_TYPE=%s\n' "$libvirt_type"
   printf '%s\n' 'ENABLE_VOLUME_BACKING_FILE=True'
   printf '%s\n' 'ETCD_DOWNLOAD_URL=https://storage.googleapis.com/etcd'
   printf '%s\n' 'IMAGE_URLS=https://github.com/cirros-dev/cirros/releases/download/0.6.2/cirros-0.6.2-x86_64-disk.img'
@@ -745,6 +861,26 @@ PASSWORD="$(cat /opt/stack/devstack/.devstack-password)"
   printf '%s\n' 'disable_service swift'
   printf '%s\n' 'disable_service cinder'
   printf '%s\n' 'ENABLE_KSM=False'
+  printf '%s\n' ''
+  printf '%s\n' '[[post-config|$NOVA_CONF]]'
+  printf '%s\n' '[DEFAULT]'
+  printf 'instances_path = %s\n' "$nova_instances_dir"
+  printf '%s\n' 'force_raw_images = False'
+  printf '%s\n' ''
+  printf '%s\n' '[neutron]'
+  printf '%s\n' 'project_domain_name = Default'
+  printf '%s\n' ''
+  printf '%s\n' '[[post-config|/etc/nova/nova-cpu.conf]]'
+  printf '%s\n' '[DEFAULT]'
+  printf 'instances_path = %s\n' "$nova_instances_dir"
+  printf '%s\n' 'force_raw_images = False'
+  printf '%s\n' ''
+  printf '%s\n' '[neutron]'
+  printf '%s\n' 'project_domain_name = Default'
+  printf '%s\n' ''
+  printf '%s\n' '[[post-config|$GLANCE_API_CONF]]'
+  printf '%s\n' '[glance_store]'
+  printf 'filesystem_store_datadir = %s\n' "$glance_store_dir"
 } >/opt/stack/devstack/local.conf
 WRITE_LOCAL_CONF
   lxc exec ha-openstack -- chown stack:stack /opt/stack/devstack/local.conf
@@ -1308,6 +1444,7 @@ PY
 }
 
 read -r max_cores used_cores max_ram used_ram max_instances used_instances < <(read_limits "$limits_json")
+quota_project="${OS_PROJECT_NAME:-admin}"
 
 need_cores=0
 need_ram=0
@@ -1347,7 +1484,39 @@ echo "quota preflight demand for ${prefix}: instances=${need_instances} cores=${
 printf '  %s\n' "${summary[@]}"
 echo "quota preflight available: instances=${available_instances}/${max_instances} cores=${available_cores}/${max_cores} ram_mb=${available_ram}/${max_ram}"
 
-if (( need_instances > available_instances || need_cores > available_cores || need_ram > available_ram )); then
+if [[ "$auto_expand_quota" == "true" ]]; then
+  target_instances=$((used_instances + need_instances + quota_headroom_instances))
+  target_cores=$((used_cores + need_cores + quota_headroom_cores))
+  target_ram=$((used_ram + need_ram + quota_headroom_ram_mb))
+  expand_quota=false
+  if [[ "$max_instances" -lt 0 || "$max_instances" -lt "$target_instances" ]]; then
+    expand_quota=true
+  fi
+  if [[ "$max_cores" -lt 0 || "$max_cores" -lt "$target_cores" ]]; then
+    expand_quota=true
+  fi
+  if [[ "$max_ram" -lt 0 || "$max_ram" -lt "$target_ram" ]]; then
+    expand_quota=true
+  fi
+  if [[ "$expand_quota" == "true" ]]; then
+    echo "quota preflight ensuring local DevStack quota headroom for project ${quota_project}: instances=${target_instances} cores=${target_cores} ram_mb=${target_ram}"
+    openstack quota set \
+      --instances "$target_instances" \
+      --cores "$target_cores" \
+      --ram "$target_ram" \
+      "$quota_project"
+
+    limits_json="$(openstack limits show --absolute -f json)"
+    read -r max_cores used_cores max_ram used_ram max_instances used_instances < <(read_limits "$limits_json")
+    available_cores=999999999
+    available_ram=999999999
+    available_instances=999999999
+    [[ "$max_cores" -lt 0 ]] || available_cores=$((max_cores - used_cores))
+    [[ "$max_ram" -lt 0 ]] || available_ram=$((max_ram - used_ram))
+    [[ "$max_instances" -lt 0 ]] || available_instances=$((max_instances - used_instances))
+    echo "quota preflight available after headroom check: instances=${available_instances}/${max_instances} cores=${available_cores}/${max_cores} ram_mb=${available_ram}/${max_ram}"
+  fi
+elif (( need_instances > available_instances || need_cores > available_cores || need_ram > available_ram )); then
   if [[ "$auto_expand_quota" == "true" ]]; then
     target_instances=$((used_instances + need_instances + quota_headroom_instances))
     target_cores=$((used_cores + need_cores + quota_headroom_cores))
@@ -1390,7 +1559,6 @@ EOF
   exit 1
 fi
 
-quota_project="${OS_PROJECT_NAME:-admin}"
 fip_limit="$(openstack network quota show "$quota_project" -f value -c floatingip 2>/dev/null || true)"
 if [[ "$fip_limit" =~ ^[0-9]+$ ]]; then
   used_fips="$(openstack floating ip list --project "$quota_project" -f value -c ID 2>/dev/null | wc -l | tr -d ' ' || echo 0)"
@@ -1423,6 +1591,95 @@ EOF
   fi
 fi
 PREFLIGHT_OPENSTACK_QUOTA
+}
+
+preflight_host_capacity() {
+  local control_count="$1"
+  local control_flavor="$2"
+  local build_count="$3"
+  local build_flavor="$4"
+  local gpu_count="$5"
+  local gpu_flavor="$6"
+  local gitlab_count="$7"
+  local gitlab_flavor="$8"
+  local harbor_count="$9"
+  local harbor_flavor="${10}"
+  local host_vcpus host_ram_mb host_disk_avail_gb
+  local max_guest_vcpus max_guest_ram_mb max_guest_disk_gb
+
+  [[ "${HA_PRIVATE_CLOUD_HOST_RESOURCE_PREFLIGHT}" == "true" ]] || return 0
+  command -v lxc >/dev/null 2>&1 || return 0
+  lxc info ha-openstack >/dev/null 2>&1 || return 0
+
+  host_vcpus="$(nproc)"
+  host_ram_mb="$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)"
+  host_disk_avail_gb="$(df -BG "$ROOT" | awk 'NR == 2 {gsub("G", "", $4); print int($4)}')"
+  max_guest_vcpus="${HA_PRIVATE_CLOUD_HOST_MAX_GUEST_VCPUS:-$((host_vcpus - HA_PRIVATE_CLOUD_HOST_VCPU_RESERVE))}"
+  max_guest_ram_mb="${HA_PRIVATE_CLOUD_HOST_MAX_GUEST_RAM_MB:-$((host_ram_mb - HA_PRIVATE_CLOUD_HOST_RAM_RESERVE_MB))}"
+  max_guest_disk_gb="${HA_PRIVATE_CLOUD_HOST_MAX_GUEST_DISK_GB:-$((host_disk_avail_gb - HA_PRIVATE_CLOUD_HOST_DISK_RESERVE_GB))}"
+  (( max_guest_vcpus > 0 )) || max_guest_vcpus=0
+  (( max_guest_ram_mb > 0 )) || max_guest_ram_mb=0
+  (( max_guest_disk_gb > 0 )) || max_guest_disk_gb=0
+
+  log "checking host capacity before apply: host_vcpus=${host_vcpus} host_ram_mb=${host_ram_mb} disk_avail_gb=${host_disk_avail_gb}"
+  lxc exec ha-openstack -- sudo -u stack -H bash -s -- \
+    "$max_guest_vcpus" \
+    "$max_guest_ram_mb" \
+    "$max_guest_disk_gb" \
+    control "$control_count" "$control_flavor" \
+    build "$build_count" "$build_flavor" \
+    gpu "$gpu_count" "$gpu_flavor" \
+    gitlab "$gitlab_count" "$gitlab_flavor" \
+    harbor "$harbor_count" "$harbor_flavor" <<'PREFLIGHT_HOST_CAPACITY'
+set -euo pipefail
+max_guest_vcpus="$1"
+max_guest_ram_mb="$2"
+max_guest_disk_gb="$3"
+shift 3
+cd /opt/stack/devstack
+set +u
+source openrc admin admin >/dev/null
+set -u
+
+flavor_value() {
+  local flavor="$1"
+  local column="$2"
+  openstack flavor show "$flavor" -f value -c "$column"
+}
+
+total_vcpus=0
+total_ram_mb=0
+total_disk_gb=0
+summary=()
+while [[ $# -gt 0 ]]; do
+  role="$1"
+  count="$2"
+  flavor="$3"
+  shift 3
+  [[ "$count" -gt 0 ]] || continue
+  vcpus="$(flavor_value "$flavor" vcpus)"
+  ram_mb="$(flavor_value "$flavor" ram)"
+  disk_gb="$(flavor_value "$flavor" disk)"
+  role_vcpus=$((count * vcpus))
+  role_ram_mb=$((count * ram_mb))
+  role_disk_gb=$((count * disk_gb))
+  total_vcpus=$((total_vcpus + role_vcpus))
+  total_ram_mb=$((total_ram_mb + role_ram_mb))
+  total_disk_gb=$((total_disk_gb + role_disk_gb))
+  summary+=("${role}: count=${count} flavor=${flavor} vcpus=${role_vcpus} ram_mb=${role_ram_mb} disk_gb=${role_disk_gb}")
+done
+
+echo "host capacity requested guests: vcpus=${total_vcpus}/${max_guest_vcpus} ram_mb=${total_ram_mb}/${max_guest_ram_mb} disk_gb=${total_disk_gb}/${max_guest_disk_gb}"
+printf '  %s\n' "${summary[@]}"
+if (( total_vcpus > max_guest_vcpus || total_ram_mb > max_guest_ram_mb || total_disk_gb > max_guest_disk_gb )); then
+  cat >&2 <<EOF
+Host capacity preflight failed.
+Requested VM resources exceed the physical host budget for this local DevStack.
+Lower counts/flavors, or explicitly raise HA_PRIVATE_CLOUD_HOST_MAX_GUEST_* after verifying the host can sustain it.
+EOF
+  exit 1
+fi
+PREFLIGHT_HOST_CAPACITY
 }
 
 ensure_openstack_user() {
@@ -1563,8 +1820,7 @@ verify_devstack() {
 }
 
 ensure_horizon_proxy() {
-  lxc config device remove ha-openstack horizon-proxy >/dev/null 2>&1 || true
-  lxc config device add ha-openstack horizon-proxy proxy listen=tcp:127.0.0.1:18081 connect=tcp:127.0.0.1:80 >/dev/null
+  ensure_lxc_proxy_device horizon-proxy tcp:127.0.0.1:18081 tcp:127.0.0.1:80
 }
 
 configure_horizon_proxy_settings() {
@@ -1826,12 +2082,8 @@ REMOTE
   lxc exec ha-openstack -- systemctl enable --now caddy
   lxc exec ha-openstack -- systemctl restart caddy
 
-  lxc config device remove ha-openstack hybrid-ai-public-http >/dev/null 2>&1 || true
-  lxc config device remove ha-openstack hybrid-ai-public-https >/dev/null 2>&1 || true
-  lxc config device add ha-openstack hybrid-ai-public-http proxy \
-    listen=tcp:0.0.0.0:80 connect=tcp:127.0.0.1:8088 >/dev/null
-  lxc config device add ha-openstack hybrid-ai-public-https proxy \
-    listen=tcp:0.0.0.0:443 connect=tcp:127.0.0.1:8443 >/dev/null
+  ensure_lxc_proxy_device hybrid-ai-public-http tcp:0.0.0.0:80 tcp:127.0.0.1:8088
+  ensure_lxc_proxy_device hybrid-ai-public-https tcp:0.0.0.0:443 tcp:127.0.0.1:8443
   log "reverse proxy ready with LXC internal TLS fallback"
 }
 
@@ -2038,7 +2290,7 @@ prepare_noninteractive_backend_init() {
 }
 
 terraform_apply() {
-  local effective_build_worker_count effective_gpu_worker_count effective_gitlab_count effective_harbor_count
+  local effective_control_plane_count effective_build_worker_count effective_gpu_worker_count effective_gitlab_count effective_harbor_count
   local effective_install_node_dependencies
   local effective_control_plane_flavor effective_build_worker_flavor effective_gpu_worker_flavor effective_gitlab_flavor effective_harbor_flavor
   local key_pair_name
@@ -2060,6 +2312,7 @@ terraform_apply() {
     printf '%s' "${PRIVATE_CLOUD_TFVARS}" > private-cloud.auto.tfvars
   fi
   apply_prefix="$(terraform_apply_prefix)"
+  effective_control_plane_count="$(terraform_var_int control_plane_count 1)"
   effective_build_worker_count="$(effective_worker_count build_worker_count "${TF_VAR_build_worker_count}" "$apply_prefix")"
   effective_gpu_worker_count="$(effective_worker_count gpu_worker_count "${TF_VAR_gpu_worker_count}" "$apply_prefix")"
   effective_gitlab_count="$(effective_worker_count gitlab_count "${TF_VAR_gitlab_count}" "$apply_prefix")"
@@ -2085,6 +2338,7 @@ terraform_apply() {
     printf 'install_node_dependencies = %s\n' "${effective_install_node_dependencies}"
     printf 'ssh_allowed_cidrs = ["%s"]\n' "$public_subnet_cidr"
     printf 'gitlab_http_allowed_cidrs = ["%s"]\n' "$public_subnet_cidr"
+    printf 'control_plane_count = %s\n' "${effective_control_plane_count}"
     printf 'control_plane_image_name = "%s"\n' "${TF_VAR_control_plane_image_name}"
     printf 'control_plane_flavor_name = "%s"\n' "${effective_control_plane_flavor}"
     printf 'build_worker_count = %s\n' "${effective_build_worker_count}"
@@ -2103,6 +2357,12 @@ terraform_apply() {
     printf 'harbor_http_allowed_cidrs = ["%s"]\n' "$public_subnet_cidr"
   } >zz-local-devstack.auto.tfvars
   cleanup_openstack_orphans_before_apply
+  preflight_host_capacity \
+    "${effective_control_plane_count}" "${effective_control_plane_flavor}" \
+    "${effective_build_worker_count}" "${effective_build_worker_flavor}" \
+    "${effective_gpu_worker_count}" "${effective_gpu_worker_flavor}" \
+    "${effective_gitlab_count}" "${effective_gitlab_flavor}" \
+    "${effective_harbor_count}" "${effective_harbor_flavor}"
   preflight_openstack_quota
   local backend_config="${TF_BACKEND_CONFIG:-}"
   local backend_config_compact="${backend_config//[[:space:]]/}"
@@ -2221,7 +2481,7 @@ printf 'uptime='
 uptime || true
 printf '\n== cloud-init ==\n'
 if command -v cloud-init >/dev/null 2>&1; then
-  cloud_init_output="$(cloud-init status --long 2>&1)" || cloud_init_status=$?
+  cloud_init_output="$(cloud-init status --wait --long 2>&1)" || cloud_init_status=$?
   printf '%s\n' "$cloud_init_output"
   if grep -Eq '^(status|extended_status): error' <<<"$cloud_init_output"; then
     cloud_init_status=1
@@ -2245,6 +2505,13 @@ else
 fi
 printf '\n== failed units ==\n'
 systemctl --failed --no-pager || true
+printf '\n== cloud-init output (tail) ==\n'
+sudo tail -n 40 /var/log/cloud-init-output.log 2>/dev/null || echo "no cloud-init output log"
+for bootstrap_log in /var/log/hybrid-ai-*.log; do
+  [[ -f "$bootstrap_log" ]] || continue
+  printf '\n== %s (tail) ==\n' "$bootstrap_log"
+  sudo tail -n 40 "$bootstrap_log" || true
+done
 if [[ "$role" == "gpu-worker" ]]; then
   gpu_dependency_status=0
   printf '\n== gpu dependency check ==\n'
@@ -2661,12 +2928,11 @@ sudo systemctl is-failed --quiet hybrid-ai-gitlab-bootstrap.service && {
   exit 1
 }
 curl -fsS http://127.0.0.1/users/sign_in >/dev/null 2>&1 || curl -fsS http://127.0.0.1/-/readiness >/dev/null
+echo "== gitlab bootstrap journal (tail) =="
+sudo journalctl -u hybrid-ai-gitlab-bootstrap.service -n 100 --no-pager || true
 sudo cat /var/lib/hybrid-ai/gitlab-bootstrap/status.env 2>/dev/null || true
 REMOTE
-  lxc config device remove ha-openstack gitlab-proxy >/dev/null 2>&1 || true
-  lxc config device add ha-openstack gitlab-proxy proxy \
-    "listen=tcp:127.0.0.1:${GITLAB_UPSTREAM_PORT}" \
-    "connect=tcp:${target}:80" >/dev/null
+  ensure_lxc_proxy_device gitlab-proxy "tcp:127.0.0.1:${GITLAB_UPSTREAM_PORT}" "tcp:${target}:80"
   curl -fsS "http://127.0.0.1:${GITLAB_UPSTREAM_PORT}/users/sign_in" >/dev/null 2>&1 \
     || curl -fsS "http://127.0.0.1:${GITLAB_UPSTREAM_PORT}/-/readiness" >/dev/null
 }
@@ -2773,13 +3039,12 @@ fi
 # root-only 0700 /etc/hybrid-ai and cannot be sourced as the SSH login user).
 curl -fsS "http://127.0.0.1:${harbor_http_port}/api/v2.0/ping" >/dev/null 2>&1 \
   || curl -fsS "http://127.0.0.1:${harbor_http_port}/api/v2.0/health" >/dev/null
+echo "== harbor bootstrap journal (tail) =="
+sudo journalctl -u hybrid-ai-harbor-bootstrap.service -n 100 --no-pager || true
 sudo cat /var/lib/hybrid-ai/harbor-bootstrap/status.env 2>/dev/null || true
 REMOTE
 
-  lxc config device remove ha-openstack harbor-proxy >/dev/null 2>&1 || true
-  lxc config device add ha-openstack harbor-proxy proxy \
-    "listen=tcp:127.0.0.1:${HARBOR_UPSTREAM_PORT}" \
-    "connect=tcp:${target}:${HARBOR_HTTP_PORT}" >/dev/null
+  ensure_lxc_proxy_device harbor-proxy "tcp:127.0.0.1:${HARBOR_UPSTREAM_PORT}" "tcp:${target}:${HARBOR_HTTP_PORT}"
   curl -fsS "http://127.0.0.1:${HARBOR_UPSTREAM_PORT}/api/v2.0/ping" >/dev/null 2>&1 \
     || curl -fsS "http://127.0.0.1:${HARBOR_UPSTREAM_PORT}/api/v2.0/health" >/dev/null
 

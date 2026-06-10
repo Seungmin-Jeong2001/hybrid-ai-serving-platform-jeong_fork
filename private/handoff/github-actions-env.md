@@ -32,3 +32,8 @@ Terraform variables
 - Harbor는 별도 영속 registry VM입니다.
 - Argo Workflows와 Kaniko는 Kubernetes 내부 실행 구성입니다.
 - OpenStack image cache는 dependency manifest hash 기반으로 재빌드합니다.
+
+## GitLab bootstrap 변수
+
+- `GITLAB_ROOT_PASSWORD`: GitHub Actions secret입니다. root password와 custom admin user password를 같이 설정합니다.
+- `GITLAB_ADMIN_USERNAME`: GitHub Actions variable입니다. 비워두면 `root`만 사용하고, `root`가 아닌 값이면 GitLab bootstrap이 해당 admin user를 생성하거나 갱신합니다.
