@@ -119,7 +119,7 @@ variable "eks_node_groups" {
       # system(ArgoCD, KEDA, cert-manager) + monitoring(Prometheus, Grafana, Loki) + app(dashboard) 통합
       # KEDA(제어부)와 inference(실행부) 장애 전파 격리 목적
       # 원래 값: system=m7i-flex.large, monitoring=m7i-flex.large (나중에 복구)
-      instance_types = ["t3.medium"] # 임시 비용 절감, 원래 값: m5.large
+      instance_types = ["m7i-flex.large"] # 임시 비용 절감, 원래 값: m7i-flex.large
       az_count       = 2
       desired_size   = 1 # ★ 원래 값: 2 (나중에 복구) ★
       min_size       = 1
