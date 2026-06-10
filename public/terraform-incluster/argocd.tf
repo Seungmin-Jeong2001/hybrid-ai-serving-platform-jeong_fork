@@ -5,8 +5,8 @@ resource "helm_release" "argocd" {
   repository       = "https://argoproj.github.io/argo-helm"
   chart            = "argo-cd"
   version          = var.argocd_chart_version
-  namespace        = kubernetes_namespace.argocd.metadata[0].name
-  create_namespace = false
+  namespace        = "argocd"
+  create_namespace = true  # namespace는 terraform이 아닌 helm이 직접 생성 (finalizer 문제 방지)
   wait             = true
   timeout          = 900
 
@@ -56,7 +56,6 @@ resource "helm_release" "argocd" {
   ]
 
   depends_on = [
-    kubernetes_namespace.argocd,
     time_sleep.wait_for_aws_load_balancer_controller_webhook,
   ]
 }
