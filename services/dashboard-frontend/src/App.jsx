@@ -34,6 +34,37 @@ function formatLatency(requestedAt, completedAt) {
   return diff >= 1000 ? `${(diff / 1000).toFixed(1)}s` : `${diff}ms`;
 }
 
+function SummaryCards({ results }) {
+  const total = results.length;
+  const abnormal = results.filter(
+    (r) => r.prediction !== "정상" && r.prediction?.toLowerCase() !== "normal"
+  ).length;
+  const normal = total - abnormal;
+  const normalRate = total === 0 ? "-" : `${((normal / total) * 100).toFixed(1)}%`;
+
+  return (
+    <div className="summary-cards">
+      <div className="summary-card">
+        <div className="summary-label">총 추론 건수</div>
+        <div className="summary-value" style={{ color: "var(--indigo)" }}>{total}</div>
+        <div className="summary-sub">최근 50건 기준</div>
+      </div>
+      <div className="summary-card">
+        <div className="summary-label">이상 감지</div>
+        <div className="summary-value" style={{ color: abnormal > 0 ? "var(--red)" : "var(--green)" }}>
+          {abnormal}
+        </div>
+        <div className="summary-sub">{abnormal > 0 ? "점검 필요" : "이상 없음"}</div>
+      </div>
+      <div className="summary-card">
+        <div className="summary-label">정상 비율</div>
+        <div className="summary-value" style={{ color: "var(--green)" }}>{normalRate}</div>
+        <div className="summary-sub">정상 {normal}건 / 이상 {abnormal}건</div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [results, setResults]       = useState([]);
   const [equipments, setEquipments] = useState([]);
@@ -72,7 +103,7 @@ export default function App() {
   useEffect(() => {
     fetchEquipments();
     fetchResults();
-    const id = setInterval(() => fetchResults(filter), 10000); // 10초마다 자동 갱신
+    const id = setInterval(() => fetchResults(filter), 10000);
     return () => clearInterval(id);
   }, []);
 
@@ -90,6 +121,7 @@ export default function App() {
           --bg: #0f1117; --surface: #1a1d27; --border: #2d3148;
           --text: #e2e8f0; --muted: #64748b; --sub: #94a3b8;
           --green: #22c55e; --red: #ef4444; --indigo: #6366f1;
+          --yellow: #eab308;
         }
         html, body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; font-size: 14px; }
         header { display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 2rem; background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10; }
@@ -97,6 +129,14 @@ export default function App() {
         header h1 span { color: var(--indigo); }
         .clock { font-size: 0.8rem; color: var(--sub); }
         main { padding: 1.5rem 2rem; display: flex; flex-direction: column; gap: 1.2rem; }
+
+        /* 요약 카드 */
+        .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; }
+        .summary-card { background: var(--surface); border: 1px solid var(--border); border-radius: 0.75rem; padding: 0.9rem 1.2rem; }
+        .summary-label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem; }
+        .summary-value { font-size: 1.7rem; font-weight: 700; line-height: 1.2; }
+        .summary-sub { font-size: 0.7rem; color: var(--muted); margin-top: 0.25rem; }
+
         .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
         .toolbar-left { display: flex; align-items: center; gap: 0.75rem; }
         .section-title { font-size: 0.75rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
@@ -123,11 +163,13 @@ export default function App() {
       `}</style>
 
       <header>
-        <h1>SGS-<span>HASP</span> 추론 결과 대시보드</h1>
+        <h1><span>HASP</span> 예지보전 모니터링 대시보드</h1>
         <Clock />
       </header>
 
       <main>
+        <SummaryCards results={results} />
+
         <div className="toolbar">
           <div className="toolbar-left">
             <span className="section-title">추론 결과</span>

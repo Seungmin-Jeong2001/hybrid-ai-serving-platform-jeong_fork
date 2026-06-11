@@ -87,10 +87,93 @@ def _results_ttl_seconds() -> int:
     return int(os.getenv("RESULTS_TTL_SECONDS", str(90 * 24 * 60 * 60)))  # 기본 90일
 
 
+def _alert_state_table_name() -> str:
+    return os.getenv("ALERT_STATE_TABLE_NAME", "sgs-hasp-equipment-alert-state")
+
+
+def _ses_sender_email() -> str:
+    return os.getenv("SES_SENDER_EMAIL", "")
+
+
+def _ses_recipient_email() -> str:
+    return os.getenv("SES_RECIPIENT_EMAIL", "")
+
+
 def _create_results_table():
     return boto3.resource("dynamodb", region_name=os.getenv("AWS_REGION")).Table(
         _results_table_name()
     )
+
+
+def _create_alert_state_table():
+    return boto3.resource("dynamodb", region_name=os.getenv("AWS_REGION")).Table(
+        _alert_state_table_name()
+    )
+
+
+def _is_abnormal(prediction: str) -> bool:
+    return prediction.lower() not in ("normal", "정상")
+
+
+def _send_alert_email(equipment_id: str, prediction: str, completed_at: int) -> None:
+    """이상 감지 시 고객사 담당자에게 SES 이메일 발송"""
+    sender = _ses_sender_email()
+    recipient = _ses_recipient_email()
+    if not sender or not recipient:
+        logger.warning("SES sender/recipient email not configured, skipping alert.")
+        return
+
+    ses = boto3.client("ses", region_name=os.getenv("AWS_REGION"))
+    completed_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(completed_at / 1000))
+
+    ses.send_email(
+        Source=sender,
+        Destination={"ToAddresses": [recipient]},
+        Message={
+            "Subject": {"Data": f"[HASP 알림] 장비 이상 감지 - {equipment_id}", "Charset": "UTF-8"},
+            "Body": {
+                "Text": {
+                    "Data": (
+                        f"장비 이상이 감지되었습니다.\n\n"
+                        f"장비 ID : {equipment_id}\n"
+                        f"예측 결과: {prediction}\n"
+                        f"감지 시각: {completed_str}\n\n"
+                        f"대시보드에서 상세 내용을 확인하세요."
+                    ),
+                    "Charset": "UTF-8",
+                }
+            },
+        },
+    )
+    logger.info("alert email sent equipment_id=%s prediction=%s", equipment_id, prediction)
+
+
+def _check_and_send_alert(alert_state_table, equipment_id: str, prediction: str, completed_at: int) -> None:
+    """장비 상태가 변경될 때만 이메일 발송 (중복 알림 방지)"""
+    is_abnormal = _is_abnormal(prediction)
+    new_status = "abnormal" if is_abnormal else "normal"
+
+    try:
+        response = alert_state_table.get_item(Key={"equipment_id": equipment_id})
+        current_status = response.get("Item", {}).get("status", "normal")
+    except Exception:
+        current_status = "normal"
+
+    # 상태가 바뀔 때만 이메일 발송
+    if new_status != current_status:
+        if is_abnormal:
+            _send_alert_email(equipment_id, prediction, completed_at)
+
+        # 상태 업데이트
+        alert_state_table.put_item(Item={
+            "equipment_id": equipment_id,
+            "status": new_status,
+            "updated_at": _now_epoch(),
+        })
+        logger.info(
+            "equipment alert state changed equipment_id=%s %s -> %s",
+            equipment_id, current_status, new_status,
+        )
 
 
 def _create_consumer() -> KafkaConsumer:
@@ -228,6 +311,7 @@ def run() -> None:
     consumer = _create_consumer()
     producer = _create_producer()
     results_table = _create_results_table()
+    alert_state_table = _create_alert_state_table()
 
     try:
         while True:
@@ -254,6 +338,7 @@ def run() -> None:
                         predictions = result.get("predictions", [])
                         prediction = predictions[0].get("class_name", "Unknown") if predictions else "Unknown"
 
+                        completed_at = _now_epoch() * 1000
                         _save_result(
                             results_table,
                             request_id=request_id,
@@ -261,6 +346,13 @@ def run() -> None:
                             equipment_id=payload.get("equipment_id", ""),
                             prediction=prediction,
                             requested_at=payload.get("timestamp", 0),
+                        )
+                        # 이상 감지 시 상태 변경 확인 후 이메일 알림 (중복 방지)
+                        _check_and_send_alert(
+                            alert_state_table,
+                            equipment_id=payload.get("equipment_id", ""),
+                            prediction=prediction,
+                            completed_at=completed_at,
                         )
                         consumer.commit()
                         logger.info(

@@ -59,6 +59,12 @@ spec:
             # TODO: 최종 이미지 확정 시 엔드포인트 재검토 필요
             - name: PREDICTOR_ENDPOINT
               value: "/predict"
+            - name: ALERT_STATE_TABLE_NAME
+              value: sgs-hasp-equipment-alert-state
+            - name: SES_SENDER_EMAIL
+              value: pswk0907@gmail.com
+            - name: SES_RECIPIENT_EMAIL
+              value: pswk0907@gmail.com
           resources:
             requests:
               cpu: "200m"

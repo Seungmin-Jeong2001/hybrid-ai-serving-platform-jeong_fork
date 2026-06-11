@@ -30,6 +30,21 @@ output "dynamodb_table_name" {
   value       = aws_dynamodb_table.inference_results.name
 }
 
+output "dynamodb_alert_state_table_name" {
+  description = "Equipment alert state DynamoDB table name"
+  value       = aws_dynamodb_table.equipment_alert_state.name
+}
+
+output "ses_alert_sender_email" {
+  description = "SES alert sender email"
+  value       = var.ses_alert_sender_email
+}
+
+output "ses_alert_recipient_email" {
+  description = "SES alert recipient email"
+  value       = var.ses_alert_recipient_email
+}
+
 output "account_id" {
   description = "AWS account ID"
   value       = data.aws_caller_identity.current.account_id

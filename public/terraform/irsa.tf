@@ -77,3 +77,34 @@ resource "aws_iam_role_policy_attachment" "inference_worker_dynamodb" {
   role       = aws_iam_role.inference_worker.name
   policy_arn = aws_iam_policy.inference_worker_dynamodb.arn
 }
+
+# SES 이메일 발송 + 장비 상태 테이블 권한
+data "aws_iam_policy_document" "inference_worker_ses" {
+  statement {
+    effect    = "Allow"
+    actions   = ["ses:SendEmail", "ses:SendRawEmail"]
+    resources = ["*"]
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:UpdateItem",
+    ]
+    resources = [aws_dynamodb_table.equipment_alert_state.arn]
+  }
+}
+
+resource "aws_iam_policy" "inference_worker_ses" {
+  name   = "${var.project_name}-inference-worker-ses"
+  policy = data.aws_iam_policy_document.inference_worker_ses.json
+
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy_attachment" "inference_worker_ses" {
+  role       = aws_iam_role.inference_worker.name
+  policy_arn = aws_iam_policy.inference_worker_ses.arn
+}
