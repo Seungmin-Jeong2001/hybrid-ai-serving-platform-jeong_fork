@@ -498,23 +498,30 @@ jobs:
 
           ENI_IDS=$(aws ec2 describe-network-interfaces \
             --region "${AWS_REGION}" \
-            --filters \
-              "Name=vpc-id,Values=${VPC_ID}" \
-              "Name=status,Values=available" \
-            --query "NetworkInterfaces[].NetworkInterfaceId" \
+            --filters "Name=vpc-id,Values=${VPC_ID}" \
+            --query "NetworkInterfaces[].[NetworkInterfaceId,Status,Attachment.AttachmentId]" \
             --output text)
 
           if [[ -z "${ENI_IDS}" || "${ENI_IDS}" == "None" ]]; then
-            echo "No available ENIs found."
+            echo "No ENIs found."
             exit 0
           fi
 
-          for ENI_ID in ${ENI_IDS}; do
+          while IFS=$'\t' read -r ENI_ID STATUS ATTACHMENT_ID; do
+            echo "Processing ENI ${ENI_ID} (status: ${STATUS})..."
+            if [[ "${STATUS}" == "in-use" && -n "${ATTACHMENT_ID}" && "${ATTACHMENT_ID}" != "None" ]]; then
+              echo "Detaching ENI ${ENI_ID} (attachment: ${ATTACHMENT_ID})..."
+              aws ec2 detach-network-interface \
+                --region "${AWS_REGION}" \
+                --attachment-id "${ATTACHMENT_ID}" \
+                --force || true
+              sleep 3
+            fi
             echo "Deleting ENI ${ENI_ID}..."
             aws ec2 delete-network-interface \
               --region "${AWS_REGION}" \
               --network-interface-id "${ENI_ID}" || true
-          done
+          done <<< "${ENI_IDS}"
 
       - name: Force unlock Terraform state before destroy
         if: ${{ inputs.action == 'destroy' }}
