@@ -214,10 +214,24 @@ HA_PROVIDER=openstack ha up openstack-kubernetes --auto-approve
 | 대상 | 도메인 | 역할 |
 | --- | --- | --- |
 | SSH | `ssh.intp.me` | 물리 서버 Tailscale SSH 진입점 |
+| Control VM SSH | `control-ssh.intp.me:2201` | OpenStack control VM SSH tunnel |
+| Build VM SSH | `build-ssh.intp.me:2202` | OpenStack build VM SSH tunnel |
+| GPU VM SSH | `gpu-ssh.intp.me:2203` | OpenStack GPU VM SSH tunnel |
+| GitLab VM SSH | `gitlab-ssh.intp.me:2204` | OpenStack GitLab VM SSH tunnel |
+| Harbor VM SSH | `harbor-ssh.intp.me:2205` | OpenStack Harbor VM SSH tunnel |
 | OpenStack Horizon | `openstack.intp.me` | Horizon reverse proxy |
+| MinIO S3 API | `minio.intp.me` | Dataset/artifact object storage API |
+| MinIO Console | `minio-console.intp.me` | MinIO admin console |
 | Kubernetes UI | `k8s.intp.me` | Dashboard/API UI reverse proxy |
 | Grafana | `grafana.intp.me` | Monitoring UI reverse proxy |
 | ArgoCD | `argocd.intp.me` | GitOps UI reverse proxy |
+| NFS | none | Kubernetes private network only |
+
+VM SSH tunnel은 Cloudflare DNS-only 레코드와 LXD TCP proxy를 사용합니다. 예:
+
+```bash
+ssh -i .ha/ssh/hybrid-ai-private-admin -p 2203 ubuntu@gpu-ssh.intp.me
+```
 
 자세한 설정과 Cloudflare token 권한은 `private/reverse-proxy/README.md`와
 `private/handoff/github-actions-env.md`에 정리되어 있습니다.

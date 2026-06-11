@@ -90,7 +90,7 @@ HA_DEVSTACK_CONTAINER_CACHE_RESTORE="${HA_DEVSTACK_CONTAINER_CACHE_RESTORE:-true
 HA_DEVSTACK_CONTAINER_CACHE_REFRESH="${HA_DEVSTACK_CONTAINER_CACHE_REFRESH:-true}"
 HA_DEVSTACK_CONTAINER_CACHE_COW_DRIVERS="${HA_DEVSTACK_CONTAINER_CACHE_COW_DRIVERS:-btrfs,zfs,lvm}"
 HA_DEVSTACK_CONTAINER_CACHE_VERSION="${HA_DEVSTACK_CONTAINER_CACHE_VERSION:-20260610.1}"
-PRIVATE_CLOUD_BASE_DOMAIN="${PRIVATE_CLOUD_BASE_DOMAIN:-intp.me}"
+PRIVATE_CLOUD_BASE_DOMAIN="${PRIVATE_CLOUD_BASE_DOMAIN:-${HA_BASE_DOMAIN:-intp.me}}"
 OS_PASSWORD_INPUT_PROVIDED=false
 [[ -n "${OS_PASSWORD+x}" ]] && OS_PASSWORD_INPUT_PROVIDED=true
 OS_USERNAME="${OS_USERNAME:-admin}"
@@ -146,6 +146,11 @@ HA_DEVSTACK_HARBOR_FLAVOR_NAME="${HA_DEVSTACK_HARBOR_FLAVOR_NAME:-ha.m1.harbor}"
 HA_DEVSTACK_HARBOR_FLAVOR_RAM="${HA_DEVSTACK_HARBOR_FLAVOR_RAM:-4096}"
 HA_DEVSTACK_HARBOR_FLAVOR_VCPUS="${HA_DEVSTACK_HARBOR_FLAVOR_VCPUS:-2}"
 HA_DEVSTACK_HARBOR_FLAVOR_DISK="${HA_DEVSTACK_HARBOR_FLAVOR_DISK:-80}"
+HA_DEVSTACK_CONTROL_PLANE_PRIVATE_IPS="${HA_DEVSTACK_CONTROL_PLANE_PRIVATE_IPS:-10.42.0.88}"
+HA_DEVSTACK_BUILD_WORKER_PRIVATE_IPS="${HA_DEVSTACK_BUILD_WORKER_PRIVATE_IPS:-10.42.0.5}"
+HA_DEVSTACK_GPU_WORKER_PRIVATE_IPS="${HA_DEVSTACK_GPU_WORKER_PRIVATE_IPS:-10.42.0.11}"
+HA_DEVSTACK_GITLAB_PRIVATE_IPS="${HA_DEVSTACK_GITLAB_PRIVATE_IPS:-10.42.0.61}"
+HA_DEVSTACK_HARBOR_PRIVATE_IPS="${HA_DEVSTACK_HARBOR_PRIVATE_IPS:-10.42.0.127}"
 TF_VAR_control_plane_flavor_name="${TF_VAR_control_plane_flavor_name:-${HA_DEVSTACK_CONTROL_FLAVOR_NAME}}"
 TF_VAR_build_worker_flavor_name="${TF_VAR_build_worker_flavor_name:-${HA_DEVSTACK_WORKER_FLAVOR_NAME}}"
 TF_VAR_gpu_worker_flavor_name="${TF_VAR_gpu_worker_flavor_name:-${HA_OPENSTACK_GPU_FLAVOR_NAME:-g1.large}}"
@@ -190,8 +195,25 @@ HARBOR_HTTP_PORT="${HARBOR_HTTP_PORT:-80}"
 HARBOR_UPSTREAM_PORT="${HARBOR_UPSTREAM_PORT:-18084}"
 HARBOR_BOOTSTRAP_WAIT_SECONDS="${HARBOR_BOOTSTRAP_WAIT_SECONDS:-1800}"
 HARBOR_ADMIN_PASSWORD="${HARBOR_ADMIN_PASSWORD:-}"
+MINIO_DOMAIN="${MINIO_DOMAIN:-minio.${PRIVATE_CLOUD_BASE_DOMAIN}}"
+MINIO_CONSOLE_DOMAIN="${MINIO_CONSOLE_DOMAIN:-minio-console.${PRIVATE_CLOUD_BASE_DOMAIN}}"
+MINIO_API_NODEPORT="${MINIO_API_NODEPORT:-30900}"
+MINIO_CONSOLE_NODEPORT="${MINIO_CONSOLE_NODEPORT:-30990}"
+MINIO_API_UPSTREAM_PORT="${MINIO_API_UPSTREAM_PORT:-19000}"
+MINIO_CONSOLE_UPSTREAM_PORT="${MINIO_CONSOLE_UPSTREAM_PORT:-19090}"
+MINIO_PROXY_ENABLED="${MINIO_PROXY_ENABLED:-true}"
 PRIVATE_CLOUD_PROXY_ENABLED="${PRIVATE_CLOUD_PROXY_ENABLED:-true}"
 PRIVATE_CLOUD_PROXY_TLS_MODE="${PRIVATE_CLOUD_PROXY_TLS_MODE:-auto}"
+PRIVATE_CLOUD_DNS_TTL="${PRIVATE_CLOUD_DNS_TTL:-${HA_CLOUDFLARE_DNS_TTL:-120}}"
+PRIVATE_CLOUD_DNS_SERVICES="${PRIVATE_CLOUD_DNS_SERVICES:-${HA_DNS_SERVICES:-openstack,k8s,grafana,argocd,gitlab,harbor,minio,minio-console}}"
+PRIVATE_CLOUD_DNS_SSH_ALIASES="${PRIVATE_CLOUD_DNS_SSH_ALIASES:-${HA_DNS_SSH_ALIASES:-control-ssh,build-ssh,gpu-ssh,gitlab-ssh,harbor-ssh}}"
+PRIVATE_CLOUD_SSH_TUNNELS_ENABLED="${PRIVATE_CLOUD_SSH_TUNNELS_ENABLED:-true}"
+PRIVATE_CLOUD_SSH_TUNNEL_LISTEN_ADDRESS="${PRIVATE_CLOUD_SSH_TUNNEL_LISTEN_ADDRESS:-auto}"
+PRIVATE_CLOUD_SSH_CONTROL_PORT="${PRIVATE_CLOUD_SSH_CONTROL_PORT:-2201}"
+PRIVATE_CLOUD_SSH_BUILD_PORT="${PRIVATE_CLOUD_SSH_BUILD_PORT:-2202}"
+PRIVATE_CLOUD_SSH_GPU_PORT="${PRIVATE_CLOUD_SSH_GPU_PORT:-2203}"
+PRIVATE_CLOUD_SSH_GITLAB_PORT="${PRIVATE_CLOUD_SSH_GITLAB_PORT:-2204}"
+PRIVATE_CLOUD_SSH_HARBOR_PORT="${PRIVATE_CLOUD_SSH_HARBOR_PORT:-2205}"
 ARGO_WORKFLOWS_INSTALL_ENABLED="${ARGO_WORKFLOWS_INSTALL_ENABLED:-true}"
 ARGO_WORKFLOWS_INSTALL_MANIFEST="${ARGO_WORKFLOWS_INSTALL_MANIFEST:-https://github.com/argoproj/argo-workflows/releases/download/v3.7.14/install.yaml}"
 MINIO_VOLUME_SIZE="${MINIO_VOLUME_SIZE:-10}"
@@ -562,7 +584,7 @@ remove_transient_lxc_devices() {
 
   while IFS= read -r device; do
     case "$device" in
-      horizon-proxy|host-kernel-modules|hybrid-ai-devstack-apt-cache|hybrid-ai-devstack-root-cache|hybrid-ai-devstack-stack-cache|"$HA_OPENSTACK_GLANCE_STORE_LXD_DEVICE"|"$HA_OPENSTACK_NOVA_INSTANCES_LXD_DEVICE"|hybrid-ai-image-cache|kmsg|kvm|vfio|vfio-control|vfio-group-*|hybrid-ai-public-http|hybrid-ai-public-https)
+      horizon-proxy|host-kernel-modules|hybrid-ai-devstack-apt-cache|hybrid-ai-devstack-root-cache|hybrid-ai-devstack-stack-cache|"$HA_OPENSTACK_GLANCE_STORE_LXD_DEVICE"|"$HA_OPENSTACK_NOVA_INSTANCES_LXD_DEVICE"|hybrid-ai-image-cache|kmsg|kvm|vfio|vfio-control|vfio-group-*|hybrid-ai-public-http|hybrid-ai-public-https|hybrid-ai-ssh-*|minio-api-proxy|minio-console-proxy)
         lxc config device remove "$instance" "$device" >/dev/null 2>&1 || true
         ;;
     esac
@@ -1403,6 +1425,24 @@ terraform_var_int() {
   printf '%s\n' "$value"
 }
 
+write_tf_string_list() {
+  local name="$1"
+  local raw="$2"
+  [[ -n "$raw" ]] || return 0
+
+  python3 - "$name" "$raw" <<'PY'
+import json
+import re
+import sys
+
+name = sys.argv[1]
+raw = sys.argv[2]
+items = [item.strip() for item in re.split(r"[\s,]+", raw) if item.strip()]
+if items:
+    print(f"{name} = {json.dumps(items)}")
+PY
+}
+
 terraform_apply_prefix() {
   terraform_var_value \
     project_name \
@@ -2210,12 +2250,16 @@ write_caddy_environment() {
   write_systemd_env_line "${env_file}" HA_ARGOCD_DOMAIN "argocd.${PRIVATE_CLOUD_BASE_DOMAIN}"
   write_systemd_env_line "${env_file}" HA_GIT_DOMAIN "${GITLAB_DOMAIN}"
   write_systemd_env_line "${env_file}" HA_HARBOR_DOMAIN "${HARBOR_DOMAIN}"
+  write_systemd_env_line "${env_file}" HA_MINIO_DOMAIN "${MINIO_DOMAIN}"
+  write_systemd_env_line "${env_file}" HA_MINIO_CONSOLE_DOMAIN "${MINIO_CONSOLE_DOMAIN}"
   write_systemd_env_line "${env_file}" HA_OPENSTACK_HORIZON_UPSTREAM "127.0.0.1:18081"
   write_systemd_env_line "${env_file}" HA_K8S_DASHBOARD_UPSTREAM "127.0.0.1:18082"
   write_systemd_env_line "${env_file}" HA_GRAFANA_UPSTREAM "127.0.0.1:3000"
   write_systemd_env_line "${env_file}" HA_ARGOCD_UPSTREAM "127.0.0.1:8080"
   write_systemd_env_line "${env_file}" HA_GITLAB_UPSTREAM "127.0.0.1:${GITLAB_UPSTREAM_PORT}"
   write_systemd_env_line "${env_file}" HA_HARBOR_UPSTREAM "127.0.0.1:${HARBOR_UPSTREAM_PORT}"
+  write_systemd_env_line "${env_file}" HA_MINIO_API_UPSTREAM "127.0.0.1:${MINIO_API_UPSTREAM_PORT}"
+  write_systemd_env_line "${env_file}" HA_MINIO_CONSOLE_UPSTREAM "127.0.0.1:${MINIO_CONSOLE_UPSTREAM_PORT}"
   write_systemd_env_line "${env_file}" CLOUDFLARE_API_TOKEN "${CLOUDFLARE_API_TOKEN:-}"
   sudo install -d -m 0755 /etc/hybrid-ai /etc/systemd/system/caddy.service.d
   sudo install -m 0640 -o root -g root "${env_file}" /etc/hybrid-ai/caddy.env
@@ -2268,7 +2312,7 @@ setup_host_reverse_proxy() {
   # shellcheck disable=SC1091
   source "${LOG_DIR}/caddy.env"
   set +a
-  sudo --preserve-env=HA_CADDY_ACME_EMAIL,HA_OPENSTACK_DOMAIN,HA_K8S_DOMAIN,HA_GRAFANA_DOMAIN,HA_ARGOCD_DOMAIN,HA_GIT_DOMAIN,HA_HARBOR_DOMAIN,HA_OPENSTACK_HORIZON_UPSTREAM,HA_K8S_DASHBOARD_UPSTREAM,HA_GRAFANA_UPSTREAM,HA_ARGOCD_UPSTREAM,HA_GITLAB_UPSTREAM,HA_HARBOR_UPSTREAM,CLOUDFLARE_API_TOKEN \
+  sudo --preserve-env=HA_CADDY_ACME_EMAIL,HA_OPENSTACK_DOMAIN,HA_K8S_DOMAIN,HA_GRAFANA_DOMAIN,HA_ARGOCD_DOMAIN,HA_GIT_DOMAIN,HA_HARBOR_DOMAIN,HA_MINIO_DOMAIN,HA_MINIO_CONSOLE_DOMAIN,HA_OPENSTACK_HORIZON_UPSTREAM,HA_K8S_DASHBOARD_UPSTREAM,HA_GRAFANA_UPSTREAM,HA_ARGOCD_UPSTREAM,HA_GITLAB_UPSTREAM,HA_HARBOR_UPSTREAM,HA_MINIO_API_UPSTREAM,HA_MINIO_CONSOLE_UPSTREAM,CLOUDFLARE_API_TOKEN \
     caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
   sudo systemctl enable --now caddy
   sudo systemctl restart caddy
@@ -2276,10 +2320,12 @@ setup_host_reverse_proxy() {
 }
 
 write_lxc_caddyfile() {
-  local gitlab_ip harbor_ip caddyfile
+  local control_ip gitlab_ip harbor_ip caddyfile
 
+  control_ip="$(first_control_plane_ip || true)"
   gitlab_ip="$(first_gitlab_ip || true)"
   harbor_ip="$(first_harbor_ip || true)"
+  [[ -n "$control_ip" ]] || control_ip="127.0.0.1"
   [[ -n "$gitlab_ip" ]] || gitlab_ip="127.0.0.1"
   [[ -n "$harbor_ip" ]] || harbor_ip="127.0.0.1"
   caddyfile="${LOG_DIR}/Caddyfile.lxc"
@@ -2294,7 +2340,9 @@ http://k8s.${PRIVATE_CLOUD_BASE_DOMAIN}:8088,
 http://grafana.${PRIVATE_CLOUD_BASE_DOMAIN}:8088,
 http://argocd.${PRIVATE_CLOUD_BASE_DOMAIN}:8088,
 http://${GITLAB_DOMAIN}:8088,
-http://${HARBOR_DOMAIN}:8088 {
+http://${HARBOR_DOMAIN}:8088,
+http://${MINIO_DOMAIN}:8088,
+http://${MINIO_CONSOLE_DOMAIN}:8088 {
 	redir https://{host}{uri} permanent
 }
 
@@ -2349,6 +2397,30 @@ ${HARBOR_DOMAIN}:8443 {
 		header_up X-Forwarded-Port 443
 	}
 }
+
+${MINIO_DOMAIN}:8443 {
+	tls /etc/hybrid-ai/caddy/intp.me.crt /etc/hybrid-ai/caddy/intp.me.key
+	encode zstd gzip
+	reverse_proxy ${control_ip}:${MINIO_API_NODEPORT} {
+		header_up Host {host}
+		header_up X-Forwarded-Host {host}
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Ssl on
+		header_up X-Forwarded-Port 443
+	}
+}
+
+${MINIO_CONSOLE_DOMAIN}:8443 {
+	tls /etc/hybrid-ai/caddy/intp.me.crt /etc/hybrid-ai/caddy/intp.me.key
+	encode zstd gzip
+	reverse_proxy ${control_ip}:${MINIO_CONSOLE_NODEPORT} {
+		header_up Host {host}
+		header_up X-Forwarded-Host {host}
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Ssl on
+		header_up X-Forwarded-Port 443
+	}
+}
 EOF
   printf '%s\n' "$caddyfile"
 }
@@ -2389,6 +2461,213 @@ REMOTE
   ensure_lxc_proxy_device hybrid-ai-public-http tcp:0.0.0.0:80 tcp:127.0.0.1:8088
   ensure_lxc_proxy_device hybrid-ai-public-https tcp:0.0.0.0:443 tcp:127.0.0.1:8443
   log "reverse proxy ready with LXC internal TLS fallback"
+}
+
+ensure_tf_output_json_available() {
+  if [[ -s "${TF_OUTPUT_JSON}" ]]; then
+    return 0
+  fi
+
+  (
+    cd "${ROOT}/private/openstack"
+    terraform output -json >"${TF_OUTPUT_JSON}"
+  ) >/dev/null 2>&1
+}
+
+detect_tailscale_ip() {
+  local ip
+  if [[ -n "${PRIVATE_CLOUD_TAILSCALE_IP:-}" ]]; then
+    printf '%s\n' "${PRIVATE_CLOUD_TAILSCALE_IP}"
+    return 0
+  fi
+  if [[ -n "${HA_TAILSCALE_IP:-}" ]]; then
+    printf '%s\n' "${HA_TAILSCALE_IP}"
+    return 0
+  fi
+
+  if command -v tailscale >/dev/null 2>&1; then
+    ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
+    if [[ -n "${ip}" ]]; then
+      printf '%s\n' "${ip}"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+sync_cloudflare_dns() {
+  local tailscale_ip
+
+  if [[ -z "${CLOUDFLARE_API_TOKEN:-}" || -z "${CLOUDFLARE_ZONE_ID:-}" ]]; then
+    log "skip Cloudflare DNS sync: CLOUDFLARE_API_TOKEN or CLOUDFLARE_ZONE_ID is missing"
+    return 0
+  fi
+
+  tailscale_ip="$(detect_tailscale_ip || true)"
+  if [[ -z "${tailscale_ip}" ]]; then
+    log "skip Cloudflare DNS sync: PRIVATE_CLOUD_TAILSCALE_IP is missing and tailscale ip is unavailable"
+    return 0
+  fi
+
+  export PRIVATE_CLOUD_TAILSCALE_IP="${tailscale_ip}"
+  export PRIVATE_CLOUD_BASE_DOMAIN
+  export PRIVATE_CLOUD_DNS_TTL
+  export PRIVATE_CLOUD_DNS_SERVICES
+  export PRIVATE_CLOUD_DNS_SSH_ALIASES
+
+  python3 "${ROOT}/private/reverse-proxy/cloudflare_dns.py" --apply
+  log "Cloudflare DNS records synced for ${PRIVATE_CLOUD_BASE_DOMAIN}"
+}
+
+ssh_tunnel_listen_address() {
+  case "${PRIVATE_CLOUD_SSH_TUNNEL_LISTEN_ADDRESS}" in
+    auto)
+      detect_tailscale_ip || printf '0.0.0.0\n'
+      ;;
+    *)
+      printf '%s\n' "${PRIVATE_CLOUD_SSH_TUNNEL_LISTEN_ADDRESS}"
+      ;;
+  esac
+}
+
+ensure_openstack_private_route() {
+  local private_cidr router_name gateway
+
+  if ! command -v lxc >/dev/null 2>&1 || ! lxc info ha-openstack >/dev/null 2>&1; then
+    log "skip private route setup: ha-openstack container is unavailable"
+    return 0
+  fi
+
+  if ! ensure_tf_output_json_available; then
+    log "skip private route setup: Terraform output is unavailable"
+    return 0
+  fi
+
+  private_cidr="$(python3 - "${TF_OUTPUT_JSON}" <<'PY'
+import json
+import sys
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    data = json.load(handle)
+print(data.get("private_network_cidr", {}).get("value", "10.42.0.0/24"))
+PY
+)"
+  router_name="$(terraform_apply_prefix)-router"
+  gateway="$(lxc exec ha-openstack -- sudo -u stack -H bash -s -- "$router_name" <<'REMOTE' 2>/dev/null || true
+set -euo pipefail
+router_name="$1"
+cd /opt/stack/devstack
+set +u
+source openrc admin admin >/dev/null
+set -u
+openstack router show "$router_name" -f json -c external_gateway_info | python3 -c '
+import json
+import sys
+data = json.load(sys.stdin).get("external_gateway_info") or {}
+if isinstance(data, str):
+    data = json.loads(data)
+fixed_ips = data.get("external_fixed_ips") or []
+for fixed_ip in fixed_ips:
+    ip = fixed_ip.get("ip_address", "")
+    if "." in ip:
+        print(ip)
+        break
+'
+REMOTE
+)"
+
+  if [[ -z "${gateway}" ]]; then
+    log "skip private route setup: router external gateway is unavailable"
+    return 0
+  fi
+
+  lxc exec ha-openstack -- ip route replace "${private_cidr}" via "${gateway}" dev br-ex
+  log "private route ready in ha-openstack: ${private_cidr} via ${gateway}"
+}
+
+setup_openstack_ssh_tunnels() {
+  local inventory listen_address base_domain
+  [[ "${PRIVATE_CLOUD_SSH_TUNNELS_ENABLED}" == "true" ]] || return 0
+
+  if ! ensure_tf_output_json_available; then
+    log "skip OpenStack SSH tunnels: Terraform output is unavailable"
+    return 0
+  fi
+
+  inventory="${LOG_DIR}/ssh-tunnels.tsv"
+  python3 - \
+    "${TF_OUTPUT_JSON}" \
+    "${PRIVATE_CLOUD_SSH_CONTROL_PORT}" \
+    "${PRIVATE_CLOUD_SSH_BUILD_PORT}" \
+    "${PRIVATE_CLOUD_SSH_GPU_PORT}" \
+    "${PRIVATE_CLOUD_SSH_GITLAB_PORT}" \
+    "${PRIVATE_CLOUD_SSH_HARBOR_PORT}" >"${inventory}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    data = json.load(handle)
+
+roles = (
+    ("control", "control_plane_nodes", "PRIVATE_CLOUD_SSH_CONTROL_PORT", sys.argv[2]),
+    ("build", "build_worker_nodes", "PRIVATE_CLOUD_SSH_BUILD_PORT", sys.argv[3]),
+    ("gpu", "gpu_worker_nodes", "PRIVATE_CLOUD_SSH_GPU_PORT", sys.argv[4]),
+    ("gitlab", "gitlab_nodes", "PRIVATE_CLOUD_SSH_GITLAB_PORT", sys.argv[5]),
+    ("harbor", "harbor_nodes", "PRIVATE_CLOUD_SSH_HARBOR_PORT", sys.argv[6]),
+)
+
+for role, key, port_name, port_value in roles:
+    port = port_value.strip()
+    if not port:
+        continue
+    try:
+        port_number = int(port)
+    except ValueError:
+        raise SystemExit(f"{port_name} must be a TCP port number, got: {port}")
+    if port_number < 1 or port_number > 65535:
+        raise SystemExit(f"{port_name} must be between 1 and 65535, got: {port}")
+    nodes = data.get(key, {}).get("value", [])
+    if not nodes:
+        continue
+    node = nodes[0]
+    ip = node.get("private_ip") or node.get("floating_ip")
+    if not ip:
+        continue
+    print(f"{role}\t{port}\t{ip}\t{node.get('name', '')}")
+PY
+
+  if [[ ! -s "${inventory}" ]]; then
+    log "skip OpenStack SSH tunnels: no tunnelable VM nodes found"
+    return 0
+  fi
+
+  listen_address="$(ssh_tunnel_listen_address)"
+  base_domain="${PRIVATE_CLOUD_BASE_DOMAIN:-intp.me}"
+
+  while IFS=$'\t' read -r role port ip name; do
+    ensure_lxc_proxy_device "hybrid-ai-ssh-${role}" "tcp:${listen_address}:${port}" "tcp:${ip}:22"
+    log "ssh tunnel ready: ${role}-ssh.${base_domain}:${port} -> ${name} (${ip}:22)"
+  done <"${inventory}"
+}
+
+setup_minio_entrypoints() {
+  local control_ip
+  [[ "${MINIO_PROXY_ENABLED}" == "true" ]] || return 0
+
+  if ! ensure_tf_output_json_available; then
+    log "skip MinIO entrypoints: Terraform output is unavailable"
+    return 0
+  fi
+
+  control_ip="$(first_control_plane_ip || true)"
+  if [[ -z "${control_ip}" ]]; then
+    log "skip MinIO entrypoints: control-plane IP is unavailable"
+    return 0
+  fi
+
+  ensure_lxc_proxy_device minio-api-proxy "tcp:127.0.0.1:${MINIO_API_UPSTREAM_PORT}" "tcp:${control_ip}:${MINIO_API_NODEPORT}"
+  ensure_lxc_proxy_device minio-console-proxy "tcp:127.0.0.1:${MINIO_CONSOLE_UPSTREAM_PORT}" "tcp:${control_ip}:${MINIO_CONSOLE_NODEPORT}"
+  log "MinIO entrypoints ready: ${MINIO_DOMAIN} -> ${control_ip}:${MINIO_API_NODEPORT}, ${MINIO_CONSOLE_DOMAIN} -> ${control_ip}:${MINIO_CONSOLE_NODEPORT}"
 }
 
 setup_reverse_proxy() {
@@ -2654,22 +2933,28 @@ terraform_apply() {
     printf 'install_node_dependencies = %s\n' "${effective_install_node_dependencies}"
     printf 'ssh_allowed_cidrs = ["%s"]\n' "$public_subnet_cidr"
     printf 'gitlab_http_allowed_cidrs = ["%s"]\n' "$public_subnet_cidr"
+    printf 'minio_nodeport_allowed_cidrs = ["%s"]\n' "$public_subnet_cidr"
     printf 'control_plane_count = %s\n' "${effective_control_plane_count}"
     printf 'control_plane_image_name = "%s"\n' "${TF_VAR_control_plane_image_name}"
     printf 'control_plane_flavor_name = "%s"\n' "${effective_control_plane_flavor}"
+    write_tf_string_list control_plane_private_ips "${HA_DEVSTACK_CONTROL_PLANE_PRIVATE_IPS}"
     printf 'build_worker_count = %s\n' "${effective_build_worker_count}"
     printf 'build_worker_image_name = "%s"\n' "${TF_VAR_build_worker_image_name}"
     printf 'build_worker_flavor_name = "%s"\n' "${effective_build_worker_flavor}"
+    write_tf_string_list build_worker_private_ips "${HA_DEVSTACK_BUILD_WORKER_PRIVATE_IPS}"
     printf 'gpu_worker_count = %s\n' "${effective_gpu_worker_count}"
     printf 'gpu_worker_image_name = "%s"\n' "${TF_VAR_gpu_worker_image_name}"
     printf 'gpu_worker_flavor_name = "%s"\n' "${effective_gpu_worker_flavor}"
+    write_tf_string_list gpu_worker_private_ips "${HA_DEVSTACK_GPU_WORKER_PRIVATE_IPS}"
     printf 'gitlab_count = %s\n' "${effective_gitlab_count}"
     printf 'gitlab_image_name = "%s"\n' "${TF_VAR_gitlab_image_name}"
     printf 'gitlab_flavor_name = "%s"\n' "${effective_gitlab_flavor}"
+    write_tf_string_list gitlab_private_ips "${HA_DEVSTACK_GITLAB_PRIVATE_IPS}"
     printf 'gitlab_container_image = "%s"\n' "${TF_VAR_gitlab_container_image}"
     printf 'harbor_count = %s\n' "${effective_harbor_count}"
     printf 'harbor_image_name = "%s"\n' "${TF_VAR_harbor_image_name}"
     printf 'harbor_flavor_name = "%s"\n' "${effective_harbor_flavor}"
+    write_tf_string_list harbor_private_ips "${HA_DEVSTACK_HARBOR_PRIVATE_IPS}"
     printf 'harbor_http_allowed_cidrs = ["%s"]\n' "$public_subnet_cidr"
   } >zz-local-devstack.auto.tfvars
   cleanup_openstack_orphans_before_apply
@@ -2734,6 +3019,7 @@ wait_one_node_ssh() {
 }
 
 wait_nodes_ssh() {
+  ensure_openstack_private_route
   write_ssh_config
   python3 - "${TF_OUTPUT_JSON}" >"${LOG_DIR}/node-inventory.txt" <<'PY'
 import json
@@ -2742,7 +3028,7 @@ with open(sys.argv[1], "r", encoding="utf-8") as handle:
     data = json.load(handle)
 for key in ("control_plane_nodes", "build_worker_nodes", "gpu_worker_nodes"):
     for node in data.get(key, {}).get("value", []):
-        ip = node.get("floating_ip") or node.get("private_ip")
+        ip = node.get("private_ip") or node.get("floating_ip")
         if ip:
             print(ip, node.get("name", ""))
 PY
@@ -2772,7 +3058,7 @@ with open(sys.argv[1], "r", encoding="utf-8") as handle:
     data = json.load(handle)
 
 for node in data.get(sys.argv[2], {}).get("value", []):
-    ip = node.get("floating_ip") or node.get("private_ip")
+    ip = node.get("private_ip") or node.get("floating_ip")
     if ip:
         print(f"{ip}\t{node.get('name', '')}")
 PY
@@ -2854,6 +3140,7 @@ wait_role_nodes_ssh() {
   local pids=()
   local pid rc=0
 
+  ensure_openstack_private_route
   write_ssh_config
   write_role_node_inventory "$inventory" "$tf_key"
   if [[ ! -s "$inventory" ]]; then
@@ -2879,7 +3166,7 @@ with open(sys.argv[1], "r", encoding="utf-8") as handle:
     data = json.load(handle)
 nodes = data.get("control_plane_nodes", {}).get("value", [])
 if nodes:
-    print(nodes[0].get("floating_ip") or nodes[0].get("private_ip") or "")
+    print(nodes[0].get("private_ip") or nodes[0].get("floating_ip") or "")
 PY
 }
 
@@ -2891,7 +3178,7 @@ with open(sys.argv[1], "r", encoding="utf-8") as handle:
     data = json.load(handle)
 nodes = data.get("gitlab_nodes", {}).get("value", [])
 if nodes:
-    print(nodes[0].get("floating_ip") or nodes[0].get("private_ip") or "")
+    print(nodes[0].get("private_ip") or nodes[0].get("floating_ip") or "")
 PY
 }
 
@@ -2903,12 +3190,13 @@ with open(sys.argv[1], "r", encoding="utf-8") as handle:
     data = json.load(handle)
 nodes = data.get("harbor_nodes", {}).get("value", [])
 if nodes:
-    print(nodes[0].get("floating_ip") or nodes[0].get("private_ip") or "")
+    print(nodes[0].get("private_ip") or nodes[0].get("floating_ip") or "")
 PY
 }
 
 start_kubectl_tunnel() {
   local first_cp_ip
+  ensure_openstack_private_route
   first_cp_ip="$(first_control_plane_ip)"
   [[ -n "${first_cp_ip}" ]] || return 1
   pgrep -f "ssh .*127.0.0.1:${HA_KUBECTL_TUNNEL_PORT}:127.0.0.1:6443" | xargs -r kill || true
@@ -2950,7 +3238,7 @@ if not control_nodes:
     raise SystemExit("missing control_plane_nodes")
 nfs_server_ip = data.get("nfs_server_ip", {}).get("value")
 private_network_cidr = data.get("private_network_cidr", {}).get("value")
-nfs_ssh_ip = control_nodes[0].get("floating_ip") or control_nodes[0].get("private_ip")
+nfs_ssh_ip = control_nodes[0].get("private_ip") or control_nodes[0].get("floating_ip")
 print(f"NFS_SERVER_IP={nfs_server_ip}")
 print(f"PRIVATE_NETWORK_CIDR={private_network_cidr}")
 print(f"NFS_SSH_IP={nfs_ssh_ip}")
@@ -3003,6 +3291,7 @@ REMOTE
 }
 
 setup_storage() {
+  ensure_openstack_private_route
   write_ssh_config
   start_kubectl_tunnel
   export KUBECONFIG="${KUBECONFIG_PATH}"
@@ -3119,6 +3408,7 @@ VALUES
 setup_gitlab() {
   [[ "${GITLAB_INSTALL_ENABLED}" == "true" ]] || return 0
   local target registry_host gitlab_root_password_file
+  ensure_openstack_private_route
   write_ssh_config
   target="$(first_gitlab_ip)"
   [[ -n "${target}" ]] || return 0
@@ -3292,6 +3582,7 @@ setup_harbor() {
   [[ "${HARBOR_INSTALL_ENABLED}" == "true" ]] || return 0
   local target admin_password_file harbor_env_file harbor_env_payload
 
+  ensure_openstack_private_route
   write_ssh_config
   target="$(first_harbor_ip)"
   [[ -n "${target}" ]] || return 0
@@ -3427,6 +3718,7 @@ PY
 }
 
 setup_model_build_platform() {
+  ensure_openstack_private_route
   start_kubectl_tunnel
   export KUBECONFIG="${KUBECONFIG_PATH}"
   kubectl apply -k "${ROOT}/private/kubernetes"
@@ -3472,6 +3764,7 @@ setup_model_build_platform() {
 }
 
 validate_gpu_lightweight() {
+  ensure_openstack_private_route
   write_ssh_config
   start_kubectl_tunnel
   export KUBECONFIG="${KUBECONFIG_PATH}"
@@ -3580,7 +3873,11 @@ run_devstack_steps() {
 }
 
 run_proxy_steps() {
+  phase ensure_openstack_private_route ensure_openstack_private_route
+  phase setup_minio_entrypoints setup_minio_entrypoints
   phase setup_reverse_proxy setup_reverse_proxy
+  phase setup_openstack_ssh_tunnels setup_openstack_ssh_tunnels
+  phase sync_cloudflare_dns sync_cloudflare_dns
 }
 
 run_images_steps() {
@@ -3698,7 +3995,7 @@ run_registry_phases() {
   run_tools_phases
   if optional_apply_phase_enabled "${HA_PRIVATE_CLOUD_SETUP_REGISTRY}"; then
     phase setup_registry_services setup_registry_services_parallel
-    phase setup_reverse_proxy setup_reverse_proxy
+    run_proxy_steps
   else
     skip_phase setup_registry_services "disabled for lightweight Actions stack"
   fi

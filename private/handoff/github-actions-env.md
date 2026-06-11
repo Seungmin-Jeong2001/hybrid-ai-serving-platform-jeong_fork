@@ -40,6 +40,22 @@ Terraform variables
 - `GITLAB_ROOT_PASSWORD`: GitHub Actions secret입니다. root password와 custom admin user password를 같이 설정합니다.
 - `GITLAB_ADMIN_USERNAME`: GitHub Actions variable입니다. 비워두면 `root`만 사용하고, `root`가 아닌 값이면 GitLab bootstrap이 해당 admin user를 생성하거나 갱신합니다.
 
+## Cloudflare DNS / SSH tunnel 변수
+
+- `CLOUDFLARE_API_TOKEN`: GitHub Actions secret입니다. 최소 권한은 target zone의 `Zone:Read`, `DNS:Edit`입니다.
+- `CLOUDFLARE_ZONE_ID`: GitHub Actions variable입니다.
+- `PRIVATE_CLOUD_BASE_DOMAIN`: 기본값은 `intp.me`입니다.
+- `PRIVATE_CLOUD_TAILSCALE_IP`: `ssh.<base-domain>` A record와 SSH tunnel listen address auto mode에 사용합니다.
+- `PRIVATE_CLOUD_DNS_SERVICES`: 기본값은 `openstack,k8s,grafana,argocd,gitlab,harbor,minio,minio-console`입니다.
+- `PRIVATE_CLOUD_DNS_SSH_ALIASES`: 기본값은 `control-ssh,build-ssh,gpu-ssh,gitlab-ssh,harbor-ssh`입니다.
+- `PRIVATE_CLOUD_SSH_TUNNELS_ENABLED`: 기본값은 `true`입니다.
+- `PRIVATE_CLOUD_SSH_TUNNEL_LISTEN_ADDRESS`: 기본값은 `auto`입니다. `auto`면 `PRIVATE_CLOUD_TAILSCALE_IP`에 바인딩하고, 없으면 `0.0.0.0`에 바인딩합니다.
+- `PRIVATE_CLOUD_SSH_CONTROL_PORT`, `PRIVATE_CLOUD_SSH_BUILD_PORT`, `PRIVATE_CLOUD_SSH_GPU_PORT`, `PRIVATE_CLOUD_SSH_GITLAB_PORT`, `PRIVATE_CLOUD_SSH_HARBOR_PORT`: 기본값은 각각 `2201`, `2202`, `2203`, `2204`, `2205`입니다.
+- `MINIO_DOMAIN`, `MINIO_CONSOLE_DOMAIN`: 기본값은 각각 `minio.<base-domain>`, `minio-console.<base-domain>`입니다.
+- `MINIO_API_NODEPORT`, `MINIO_CONSOLE_NODEPORT`: 기본값은 각각 `30900`, `30990`입니다.
+- `MINIO_API_UPSTREAM_PORT`, `MINIO_CONSOLE_UPSTREAM_PORT`: host Caddy upstream용 local port이며 기본값은 각각 `19000`, `19090`입니다.
+- `MINIO_PROXY_ENABLED`: 기본값은 `true`입니다.
+
 ## 단일 host Actions 기준
 
 - 현재 단일 DevStack host에서는 `PRIVATE_CLOUD_TFVARS`가 기존 `hybrid-ai-private` stack을 가리켜야 합니다.

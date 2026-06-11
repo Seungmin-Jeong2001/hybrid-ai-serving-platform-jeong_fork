@@ -17,24 +17,37 @@ ssh_public_key = "ssh-ed25519 REPLACE_WITH_PUBLIC_KEY_ONLY"
 control_plane_count       = 1
 control_plane_image_name  = "ubuntu-22.04"
 control_plane_flavor_name = "m1.large"
+# Optional. Set to keep private IPs stable across destroy/recreate.
+# control_plane_private_ips = ["10.42.0.10"]
 
 build_worker_count       = 1
 build_worker_image_name  = "ubuntu-22.04"
 build_worker_flavor_name = "m1.large"
+# build_worker_private_ips = ["10.42.0.20"]
 
 gpu_worker_count       = 1
 gpu_worker_image_name  = "ubuntu-22.04"
 gpu_worker_flavor_name = "g1.large"
+# gpu_worker_private_ips = ["10.42.0.30"]
 
 gitlab_count       = 1
 gitlab_image_name  = "ubuntu-22.04"
 gitlab_flavor_name = "m1.large"
+# gitlab_private_ips = ["10.42.0.40"]
+
+harbor_count       = 1
+harbor_image_name  = "ubuntu-22.04"
+harbor_flavor_name = "m1.large"
+# harbor_private_ips = ["10.42.0.50"]
 
 # Cloud-init pre-pulls this image on GitLab VMs before the Actions bootstrap injects secrets.
 gitlab_container_image = "gitlab/gitlab-ce:18.11.4-ce.0"
 
 # Keep empty unless a host reverse proxy must reach the GitLab VM directly over HTTP.
 gitlab_http_allowed_cidrs = []
+
+# Keep empty unless a reverse proxy intentionally exposes MinIO API/console.
+# minio_nodeport_allowed_cidrs = ["172.24.4.0/24"]
 
 # Cloud-init installs common Kubernetes, storage, diagnostics, and GPU host dependencies.
 install_node_dependencies = true

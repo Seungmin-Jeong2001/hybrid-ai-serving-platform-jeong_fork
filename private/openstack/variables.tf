@@ -64,6 +64,12 @@ variable "harbor_http_allowed_cidrs" {
   default     = []
 }
 
+variable "minio_nodeport_allowed_cidrs" {
+  description = "CIDR ranges allowed to reach MinIO Kubernetes NodePorts for the reverse proxy. Keep empty unless MinIO API/console are intentionally exposed."
+  type        = list(string)
+  default     = []
+}
+
 variable "key_pair_name" {
   description = "OpenStack key pair name for provisioned instances."
   type        = string
@@ -82,10 +88,22 @@ variable "control_plane_count" {
   default     = 1
 }
 
+variable "control_plane_private_ips" {
+  description = "Optional fixed private IPv4 addresses for control-plane ports. Leave empty to let OpenStack DHCP allocate them."
+  type        = list(string)
+  default     = []
+}
+
 variable "build_worker_count" {
   description = "Number of model build worker VMs."
   type        = number
   default     = 1
+}
+
+variable "build_worker_private_ips" {
+  description = "Optional fixed private IPv4 addresses for build-worker ports. Leave empty to let OpenStack DHCP allocate them."
+  type        = list(string)
+  default     = []
 }
 
 variable "gpu_worker_count" {
@@ -94,16 +112,34 @@ variable "gpu_worker_count" {
   default     = 1
 }
 
+variable "gpu_worker_private_ips" {
+  description = "Optional fixed private IPv4 addresses for GPU-worker ports. Leave empty to let OpenStack DHCP allocate them."
+  type        = list(string)
+  default     = []
+}
+
 variable "gitlab_count" {
   description = "Number of standalone GitLab VMs."
   type        = number
   default     = 1
 }
 
+variable "gitlab_private_ips" {
+  description = "Optional fixed private IPv4 addresses for GitLab ports. Leave empty to let OpenStack DHCP allocate them."
+  type        = list(string)
+  default     = []
+}
+
 variable "harbor_count" {
   description = "Number of standalone Harbor registry VMs."
   type        = number
   default     = 1
+}
+
+variable "harbor_private_ips" {
+  description = "Optional fixed private IPv4 addresses for Harbor ports. Leave empty to let OpenStack DHCP allocate them."
+  type        = list(string)
+  default     = []
 }
 
 variable "control_plane_image_name" {

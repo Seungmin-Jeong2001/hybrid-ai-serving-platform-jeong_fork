@@ -132,6 +132,30 @@ resource "openstack_networking_secgroup_rule_v2" "allow_harbor_https" {
   security_group_id = openstack_networking_secgroup_v2.private.id
 }
 
+resource "openstack_networking_secgroup_rule_v2" "allow_minio_api_nodeport" {
+  for_each = toset(var.minio_nodeport_allowed_cidrs)
+
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 30900
+  port_range_max    = 30900
+  remote_ip_prefix  = each.value
+  security_group_id = openstack_networking_secgroup_v2.private.id
+}
+
+resource "openstack_networking_secgroup_rule_v2" "allow_minio_console_nodeport" {
+  for_each = toset(var.minio_nodeport_allowed_cidrs)
+
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 30990
+  port_range_max    = 30990
+  remote_ip_prefix  = each.value
+  security_group_id = openstack_networking_secgroup_v2.private.id
+}
+
 resource "openstack_compute_keypair_v2" "admin" {
   name       = var.key_pair_name
   public_key = var.ssh_public_key
@@ -147,6 +171,11 @@ resource "openstack_networking_port_v2" "control_plane" {
 
   fixed_ip {
     subnet_id = openstack_networking_subnet_v2.private.id
+    ip_address = (
+      length(var.control_plane_private_ips) > count.index
+      ? var.control_plane_private_ips[count.index]
+      : null
+    )
   }
 }
 
@@ -209,6 +238,11 @@ resource "openstack_networking_port_v2" "build_worker" {
 
   fixed_ip {
     subnet_id = openstack_networking_subnet_v2.private.id
+    ip_address = (
+      length(var.build_worker_private_ips) > count.index
+      ? var.build_worker_private_ips[count.index]
+      : null
+    )
   }
 }
 
@@ -271,6 +305,11 @@ resource "openstack_networking_port_v2" "gpu_worker" {
 
   fixed_ip {
     subnet_id = openstack_networking_subnet_v2.private.id
+    ip_address = (
+      length(var.gpu_worker_private_ips) > count.index
+      ? var.gpu_worker_private_ips[count.index]
+      : null
+    )
   }
 }
 
@@ -333,6 +372,11 @@ resource "openstack_networking_port_v2" "gitlab" {
 
   fixed_ip {
     subnet_id = openstack_networking_subnet_v2.private.id
+    ip_address = (
+      length(var.gitlab_private_ips) > count.index
+      ? var.gitlab_private_ips[count.index]
+      : null
+    )
   }
 }
 
@@ -395,6 +439,11 @@ resource "openstack_networking_port_v2" "harbor" {
 
   fixed_ip {
     subnet_id = openstack_networking_subnet_v2.private.id
+    ip_address = (
+      length(var.harbor_private_ips) > count.index
+      ? var.harbor_private_ips[count.index]
+      : null
+    )
   }
 }
 
