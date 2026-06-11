@@ -92,7 +92,7 @@ resource "aws_eks_node_group" "workloads" {
   subnet_ids      = local.node_group_subnet_ids[each.key]
 
   instance_types = each.value.instance_types
-  capacity_type  = "SPOT" # 임시 비용 절감 (약 60~70% 절약), 원래 값: "ON_DEMAND" (나중에 복구 - 노드 중단 시 파드 재스케줄링 발생 가능)
+  capacity_type  = "ON_DEMAND"
 
   launch_template {
     id      = aws_launch_template.node_groups[each.key].id
