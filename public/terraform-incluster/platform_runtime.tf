@@ -2,9 +2,9 @@ resource "kubernetes_namespace" "inference" {
   metadata {
     name = "inference"
   }
-  # lifecycle ignore_changes로 ArgoCD가 추가하는 finalizer 무시 → destroy 시 타임아웃 방지
+  # lifecycle ignore_changes로 ArgoCD가 추가하는 annotation/label 무시
   lifecycle {
-    ignore_changes = [metadata[0].finalizers]
+    ignore_changes = [metadata[0].annotations, metadata[0].labels]
   }
 }
 
