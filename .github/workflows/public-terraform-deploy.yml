@@ -431,6 +431,55 @@ jobs:
             --query 'StandardOutputContent' \
             --output text || true
 
+      - name: Update Route53 A record for Internal ALB
+        if: ${{ inputs.action == 'apply' && steps.resolve_instance.outputs.value != '' }}
+        run: |
+          HOSTED_ZONE_ID="Z02027133DFPOVFLKA9YK"
+          DOMAIN="dashboard.sgs-hasp.click"
+
+          # ArgoCD sync 후 ALB 생성까지 대기
+          sleep 30
+
+          # Internal ALB DNS 주소 조회 (태그 기반)
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --region "${AWS_REGION}" \
+            --query "LoadBalancers[?Scheme=='internal'].DNSName" \
+            --output text | head -1)
+
+          if [[ -z "${ALB_DNS}" || "${ALB_DNS}" == "None" ]]; then
+            echo "Internal ALB not found, skipping Route53 update."
+            exit 0
+          fi
+
+          # ALB의 Hosted Zone ID 조회
+          ALB_HOSTED_ZONE_ID=$(aws elbv2 describe-load-balancers \
+            --region "${AWS_REGION}" \
+            --query "LoadBalancers[?DNSName=='${ALB_DNS}'].CanonicalHostedZoneId" \
+            --output text)
+
+          echo "ALB DNS: ${ALB_DNS}"
+          echo "ALB Hosted Zone ID: ${ALB_HOSTED_ZONE_ID}"
+
+          # Route53 A 레코드 (Alias) UPSERT - 없으면 생성, 있으면 덮어씀
+          aws route53 change-resource-record-sets \
+            --hosted-zone-id "${HOSTED_ZONE_ID}" \
+            --change-batch "{
+              \"Changes\": [{
+                \"Action\": \"UPSERT\",
+                \"ResourceRecordSet\": {
+                  \"Name\": \"${DOMAIN}\",
+                  \"Type\": \"A\",
+                  \"AliasTarget\": {
+                    \"HostedZoneId\": \"${ALB_HOSTED_ZONE_ID}\",
+                    \"DNSName\": \"${ALB_DNS}\",
+                    \"EvaluateTargetHealth\": true
+                  }
+                }
+              }]
+            }"
+
+          echo "Route53 updated: ${DOMAIN} -> ${ALB_DNS}"
+
       - name: Clean up ENIs before destroy
         if: ${{ inputs.action == 'destroy' }}
         run: |
