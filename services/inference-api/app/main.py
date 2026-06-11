@@ -92,8 +92,6 @@ async def infer(request: InferenceRequest) -> dict[str, Any]:
         "equipment_id": request.equipment_id,
         "timestamp": request.timestamp,
         "inputs": request.inputs,
-        "retry_count": 0,
-        "source_topic": _request_topic(),
     }
 
     try:
