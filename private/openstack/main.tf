@@ -225,7 +225,10 @@ resource "openstack_networking_floatingip_associate_v2" "control_plane" {
   floating_ip = openstack_networking_floatingip_v2.control_plane[count.index].address
   port_id     = openstack_networking_port_v2.control_plane[count.index].id
 
-  depends_on = [openstack_networking_router_interface_v2.private]
+  depends_on = [
+    openstack_compute_instance_v2.control_plane,
+    openstack_networking_router_interface_v2.private,
+  ]
 }
 
 resource "openstack_networking_port_v2" "build_worker" {
@@ -292,7 +295,10 @@ resource "openstack_networking_floatingip_associate_v2" "build_worker" {
   floating_ip = openstack_networking_floatingip_v2.build_worker[count.index].address
   port_id     = openstack_networking_port_v2.build_worker[count.index].id
 
-  depends_on = [openstack_networking_router_interface_v2.private]
+  depends_on = [
+    openstack_compute_instance_v2.build_worker,
+    openstack_networking_router_interface_v2.private,
+  ]
 }
 
 resource "openstack_networking_port_v2" "gpu_worker" {
@@ -359,7 +365,10 @@ resource "openstack_networking_floatingip_associate_v2" "gpu_worker" {
   floating_ip = openstack_networking_floatingip_v2.gpu_worker[count.index].address
   port_id     = openstack_networking_port_v2.gpu_worker[count.index].id
 
-  depends_on = [openstack_networking_router_interface_v2.private]
+  depends_on = [
+    openstack_compute_instance_v2.gpu_worker,
+    openstack_networking_router_interface_v2.private,
+  ]
 }
 
 resource "openstack_networking_port_v2" "gitlab" {
@@ -426,7 +435,10 @@ resource "openstack_networking_floatingip_associate_v2" "gitlab" {
   floating_ip = openstack_networking_floatingip_v2.gitlab[count.index].address
   port_id     = openstack_networking_port_v2.gitlab[count.index].id
 
-  depends_on = [openstack_networking_router_interface_v2.private]
+  depends_on = [
+    openstack_compute_instance_v2.gitlab,
+    openstack_networking_router_interface_v2.private,
+  ]
 }
 
 resource "openstack_networking_port_v2" "harbor" {
@@ -493,5 +505,8 @@ resource "openstack_networking_floatingip_associate_v2" "harbor" {
   floating_ip = openstack_networking_floatingip_v2.harbor[count.index].address
   port_id     = openstack_networking_port_v2.harbor[count.index].id
 
-  depends_on = [openstack_networking_router_interface_v2.private]
+  depends_on = [
+    openstack_compute_instance_v2.harbor,
+    openstack_networking_router_interface_v2.private,
+  ]
 }

@@ -1559,6 +1559,34 @@ effective_worker_count() {
   terraform_var_value "$name" "$default_value" private-cloud.auto.tfvars
 }
 
+guard_terraform_plan_deletes() {
+  local plan_json="${LOG_DIR}/terraform-plan.json"
+
+  [[ "${HA_PRIVATE_CLOUD_ALLOW_TERRAFORM_DESTROY:-false}" == "true" ]] && return 0
+
+  terraform show -json private-cloud.tfplan >"${plan_json}"
+  python3 - "${plan_json}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    plan = json.load(handle)
+
+destructive = []
+for change in plan.get("resource_changes", []):
+    actions = change.get("change", {}).get("actions", [])
+    if "delete" in actions:
+        destructive.append(f"{change.get('address', '<unknown>')}: {','.join(actions)}")
+
+if destructive:
+    print("Terraform plan includes delete/replacement actions; refusing apply.", file=sys.stderr)
+    print("Set HA_PRIVATE_CLOUD_ALLOW_TERRAFORM_DESTROY=true only when the destructive plan is intentional.", file=sys.stderr)
+    for item in destructive:
+        print(f"- {item}", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
 cleanup_openstack_orphans_before_apply() {
   local prefix
 
@@ -2998,6 +3026,7 @@ terraform_apply() {
     terraform import openstack_compute_keypair_v2.admin "${key_pair_name}" >/dev/null 2>&1 || true
   fi
   terraform plan -input=false -out=private-cloud.tfplan
+  guard_terraform_plan_deletes
   terraform apply -input=false -parallelism="${HA_TERRAFORM_APPLY_PARALLELISM}" -auto-approve private-cloud.tfplan
   terraform output -json >"${TF_OUTPUT_JSON}"
 }
