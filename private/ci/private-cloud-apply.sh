@@ -217,7 +217,7 @@ PRIVATE_CLOUD_SSH_HARBOR_PORT="${PRIVATE_CLOUD_SSH_HARBOR_PORT:-2205}"
 ARGO_WORKFLOWS_INSTALL_ENABLED="${ARGO_WORKFLOWS_INSTALL_ENABLED:-true}"
 ARGO_WORKFLOWS_INSTALL_MANIFEST="${ARGO_WORKFLOWS_INSTALL_MANIFEST:-https://github.com/argoproj/argo-workflows/releases/download/v3.7.14/install.yaml}"
 MINIO_VOLUME_SIZE="${MINIO_VOLUME_SIZE:-10}"
-MINIO_ROOT_USER="${MINIO_ROOT_USER:-minioadmin}"
+MINIO_ROOT_USER="${MINIO_ROOT_USER:-3stacks}"
 MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-}"
 HA_KUBECTL_TUNNEL_PORT="${HA_KUBECTL_TUNNEL_PORT:-16443}"
 SSH_KEY="${ROOT}/.ha/ssh/hybrid-ai-private-admin"
@@ -2348,14 +2348,16 @@ setup_host_reverse_proxy() {
 }
 
 write_lxc_caddyfile() {
-  local control_ip gitlab_ip harbor_ip caddyfile
+  local control_ip gitlab_ip harbor_ip minio_ip caddyfile
 
   control_ip="$(first_control_plane_ip || true)"
   gitlab_ip="$(first_gitlab_ip || true)"
   harbor_ip="$(first_harbor_ip || true)"
+  minio_ip="$(first_minio_upstream_ip || true)"
   [[ -n "$control_ip" ]] || control_ip="127.0.0.1"
   [[ -n "$gitlab_ip" ]] || gitlab_ip="127.0.0.1"
   [[ -n "$harbor_ip" ]] || harbor_ip="127.0.0.1"
+  [[ -n "$minio_ip" ]] || minio_ip="127.0.0.1"
   caddyfile="${LOG_DIR}/Caddyfile.lxc"
 
   cat >"${caddyfile}" <<EOF
@@ -2429,7 +2431,7 @@ ${HARBOR_DOMAIN}:8443 {
 ${MINIO_DOMAIN}:8443 {
 	tls /etc/hybrid-ai/caddy/intp.me.crt /etc/hybrid-ai/caddy/intp.me.key
 	encode zstd gzip
-	reverse_proxy ${control_ip}:${MINIO_API_NODEPORT} {
+	reverse_proxy ${minio_ip}:${MINIO_API_NODEPORT} {
 		header_up Host {host}
 		header_up X-Forwarded-Host {host}
 		header_up X-Forwarded-Proto https
@@ -2441,7 +2443,7 @@ ${MINIO_DOMAIN}:8443 {
 ${MINIO_CONSOLE_DOMAIN}:8443 {
 	tls /etc/hybrid-ai/caddy/intp.me.crt /etc/hybrid-ai/caddy/intp.me.key
 	encode zstd gzip
-	reverse_proxy ${control_ip}:${MINIO_CONSOLE_NODEPORT} {
+	reverse_proxy ${minio_ip}:${MINIO_CONSOLE_NODEPORT} {
 		header_up Host {host}
 		header_up X-Forwarded-Host {host}
 		header_up X-Forwarded-Proto https
@@ -2679,7 +2681,7 @@ PY
 }
 
 setup_minio_entrypoints() {
-  local control_ip
+  local minio_ip
   [[ "${MINIO_PROXY_ENABLED}" == "true" ]] || return 0
 
   if ! ensure_tf_output_json_available; then
@@ -2687,15 +2689,15 @@ setup_minio_entrypoints() {
     return 0
   fi
 
-  control_ip="$(first_control_plane_ip || true)"
-  if [[ -z "${control_ip}" ]]; then
-    log "skip MinIO entrypoints: control-plane IP is unavailable"
+  minio_ip="$(first_minio_upstream_ip || true)"
+  if [[ -z "${minio_ip}" ]]; then
+    log "skip MinIO entrypoints: MinIO upstream IP is unavailable"
     return 0
   fi
 
-  ensure_lxc_proxy_device minio-api-proxy "tcp:127.0.0.1:${MINIO_API_UPSTREAM_PORT}" "tcp:${control_ip}:${MINIO_API_NODEPORT}"
-  ensure_lxc_proxy_device minio-console-proxy "tcp:127.0.0.1:${MINIO_CONSOLE_UPSTREAM_PORT}" "tcp:${control_ip}:${MINIO_CONSOLE_NODEPORT}"
-  log "MinIO entrypoints ready: ${MINIO_DOMAIN} -> ${control_ip}:${MINIO_API_NODEPORT}, ${MINIO_CONSOLE_DOMAIN} -> ${control_ip}:${MINIO_CONSOLE_NODEPORT}"
+  ensure_lxc_proxy_device minio-api-proxy "tcp:127.0.0.1:${MINIO_API_UPSTREAM_PORT}" "tcp:${minio_ip}:${MINIO_API_NODEPORT}"
+  ensure_lxc_proxy_device minio-console-proxy "tcp:127.0.0.1:${MINIO_CONSOLE_UPSTREAM_PORT}" "tcp:${minio_ip}:${MINIO_CONSOLE_NODEPORT}"
+  log "MinIO entrypoints ready: ${MINIO_DOMAIN} -> ${minio_ip}:${MINIO_API_NODEPORT}, ${MINIO_CONSOLE_DOMAIN} -> ${minio_ip}:${MINIO_CONSOLE_NODEPORT}"
 }
 
 setup_reverse_proxy() {
@@ -3199,6 +3201,27 @@ if nodes:
 PY
 }
 
+first_build_worker_ip() {
+  python3 - "${TF_OUTPUT_JSON}" <<'PY'
+import json
+import sys
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    data = json.load(handle)
+nodes = data.get("build_worker_nodes", {}).get("value", [])
+if nodes:
+    print(nodes[0].get("private_ip") or nodes[0].get("floating_ip") or "")
+PY
+}
+
+first_minio_upstream_ip() {
+  local ip
+  ip="$(first_build_worker_ip || true)"
+  if [[ -z "${ip}" ]]; then
+    ip="$(first_control_plane_ip || true)"
+  fi
+  printf '%s\n' "${ip}"
+}
+
 first_gitlab_ip() {
   python3 - "${TF_OUTPUT_JSON}" <<'PY'
 import json
@@ -3351,7 +3374,7 @@ VALUES
   kubectl create namespace minio-tenant --dry-run=client -o yaml | kubectl apply -f -
   existing_minio_root_user="$(kubectl -n minio-tenant get secret minio-creds-secret -o jsonpath='{.data.accessKey}' 2>/dev/null | base64 -d 2>/dev/null || true)"
   existing_minio_root_password="$(kubectl -n minio-tenant get secret minio-creds-secret -o jsonpath='{.data.secretKey}' 2>/dev/null | base64 -d 2>/dev/null || true)"
-  minio_root_user="${MINIO_ROOT_USER:-${existing_minio_root_user:-minioadmin}}"
+  minio_root_user="${MINIO_ROOT_USER:-${existing_minio_root_user:-3stacks}}"
   minio_root_password="${MINIO_ROOT_PASSWORD:-${existing_minio_root_password:-}}"
   if [[ -z "${minio_root_password}" ]]; then
     if [[ -z "${MINIO_ROOT_PASSWORD}" ]]; then

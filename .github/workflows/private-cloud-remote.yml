@@ -232,6 +232,7 @@ jobs:
           write_env GITLAB_DOCKER_LOG_MAX_SIZE "$GITLAB_DOCKER_LOG_MAX_SIZE"
           write_env GITLAB_DOCKER_LOG_MAX_FILE "$GITLAB_DOCKER_LOG_MAX_FILE"
           write_env HARBOR_ADMIN_PASSWORD "$HARBOR_ADMIN_PASSWORD"
+          write_env MINIO_ROOT_USER "$MINIO_ROOT_USER"
           write_env MINIO_ROOT_PASSWORD "$MINIO_ROOT_PASSWORD"
           write_env MINIO_DOMAIN "$MINIO_DOMAIN"
           write_env MINIO_CONSOLE_DOMAIN "$MINIO_CONSOLE_DOMAIN"
@@ -331,6 +332,7 @@ jobs:
           GITLAB_DOCKER_LOG_MAX_SIZE: ${{ vars.GITLAB_DOCKER_LOG_MAX_SIZE || '10m' }}
           GITLAB_DOCKER_LOG_MAX_FILE: ${{ vars.GITLAB_DOCKER_LOG_MAX_FILE || '3' }}
           HARBOR_ADMIN_PASSWORD: ${{ secrets.HARBOR_ADMIN_PASSWORD }}
+          MINIO_ROOT_USER: ${{ vars.MINIO_ROOT_USER || '3stacks' }}
           MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
           MINIO_DOMAIN: ${{ vars.MINIO_DOMAIN || '' }}
           MINIO_CONSOLE_DOMAIN: ${{ vars.MINIO_CONSOLE_DOMAIN || '' }}
