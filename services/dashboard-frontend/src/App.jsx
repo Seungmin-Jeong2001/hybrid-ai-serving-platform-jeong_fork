@@ -181,7 +181,7 @@ export default function App() {
         .refresh-btn:hover { opacity: 0.85; }
         .count-badge { font-size: 0.75rem; color: var(--sub); }
         .table-wrap { overflow-x: auto; border-radius: 0.75rem; border: 1px solid var(--border); }
-        .table-scroll { max-height: 50vh; overflow-y: auto; }
+        .table-scroll { max-height: 60vh; overflow-y: auto; }
         table { width: 100%; border-collapse: collapse; font-size: 0.8rem; table-layout: fixed; }
         thead th, tbody td { width: 25%; }
         thead { background: var(--surface); position: sticky; top: 0; z-index: 1; }
