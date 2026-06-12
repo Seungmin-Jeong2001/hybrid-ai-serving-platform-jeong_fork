@@ -40,6 +40,11 @@ Terraform variables
 - `GITLAB_ROOT_PASSWORD`: GitHub Actions secret입니다. root password와 custom admin user password를 같이 설정합니다.
 - `GITLAB_ADMIN_USERNAME`: GitHub Actions variable입니다. 비워두면 `root`만 사용하고, `root`가 아닌 값이면 GitLab bootstrap이 해당 admin user를 생성하거나 갱신합니다.
 
+## Harbor bootstrap 변수
+
+- `HARBOR_ADMIN_USERNAME`: GitHub Actions variable입니다. 기본 `admin` 외에 같은 비밀번호를 쓰는 system admin user를 생성할 때 사용합니다.
+- `HARBOR_ADMIN_PASSWORD`: GitHub Actions secret입니다. Harbor 기본 `admin` password와 `HARBOR_ADMIN_USERNAME` user password를 같이 설정합니다.
+
 ## Cloudflare DNS / SSH tunnel 변수
 
 - `CLOUDFLARE_API_TOKEN`: GitHub Actions secret입니다. 최소 권한은 target zone의 `Zone:Read`, `DNS:Edit`입니다.
