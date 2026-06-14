@@ -149,6 +149,7 @@ jobs:
           fi
 
           export MSK_BOOTSTRAP_BROKERS="$(terraform output -raw msk_bootstrap_brokers)"
+          export KAFKA_SECURITY_PROTOCOL="SSL"
           export MSK_TOPIC_REPLICATION_FACTOR="$(terraform output -raw msk_topic_replication_factor)"
           export MSK_TOPIC_CONFIGS_JSON="$(terraform output -json msk_topic_configs)"
           export MSK_TOPICS_JSON="$(terraform output -json msk_topics)"
@@ -162,6 +163,7 @@ jobs:
               f"echo '{os.environ['SCRIPT_B64']}' | base64 -d > /tmp/sync-msk-topics.sh",
               "chmod +x /tmp/sync-msk-topics.sh",
               f"export MSK_BOOTSTRAP_BROKERS='{os.environ['MSK_BOOTSTRAP_BROKERS']}'",
+              f"export KAFKA_SECURITY_PROTOCOL='{os.environ['KAFKA_SECURITY_PROTOCOL']}'",
               f"export MSK_TOPIC_REPLICATION_FACTOR='{os.environ['MSK_TOPIC_REPLICATION_FACTOR']}'",
               f"export MSK_TOPIC_CONFIGS_JSON='{os.environ['MSK_TOPIC_CONFIGS_JSON']}'",
               f"export MSK_TOPICS_JSON='{os.environ['MSK_TOPICS_JSON']}'",

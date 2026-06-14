@@ -40,6 +40,11 @@ spec:
                 configMapKeyRef:
                   name: inference-config
                   key: BOOTSTRAP_SERVERS
+            - name: KAFKA_SECURITY_PROTOCOL
+              valueFrom:
+                configMapKeyRef:
+                  name: inference-config
+                  key: KAFKA_SECURITY_PROTOCOL
             - name: REQUEST_TOPIC
               value: inference-request
             - name: RETRY_TOPIC

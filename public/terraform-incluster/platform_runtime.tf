@@ -17,7 +17,9 @@ resource "kubernetes_config_map" "inference_config" {
   depends_on = [kubernetes_namespace.inference]
 
   data = {
-    BOOTSTRAP_SERVERS = data.terraform_remote_state.platform.outputs.msk_bootstrap_brokers
+    BOOTSTRAP_SERVERS       = data.terraform_remote_state.platform.outputs.msk_bootstrap_brokers
+    KAFKA_TLS               = "enable"
+    KAFKA_SECURITY_PROTOCOL = "SSL"
   }
 }
 

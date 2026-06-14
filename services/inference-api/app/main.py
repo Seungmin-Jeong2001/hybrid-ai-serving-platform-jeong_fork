@@ -25,7 +25,7 @@ producer: KafkaProducer | None = None
 # Kafka bootstrap servers - 환경변수로 설정 조절 가능, 필수값
 def _bootstrap_servers() -> str:
     value = os.getenv("BOOTSTRAP_SERVERS", "").strip()
-    if not value or value == "replace-me:9092":
+    if not value or value in {"replace-me:9092", "replace-me:9094"}:
         raise RuntimeError("BOOTSTRAP_SERVERS must be configured")
     return value
 
@@ -33,10 +33,14 @@ def _bootstrap_servers() -> str:
 def _request_topic() -> str:
     return os.getenv("REQUEST_TOPIC", "inference-request")
 
+def _kafka_security_protocol() -> str:
+    return os.getenv("KAFKA_SECURITY_PROTOCOL", "SSL")
+
 # Kafka producer 생성 함수 - 환경변수로 설정 조절 가능, JSON 직렬화 포함
 def _create_producer() -> KafkaProducer:
     return KafkaProducer(
         bootstrap_servers=_bootstrap_servers(),
+        security_protocol=_kafka_security_protocol(),
         client_id=os.getenv("KAFKA_PRODUCER_CLIENT_ID", "inference-api"),
         acks="all",
         enable_idempotence=True,
@@ -94,7 +98,7 @@ async def infer(request: InferenceRequest) -> dict[str, Any]:
         "inputs": request.inputs,
     }
 
-    try:v
+    try:
         future = producer.send(_request_topic(), key=request.equipment_id, value=payload) # Kafka 토픽에 발행
         record_metadata = future.get(timeout=30)
     except KafkaError as exc:

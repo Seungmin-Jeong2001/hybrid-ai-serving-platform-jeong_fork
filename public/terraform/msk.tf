@@ -5,11 +5,11 @@ resource "aws_security_group" "msk" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description = "Allow Kafka traffic from within the VPC"
-    from_port   = 0
-    to_port     = 65535
+    description = "Allow Kafka TLS traffic from EKS private subnets"
+    from_port   = 9094
+    to_port     = 9094
     protocol    = "tcp"
-    cidr_blocks = [var.vpc_cidr]
+    cidr_blocks = var.eks_private_subnet_cidrs
   }
 
   egress {
@@ -44,7 +44,7 @@ resource "aws_msk_cluster" "main" {
 
   encryption_info {
     encryption_in_transit {
-      client_broker = "TLS_PLAINTEXT"
+      client_broker = "TLS"
       in_cluster    = true
     }
   }

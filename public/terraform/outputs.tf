@@ -109,8 +109,8 @@ output "msk_cluster_arn" {
 }
 
 output "msk_bootstrap_brokers" {
-  description = "Plaintext bootstrap brokers for the MSK cluster"
-  value       = aws_msk_cluster.main.bootstrap_brokers
+  description = "TLS bootstrap brokers for the MSK cluster"
+  value       = aws_msk_cluster.main.bootstrap_brokers_tls
 }
 
 output "manage_msk_topics" {

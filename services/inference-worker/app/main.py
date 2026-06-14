@@ -21,9 +21,12 @@ logger = logging.getLogger("inference-worker")
 
 def _bootstrap_servers() -> str:
     value = os.getenv("BOOTSTRAP_SERVERS", "").strip()
-    if not value or value == "replace-me:9092":
+    if not value or value in {"replace-me:9092", "replace-me:9094"}:
         raise RuntimeError("BOOTSTRAP_SERVERS must be configured")
     return value
+
+def _kafka_security_protocol() -> str:
+    return os.getenv("KAFKA_SECURITY_PROTOCOL", "SSL")
 
 # 예측 API 엔드포인트 URL 구성 (기본값은 KServe 관례 따름)
 def _predict_url() -> str:
@@ -178,6 +181,7 @@ def _create_consumer() -> KafkaConsumer:
     return KafkaConsumer(
         *_subscribed_topics(),
         bootstrap_servers=_bootstrap_servers(),
+        security_protocol=_kafka_security_protocol(),
         client_id=os.getenv("KAFKA_CONSUMER_CLIENT_ID", "inference-worker"),
         group_id=_consumer_group(),
         enable_auto_commit=False,
@@ -190,6 +194,7 @@ def _create_consumer() -> KafkaConsumer:
 def _create_producer() -> KafkaProducer:
     return KafkaProducer(
         bootstrap_servers=_bootstrap_servers(),
+        security_protocol=_kafka_security_protocol(),
         client_id=os.getenv("KAFKA_PRODUCER_CLIENT_ID", "inference-worker"),
         acks="all",
         enable_idempotence=True,

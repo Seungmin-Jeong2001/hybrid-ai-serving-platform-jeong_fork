@@ -8,3 +8,6 @@ spec:
     - parameter: bootstrapServers
       name: inference-config
       key: BOOTSTRAP_SERVERS
+    - parameter: tls
+      name: inference-config
+      key: KAFKA_TLS
