@@ -208,6 +208,10 @@ PRIVATE_CLOUD_PROXY_TLS_MODE="${PRIVATE_CLOUD_PROXY_TLS_MODE:-auto}"
 PRIVATE_CLOUD_DNS_TTL="${PRIVATE_CLOUD_DNS_TTL:-${HA_CLOUDFLARE_DNS_TTL:-120}}"
 PRIVATE_CLOUD_DNS_SERVICES="${PRIVATE_CLOUD_DNS_SERVICES:-${HA_DNS_SERVICES:-openstack,k8s,grafana,argocd,gitlab,harbor,minio,minio-console}}"
 PRIVATE_CLOUD_DNS_SSH_ALIASES="${PRIVATE_CLOUD_DNS_SSH_ALIASES:-${HA_DNS_SSH_ALIASES:-control-ssh,build-ssh,gpu-ssh,gitlab-ssh,harbor-ssh}}"
+PRIVATE_CLOUD_ASSIGN_FLOATING_IPS="${PRIVATE_CLOUD_ASSIGN_FLOATING_IPS:-true}"
+PRIVATE_CLOUD_INTERNAL_DNS_ENABLED="${PRIVATE_CLOUD_INTERNAL_DNS_ENABLED:-false}"
+PRIVATE_CLOUD_INTERNAL_DNS_ZONE="${PRIVATE_CLOUD_INTERNAL_DNS_ZONE:-internal.${PRIVATE_CLOUD_BASE_DOMAIN}}"
+PRIVATE_CLOUD_INTERNAL_DNS_RECORDS="${PRIVATE_CLOUD_INTERNAL_DNS_RECORDS:-}"
 PRIVATE_CLOUD_SSH_TUNNELS_ENABLED="${PRIVATE_CLOUD_SSH_TUNNELS_ENABLED:-true}"
 PRIVATE_CLOUD_SSH_TUNNEL_LISTEN_ADDRESS="${PRIVATE_CLOUD_SSH_TUNNEL_LISTEN_ADDRESS:-auto}"
 PRIVATE_CLOUD_SSH_CONTROL_PORT="${PRIVATE_CLOUD_SSH_CONTROL_PORT:-2201}"
@@ -1505,6 +1509,24 @@ optional_apply_phase_enabled() {
   esac
 }
 
+tf_bool_value() {
+  local name="$1"
+  local value="${2,,}"
+
+  case "${value}" in
+    true|1|yes|on)
+      printf 'true\n'
+      ;;
+    false|0|no|off)
+      printf 'false\n'
+      ;;
+    *)
+      printf '%s must be true or false; got: %s\n' "$name" "$2" >&2
+      return 2
+      ;;
+  esac
+}
+
 skip_phase() {
   local name="$1"
   local reason="$2"
@@ -2530,7 +2552,7 @@ detect_tailscale_ip() {
 }
 
 sync_cloudflare_dns() {
-  local tailscale_ip
+  local tailscale_ip internal_dns_enabled internal_dns_records
 
   if [[ -z "${CLOUDFLARE_API_TOKEN:-}" || -z "${CLOUDFLARE_ZONE_ID:-}" ]]; then
     log "skip Cloudflare DNS sync: CLOUDFLARE_API_TOKEN or CLOUDFLARE_ZONE_ID is missing"
@@ -2548,6 +2570,18 @@ sync_cloudflare_dns() {
   export PRIVATE_CLOUD_DNS_TTL
   export PRIVATE_CLOUD_DNS_SERVICES
   export PRIVATE_CLOUD_DNS_SSH_ALIASES
+  internal_dns_enabled="$(tf_bool_value PRIVATE_CLOUD_INTERNAL_DNS_ENABLED "${PRIVATE_CLOUD_INTERNAL_DNS_ENABLED}")"
+  export PRIVATE_CLOUD_INTERNAL_DNS_ENABLED="${internal_dns_enabled}"
+  export PRIVATE_CLOUD_INTERNAL_DNS_ZONE
+  if [[ "${internal_dns_enabled}" == "true" ]]; then
+    internal_dns_records="$(internal_dns_records_from_inventory || true)"
+    if [[ -z "${internal_dns_records}" ]]; then
+      log "warning: internal DNS is enabled, but no internal records are available"
+    fi
+    export PRIVATE_CLOUD_INTERNAL_DNS_RECORDS="${internal_dns_records}"
+  else
+    export PRIVATE_CLOUD_INTERNAL_DNS_RECORDS=""
+  fi
 
   python3 "${ROOT}/private/reverse-proxy/cloudflare_dns.py" --apply
   log "Cloudflare DNS records synced for ${PRIVATE_CLOUD_BASE_DOMAIN}"
@@ -2923,6 +2957,7 @@ terraform_apply() {
   local effective_control_plane_flavor effective_build_worker_flavor effective_gpu_worker_flavor effective_gitlab_flavor effective_harbor_flavor
   local key_pair_name
   local apply_prefix
+  local assign_floating_ips
   ensure_ssh_key
   cd "${ROOT}/private/openstack"
   rm -f backend.generated.tf backend.hcl private-cloud.auto.tfvars zz-local-devstack.auto.tfvars private-cloud.tfplan
@@ -2959,10 +2994,11 @@ terraform_apply() {
   public_network_id="$(lxc exec ha-openstack -- sudo -u stack -H bash -lc 'cd /opt/stack/devstack && set +u && source openrc admin admin >/dev/null && set -u && openstack network show public -f value -c id')"
   public_subnet_id="$(lxc exec ha-openstack -- sudo -u stack -H bash -lc 'cd /opt/stack/devstack && set +u && source openrc admin admin >/dev/null && set -u && openstack subnet list --network public --ip-version 4 -f value -c ID | head -n 1')"
   public_subnet_cidr="$(lxc exec ha-openstack -- sudo -u stack -H bash -lc "cd /opt/stack/devstack && set +u && source openrc admin admin >/dev/null && set -u && openstack subnet show '${public_subnet_id}' -f value -c cidr")"
+  assign_floating_ips="$(tf_bool_value PRIVATE_CLOUD_ASSIGN_FLOATING_IPS "${PRIVATE_CLOUD_ASSIGN_FLOATING_IPS}")"
   {
     printf 'external_network_id = "%s"\n' "$public_network_id"
     printf 'floating_ip_pool = "public"\n'
-    printf 'assign_floating_ips = true\n'
+    printf 'assign_floating_ips = %s\n' "$assign_floating_ips"
     printf 'install_node_dependencies = %s\n' "${effective_install_node_dependencies}"
     printf 'ssh_allowed_cidrs = ["%s"]\n' "$public_subnet_cidr"
     printf 'gitlab_http_allowed_cidrs = ["%s"]\n' "$public_subnet_cidr"
@@ -3246,6 +3282,51 @@ with open(sys.argv[1], "r", encoding="utf-8") as handle:
 nodes = data.get("harbor_nodes", {}).get("value", [])
 if nodes:
     print(nodes[0].get("private_ip") or nodes[0].get("floating_ip") or "")
+PY
+}
+
+internal_dns_records_from_inventory() {
+  if [[ -n "${PRIVATE_CLOUD_INTERNAL_DNS_RECORDS:-}" ]]; then
+    printf '%s\n' "${PRIVATE_CLOUD_INTERNAL_DNS_RECORDS}"
+    return 0
+  fi
+  ensure_tf_output_json_available || return 0
+
+  python3 - "${TF_OUTPUT_JSON}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    data = json.load(handle)
+
+roles = (
+    ("control", "control_plane_nodes"),
+    ("build", "build_worker_nodes"),
+    ("gpu", "gpu_worker_nodes"),
+    ("gitlab", "gitlab_nodes"),
+    ("harbor", "harbor_nodes"),
+)
+
+records = []
+first_ips = {}
+for label, key in roles:
+    nodes = data.get(key, {}).get("value", [])
+    if not nodes:
+        continue
+    ip = nodes[0].get("private_ip")
+    if not ip:
+        continue
+    first_ips[label] = ip
+    records.append(f"{label}={ip}")
+
+if "control" in first_ips:
+    records.append(f"k8s-api={first_ips['control']}")
+    records.append(f"nfs={first_ips['control']}")
+if "build" in first_ips:
+    records.append(f"minio={first_ips['build']}")
+    records.append(f"minio-console={first_ips['build']}")
+
+print(",".join(records))
 PY
 }
 

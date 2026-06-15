@@ -11,6 +11,10 @@ external_network_id = ""
 floating_ip_pool    = ""
 assign_floating_ips = false
 
+# GitHub Actions private-cloud apply defaults to true for backwards compatibility.
+# Set repository variable PRIVATE_CLOUD_ASSIGN_FLOATING_IPS=false after Tailscale
+# subnet routing and internal DNS are verified.
+
 key_pair_name  = "hybrid-ai-private-admin"
 ssh_public_key = "ssh-ed25519 REPLACE_WITH_PUBLIC_KEY_ONLY"
 
