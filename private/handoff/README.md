@@ -7,6 +7,7 @@
 | 항목 | 전달 대상 |
 | --- | --- |
 | `github-actions-env.md` | GitHub Actions controller, reusable executor, 변수와 secret 기준 |
+| `private-network-access.md` | FIP 제거 후 내부망, DNS, VM/K8s 통신 기준 |
 | `model-build-delivery.md` | GitLab Runner, Argo model build/package, Harbor, ECR 전달 흐름 |
 
 ## 현재 인프라 기준
