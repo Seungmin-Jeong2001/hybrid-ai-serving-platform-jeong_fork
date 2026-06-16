@@ -98,7 +98,7 @@ spec:
             mountPath: /workspace
 
     - name: train
-      runtimeClassName: nvidia
+      podSpecPatch: '{"runtimeClassName":"nvidia"}'
       nodeSelector:
         hybrid-ai.io/node-role: gpu-worker
       tolerations:
