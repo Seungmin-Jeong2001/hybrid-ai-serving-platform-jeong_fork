@@ -7,38 +7,33 @@ metadata:
     app.kubernetes.io/name: sre-monitoring
 spec:
   route:
-    receiver: slack-critical
-    groupBy: ['alertname', 'namespace']
+    receiver: infra-alerts
+    groupBy: ['alertname', 'namespace', 'severity']
     groupWait: 30s
     groupInterval: 5m
     repeatInterval: 4h
     routes:
-      - receiver: slack-warning
+      - receiver: slo-alerts
         matchers:
-          - name: severity
+          - name: team
             matchType: "="
-            value: warning
-      - receiver: slack-critical
-        matchers:
-          - name: severity
-            matchType: "="
-            value: critical
+            value: sre
   receivers:
-    - name: slack-critical
+    - name: infra-alerts
       slackConfigs:
         - apiURL:
             name: slack-webhooks
-            key: critical
-          channel: '#sre-alerts-critical'
-          title: '[CRITICAL] {{ .GroupLabels.alertname }}'
-          text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+            key: infra
+          channel: '#infra-alerts'
+          title: '{{ if eq .GroupLabels.severity "critical" }}[INFRA][CRITICAL]{{ else }}[INFRA][WARNING]{{ end }} {{ .GroupLabels.alertname }}'
+          text: '{{ range .Alerts }}{{ .Annotations.summary }}\n{{ .Annotations.description }}{{ end }}'
           sendResolved: true
-    - name: slack-warning
+    - name: slo-alerts
       slackConfigs:
         - apiURL:
             name: slack-webhooks
-            key: warning
-          channel: '#sre-alerts-warning'
-          title: '[WARNING] {{ .GroupLabels.alertname }}'
-          text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+            key: slo
+          channel: '#slo-alerts'
+          title: '{{ if eq .GroupLabels.severity "critical" }}[SLO][CRITICAL]{{ else }}[SLO][WARNING]{{ end }} {{ .GroupLabels.alertname }}'
+          text: '{{ range .Alerts }}{{ .Annotations.summary }}\n{{ .Annotations.description }}{{ end }}'
           sendResolved: true
