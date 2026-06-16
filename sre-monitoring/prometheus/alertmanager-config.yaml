@@ -1,0 +1,44 @@
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: sre-slack-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: sre-monitoring
+spec:
+  route:
+    receiver: slack-critical
+    groupBy: ['alertname', 'namespace']
+    groupWait: 30s
+    groupInterval: 5m
+    repeatInterval: 4h
+    routes:
+      - receiver: slack-warning
+        matchers:
+          - name: severity
+            matchType: "="
+            value: warning
+      - receiver: slack-critical
+        matchers:
+          - name: severity
+            matchType: "="
+            value: critical
+  receivers:
+    - name: slack-critical
+      slackConfigs:
+        - apiURL:
+            name: slack-webhooks
+            key: critical
+          channel: '#sre-alerts-critical'
+          title: '[CRITICAL] {{ .GroupLabels.alertname }}'
+          text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+          sendResolved: true
+    - name: slack-warning
+      slackConfigs:
+        - apiURL:
+            name: slack-webhooks
+            key: warning
+          channel: '#sre-alerts-warning'
+          title: '[WARNING] {{ .GroupLabels.alertname }}'
+          text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+          sendResolved: true

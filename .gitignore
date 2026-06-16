@@ -29,3 +29,6 @@ monitoring.yml
 # Local reverse proxy runtime overrides.
 **/Caddyfile.local
 **/caddy.env
+
+# Claude Code local settings
+.claude/settings.local.json
