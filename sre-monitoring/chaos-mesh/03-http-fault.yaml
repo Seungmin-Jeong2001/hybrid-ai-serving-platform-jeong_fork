@@ -47,8 +47,7 @@ spec:
     labelSelectors:
       app: inference-api
 
-  code: 500                    # HTTP 500 Internal Server Error
-  proportion: 5                # 5%의 요청에 오류 주입
+  code: 500
 
   port: 8080
   path: "/infer"
@@ -77,8 +76,7 @@ spec:
     labelSelectors:
       app: inference-api
 
-  delay: "4s"                  # 4초 지연 (P99 5s SLO 경계)
-  proportion: 20               # 20%의 요청에 지연 주입
+  delay: "4s"
 
   port: 8080
   path: "/infer"
