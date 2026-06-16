@@ -48,7 +48,7 @@ spec:
     correlation: "25"          # 패킷 간 지연 상관관계 (%)
     jitter: "50ms"             # 지연 변동폭 (150ms ~ 250ms 범위)
 
-  direction: both              # 인바운드 + 아웃바운드 모두 적용
+  direction: to
   duration: "5m"               # 5분간 지속 (결과 관찰 후 자동 복구)
 
 ---
