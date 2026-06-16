@@ -76,6 +76,8 @@ spec:
           alertmanagerSpec:
             nodeSelector:
               workload: general
+            alertmanagerConfigMatcherStrategy:
+              type: None
             resources:
               requests:
                 cpu: 100m
