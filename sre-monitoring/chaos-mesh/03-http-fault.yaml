@@ -43,15 +43,14 @@ spec:
 
   selector:
     namespaces:
-      - default                # 교체: api-server namespace
+      - inference
     labelSelectors:
-      app: api-server          # 교체: 실제 라벨
+      app: inference-api
 
-  code: 500                    # HTTP 500 Internal Server Error
-  proportion: 5                # 5%의 요청에 오류 주입
+  code: 500
 
-  port: 8080                   # 교체: api-server 실제 포트
-  path: "/predict"             # 교체: 실제 추론 엔드포인트
+  port: 8080
+  path: "/infer"
   method: POST
 
   duration: "5m"
@@ -73,15 +72,14 @@ spec:
 
   selector:
     namespaces:
-      - default
+      - inference
     labelSelectors:
-      app: api-server
+      app: inference-api
 
-  delay: "4s"                  # 4초 지연 (P99 5s SLO 경계)
-  proportion: 20               # 20%의 요청에 지연 주입
+  delay: "4s"
 
   port: 8080
-  path: "/predict"
+  path: "/infer"
   method: POST
 
   duration: "3m"

@@ -45,7 +45,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: chaos-bad-deploy-role
-  namespace: default          # TODO(통합): TARGET_NAMESPACE 값과 일치시킬 것
+  namespace: inference
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
@@ -59,7 +59,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: chaos-bad-deploy-binding
-  namespace: default          # TODO(통합): Role과 같은 namespace
+  namespace: inference
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -123,6 +123,6 @@ spec:
 
           env:
             - name: TARGET_NAMESPACE
-              value: "default"       # 교체: 실제 namespace
+              value: "inference"
             - name: TARGET_DEPLOYMENT
-              value: "api-server"    # 교체: 실제 deployment 이름
+              value: "inference-api"

@@ -124,7 +124,7 @@
     {
       "id": 11, "title": "Running Pods 수",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 9 },
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 9 },
       "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
       "targets": [{
         "expr": "sum(kube_pod_status_phase{phase=\"Running\",namespace=~\"$namespace\"})",
@@ -145,7 +145,7 @@
     {
       "id": 12, "title": "Pod 재시작 (5m)",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 9 },
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 9 },
       "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
       "targets": [{
         "expr": "sum(rate(kube_pod_container_status_restarts_total{namespace=~\"$namespace\"}[5m])) * 300",
@@ -168,7 +168,7 @@
     {
       "id": 13, "title": "Prometheus 수집 대상 상태",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 9 },
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 9 },
       "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
       "targets": [
         { "expr": "count(up == 1)", "legendFormat": "Up", "refId": "A" },
@@ -276,16 +276,39 @@
       "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
       "targets": [{
         "expr": "sre:deployment_availability:ratio{namespace=~\"$namespace\"} * 100",
-        "legendFormat": "{{ namespace }} / {{ deployment }}",
         "refId": "A",
-        "instant": true
+        "instant": true,
+        "format": "table"
       }],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": false,
+              "container": true,
+              "endpoint": true,
+              "instance": true,
+              "job": true,
+              "pod": true,
+              "service": true
+            },
+            "renameByName": {
+              "namespace": "네임스페이스",
+              "deployment": "Deployment",
+              "Value": "가용성 %"
+            }
+          }
+        }
+      ],
       "fieldConfig": {
-        "defaults": { "unit": "percent", "min": 0, "max": 100 },
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "custom": {}
+        },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "Value" },
+          { "matcher": { "id": "byName", "options": "가용성 %" },
             "properties": [
-              { "id": "displayName", "value": "가용성 %" },
               { "id": "thresholds", "value": { "mode": "absolute",
                 "steps": [{ "color": "red", "value": null },
                           { "color": "yellow", "value": 50 },
@@ -293,7 +316,8 @@
               { "id": "custom.displayMode", "value": "color-background" }
             ]}
         ]
-      }
+      },
+      "options": { "filterable": true }
     },
 
     { "type": "row", "title": "🤖 추론 서버 메트릭 (② 안예원 + ④ 최호성 연동 후 활성화)",
@@ -443,7 +467,7 @@
     {
       "id": 51, "title": "Chaos 테스트 중 에러율 추이",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 55 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 55 },
       "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
       "targets": [
         { "expr": "slo:http_error_rate:ratio_rate5m * 100",
@@ -455,16 +479,6 @@
         "defaults": { "unit": "percent", "custom": { "lineWidth": 2, "fillOpacity": 15 } }
       },
       "description": "Chaos Mesh 장애 주입 시 이 패널로 SLO 영향도를 측정합니다."
-    },
-
-    {
-      "id": 52, "title": "Chaos 테스트 체크리스트",
-      "type": "text",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 55 },
-      "options": {
-        "mode": "markdown",
-        "content": "## Chaos 시나리오 체크리스트\n\n| 시나리오 | 검증 항목 | 상태 |\n|---------|---------|------|\n| Pod 강제 종료 | 자동 재생성 + 알람 | ⬜ |\n| 네트워크 지연 주입 | Consumer Lag 변화 | ⬜ |\n| 트래픽 폭주 (k6) | HPA/KEDA 스케일링 | ⬜ |\n| 잘못된 이미지 배포 | ArgoCD 롤백 | ⬜ |\n\n**SLO 목표**: 99.9% 가용성\n\n**Error Budget 허용 다운타임**: 43분/월\n\n> Chaos 테스트 중 Error Budget 소진율을 반드시 모니터링하세요."
-      }
     }
 
   ],

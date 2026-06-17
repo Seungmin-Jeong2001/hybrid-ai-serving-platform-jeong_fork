@@ -31,11 +31,6 @@
 #   - Grafana: "Pod 재시작 현황" 패널 확인
 #   - Slack: #sre-alerts-critical 채널 알람 확인
 # ============================================================
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: chaos-testing
----
 # ──────────────────────────────────────────────────────────
 # [시나리오 1-A] API Server Pod 단일 종료
 # ④ 최호성 api-server 배포 후 네임스페이스/라벨 수정
@@ -48,21 +43,16 @@ metadata:
   annotations:
     description: "API Server Pod 단일 종료 — 자동 재생성 검증"
 spec:
-  action: pod-kill
-  mode: one                    # 한 번에 1개 Pod 종료
-  gracePeriod: 0               # 즉시 강제 종료 (SIGKILL)
+  action: pod-failure
+  mode: one
 
   selector:
     namespaces:
-      - default                # 교체: api-server가 배포된 실제 namespace
+      - inference
     labelSelectors:
-      app: api-server          # 교체: 실제 Pod 라벨
-      # 예시 (최호성 서비스): app: failure-prediction
+      app: inference-api
 
-  # 단발성 실행 (duration 없이)
-  # 주기적 실행 원할 경우 아래 주석 해제:
-  # scheduler:
-  #   cron: "@every 10m"
+  duration: "10m"
 
 ---
 # ──────────────────────────────────────────────────────────
@@ -77,14 +67,13 @@ metadata:
   annotations:
     description: "Inference Worker Pod 종료 — Kafka Consumer 재연결 + KEDA 스케일링 검증"
 spec:
-  action: pod-kill
+  action: pod-failure
   mode: one
-  gracePeriod: 0
 
   selector:
     namespaces:
-      - default                # 교체: 실제 namespace
+      - inference
     labelSelectors:
-      app: inference-worker    # 교체: 실제 라벨
+      app: inference-worker
 
-  # duration: 단발성 실행
+  duration: "10m"
