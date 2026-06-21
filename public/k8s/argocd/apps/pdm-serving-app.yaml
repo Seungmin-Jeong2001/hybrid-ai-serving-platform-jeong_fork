@@ -18,7 +18,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/Seungmin-Jeong2001/hybrid-ai-serving-platform.git
+    repoURL: https://github.com/SGS-Strategy/hybrid-ai-serving-platform.git
     targetRevision: main
     path: public/k8s/serving/predictive-model
   destination:
