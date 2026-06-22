@@ -63,15 +63,6 @@ jobs:
             printf '%s\n' "$TFVARS_CONTENT" > zz-secret.auto.tfvars
           fi
 
-      - name: Write VPN secret tfvars override
-        env:
-          VPN_TFVARS_CONTENT: ${{ secrets.PUBLIC_TERRAFORM_VPN_TFVARS }}
-        working-directory: public/terraform
-        run: |
-          if [[ -n "$VPN_TFVARS_CONTENT" ]]; then
-            printf '%s\n' "$VPN_TFVARS_CONTENT" > zzz-vpn.auto.tfvars
-          fi
-
       - name: Terraform fmt check
         working-directory: public/terraform
         run: terraform fmt -check
