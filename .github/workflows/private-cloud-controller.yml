@@ -142,7 +142,7 @@ jobs:
   apply-k8s:
     name: Kubernetes
     if: ${{ inputs.operation == 'apply' }}
-    needs: [vm-control-plane, vm-build-worker, vm-gpu-worker]
+    needs: [vm-control-plane, vm-build-worker, vm-gpu-worker, vm-harbor]
     uses: ./.github/workflows/private-cloud-remote.yml
     with:
       command: apply

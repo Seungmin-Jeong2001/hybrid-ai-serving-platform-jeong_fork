@@ -488,7 +488,10 @@ update_stdout, update_stderr, update_status = Open3.capture3(
   update_sql
 )
 abort(update_stderr.empty? ? 'failed to update root password' : update_stderr) unless update_status.success?
-abort('root user not found') if update_stdout.strip.empty?
+if update_stdout.lines.map(&:strip).none? { |line| line.match?(/\A[0-9]+\z/) }
+  puts 'root_user_absent=true'
+  exit 0
+end
 
 stored_stdout, stored_stderr, stored_status = Open3.capture3(
   'gitlab-psql',
@@ -498,7 +501,9 @@ stored_stdout, stored_stderr, stored_status = Open3.capture3(
   "SELECT encrypted_password FROM users WHERE username = 'root' LIMIT 1"
 )
 abort(stored_stderr.empty? ? 'failed to read root password hash' : stored_stderr) unless stored_status.success?
-abort('root password verification failed') unless BCrypt::Password.new(stored_stdout.strip) == password
+stored_hash = stored_stdout.strip
+abort('root password hash missing') if stored_hash.empty?
+abort('root password verification failed') unless BCrypt::Password.new(stored_hash) == password
 puts 'root_password_valid=true'
 RUBY
   docker exec gitlab rm -f "$container_root_password_file" >/dev/null 2>&1 || true
@@ -540,7 +545,10 @@ ensure_runtime_services() {
 }
 
 create_bootstrap_pat() {
-  docker exec -i -e HYBRID_AI_RUNNER_BOOTSTRAP_PAT="$bootstrap_pat" gitlab /opt/gitlab/embedded/bin/ruby -rjson -rdigest -rbase64 <<'RUBY'
+  docker exec -i \
+    -e HYBRID_AI_RUNNER_BOOTSTRAP_PAT="$bootstrap_pat" \
+    -e HYBRID_AI_GITLAB_ADMIN_USERNAME="${GITLAB_ADMIN_USERNAME:-root}" \
+    gitlab /opt/gitlab/embedded/bin/ruby -rjson -rdigest -rbase64 <<'RUBY'
 require 'open3'
 
 def gitlab_psql(sql)
@@ -554,11 +562,14 @@ def sql_quote(value)
 end
 
 token = ENV.fetch('HYBRID_AI_RUNNER_BOOTSTRAP_PAT')
+admin_username = ENV.fetch('HYBRID_AI_GITLAB_ADMIN_USERNAME', 'root')
 secrets = JSON.parse(File.read('/etc/gitlab/gitlab-secrets.json'))
 db_key_base = secrets.fetch('gitlab_rails').fetch('db_key_base')
 token_digest = Base64.strict_encode64(Digest::SHA256.digest(token + db_key_base[0..31]))
-user_fields = gitlab_psql("SELECT id || ',' || organization_id FROM users WHERE username = 'root' LIMIT 1")
-abort('root user not found') if user_fields.empty?
+user_fields = gitlab_psql("SELECT id || ',' || organization_id FROM users WHERE username = #{sql_quote(admin_username)} AND admin = TRUE LIMIT 1")
+user_fields = gitlab_psql("SELECT id || ',' || organization_id FROM users WHERE username = 'root' AND admin = TRUE LIMIT 1") if user_fields.empty?
+user_fields = gitlab_psql("SELECT id || ',' || organization_id FROM users WHERE admin = TRUE ORDER BY id LIMIT 1") if user_fields.empty?
+abort('admin user not found') if user_fields.empty?
 user_id, organization_id = user_fields.split(',', 2)
 name = "hybrid-ai-runner-bootstrap-#{Time.now.to_i}"
 scopes = "---\n- api\n- create_runner\n"

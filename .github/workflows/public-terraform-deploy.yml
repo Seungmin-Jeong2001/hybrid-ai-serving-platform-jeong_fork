@@ -9,6 +9,7 @@ on:
         default: apply
         type: choice
         options:
+          - plan
           - apply
           - destroy
 
@@ -62,6 +63,15 @@ jobs:
             printf '%s\n' "$TFVARS_CONTENT" > zz-secret.auto.tfvars
           fi
 
+      - name: Write VPN secret tfvars override
+        env:
+          VPN_TFVARS_CONTENT: ${{ secrets.PUBLIC_TERRAFORM_VPN_TFVARS }}
+        working-directory: public/terraform
+        run: |
+          if [[ -n "$VPN_TFVARS_CONTENT" ]]; then
+            printf '%s\n' "$VPN_TFVARS_CONTENT" > zzz-vpn.auto.tfvars
+          fi
+
       - name: Terraform fmt check
         working-directory: public/terraform
         run: terraform fmt -check
@@ -75,12 +85,12 @@ jobs:
         run: terraform validate
 
       - name: Terraform plan
-        if: ${{ inputs.action == 'apply' }}
+        if: ${{ inputs.action == 'apply' || inputs.action == 'plan' }}
         working-directory: public/terraform
         run: terraform plan -out=tfplan
 
       - name: Upload tfplan artifact
-        if: ${{ inputs.action == 'apply' }}
+        if: ${{ inputs.action == 'apply' || inputs.action == 'plan' }}
         uses: actions/upload-artifact@v4
         with:
           name: run-public-terraform-tfplan
@@ -93,6 +103,7 @@ jobs:
 
       - name: Resolve SSM bootstrap instance
         id: resolve_instance
+        if: ${{ inputs.action != 'plan' }}
         run: |
           RUNNING_INSTANCE_IDS=$(aws ec2 describe-instances \
             --region "${AWS_REGION}" \

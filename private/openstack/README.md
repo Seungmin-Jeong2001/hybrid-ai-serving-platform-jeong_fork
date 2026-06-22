@@ -2,6 +2,8 @@
 
 이 디렉터리는 Private Cloud Foundation의 OpenStack 리소스 기준을 관리합니다.
 
+상세 구현 설명은 [IMPLEMENTATION.md](./IMPLEMENTATION.md)를 참고합니다.
+
 ## 담당 범위
 
 - Private network/subnet/router 기준

@@ -2,7 +2,8 @@ runtimeClassName: nvidia
 migStrategy: none
 failOnInitError: true
 nodeSelector:
-  accelerator: nvidia
+  hybrid-ai.io/accelerator: nvidia
+  hybrid-ai.io/node-role: gpu-worker
 tolerations:
   - key: nvidia.com/gpu
     operator: Exists

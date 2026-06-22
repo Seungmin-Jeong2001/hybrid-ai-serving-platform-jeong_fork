@@ -186,6 +186,7 @@ GITLAB_RECREATE_FOR_IO_PROFILE="${GITLAB_RECREATE_FOR_IO_PROFILE:-true}"
 GITLAB_DOCKER_LOG_MAX_SIZE="${GITLAB_DOCKER_LOG_MAX_SIZE:-10m}"
 GITLAB_DOCKER_LOG_MAX_FILE="${GITLAB_DOCKER_LOG_MAX_FILE:-3}"
 HARBOR_INSTALL_ENABLED="${HARBOR_INSTALL_ENABLED:-true}"
+HARBOR_ADMIN_USERNAME="${HARBOR_ADMIN_USERNAME:-admin}"
 HARBOR_DOMAIN="${HARBOR_DOMAIN:-harbor.${PRIVATE_CLOUD_BASE_DOMAIN}}"
 HARBOR_EXTERNAL_URL="${HARBOR_EXTERNAL_URL:-https://${HARBOR_DOMAIN}}"
 HARBOR_VERSION="${HARBOR_VERSION:-v2.14.4}"
@@ -195,6 +196,8 @@ HARBOR_HTTP_PORT="${HARBOR_HTTP_PORT:-80}"
 HARBOR_UPSTREAM_PORT="${HARBOR_UPSTREAM_PORT:-18084}"
 HARBOR_BOOTSTRAP_WAIT_SECONDS="${HARBOR_BOOTSTRAP_WAIT_SECONDS:-1800}"
 HARBOR_ADMIN_PASSWORD="${HARBOR_ADMIN_PASSWORD:-}"
+HARBOR_CA_CERT="${HARBOR_CA_CERT:-}"
+GITLAB_PIPELINE_TRIGGER_TOKEN="${GITLAB_PIPELINE_TRIGGER_TOKEN:-}"
 MINIO_DOMAIN="${MINIO_DOMAIN:-minio.${PRIVATE_CLOUD_BASE_DOMAIN}}"
 MINIO_CONSOLE_DOMAIN="${MINIO_CONSOLE_DOMAIN:-minio-console.${PRIVATE_CLOUD_BASE_DOMAIN}}"
 MINIO_API_NODEPORT="${MINIO_API_NODEPORT:-30900}"
@@ -207,6 +210,10 @@ PRIVATE_CLOUD_PROXY_TLS_MODE="${PRIVATE_CLOUD_PROXY_TLS_MODE:-auto}"
 PRIVATE_CLOUD_DNS_TTL="${PRIVATE_CLOUD_DNS_TTL:-${HA_CLOUDFLARE_DNS_TTL:-120}}"
 PRIVATE_CLOUD_DNS_SERVICES="${PRIVATE_CLOUD_DNS_SERVICES:-${HA_DNS_SERVICES:-openstack,k8s,grafana,argocd,gitlab,harbor,minio,minio-console}}"
 PRIVATE_CLOUD_DNS_SSH_ALIASES="${PRIVATE_CLOUD_DNS_SSH_ALIASES:-${HA_DNS_SSH_ALIASES:-control-ssh,build-ssh,gpu-ssh,gitlab-ssh,harbor-ssh}}"
+PRIVATE_CLOUD_ASSIGN_FLOATING_IPS="${PRIVATE_CLOUD_ASSIGN_FLOATING_IPS:-true}"
+PRIVATE_CLOUD_INTERNAL_DNS_ENABLED="${PRIVATE_CLOUD_INTERNAL_DNS_ENABLED:-false}"
+PRIVATE_CLOUD_INTERNAL_DNS_ZONE="${PRIVATE_CLOUD_INTERNAL_DNS_ZONE:-internal.${PRIVATE_CLOUD_BASE_DOMAIN}}"
+PRIVATE_CLOUD_INTERNAL_DNS_RECORDS="${PRIVATE_CLOUD_INTERNAL_DNS_RECORDS:-}"
 PRIVATE_CLOUD_SSH_TUNNELS_ENABLED="${PRIVATE_CLOUD_SSH_TUNNELS_ENABLED:-true}"
 PRIVATE_CLOUD_SSH_TUNNEL_LISTEN_ADDRESS="${PRIVATE_CLOUD_SSH_TUNNEL_LISTEN_ADDRESS:-auto}"
 PRIVATE_CLOUD_SSH_CONTROL_PORT="${PRIVATE_CLOUD_SSH_CONTROL_PORT:-2201}"
@@ -1504,6 +1511,24 @@ optional_apply_phase_enabled() {
   esac
 }
 
+tf_bool_value() {
+  local name="$1"
+  local value="${2,,}"
+
+  case "${value}" in
+    true|1|yes|on)
+      printf 'true\n'
+      ;;
+    false|0|no|off)
+      printf 'false\n'
+      ;;
+    *)
+      printf '%s must be true or false; got: %s\n' "$name" "$2" >&2
+      return 2
+      ;;
+  esac
+}
+
 skip_phase() {
   local name="$1"
   local reason="$2"
@@ -1978,11 +2003,41 @@ flavor_value() {
 total_vcpus=0
 total_ram_mb=0
 total_disk_gb=0
+missing_disk_gb=0
 existing_vcpus=0
 existing_ram_mb=0
 existing_disk_gb=0
 summary=()
 existing_summary=()
+server_list_json="$(openstack server list --all-projects -f json -c Name -c Status -c Flavor)"
+server_list_names="$(python3 - "$server_list_json" <<'PY'
+import json
+import sys
+
+servers = json.loads(sys.argv[1] or "[]")
+skip_statuses = {"DELETED", "SOFT_DELETED"}
+for server in servers:
+    name = str(server.get("Name") or "")
+    status = str(server.get("Status") or "")
+    if not name:
+        continue
+    if status.upper() in skip_statuses:
+        continue
+    print(f"{name}\t{status}")
+PY
+)"
+
+server_exists() {
+  local target="$1"
+  local name status
+
+  while IFS=$'\t' read -r name status; do
+    [[ -n "$name" ]] || continue
+    [[ "$name" == "$target" ]] && return 0
+  done <<<"$server_list_names"
+  return 1
+}
+
 while [[ $# -gt 0 ]]; do
   role="$1"
   count="$2"
@@ -1995,10 +2050,19 @@ while [[ $# -gt 0 ]]; do
   role_vcpus=$((count * vcpus))
   role_ram_mb=$((count * ram_mb))
   role_disk_gb=$((count * disk_gb))
+  role_missing=0
+  for ((index = 1; index <= count; index += 1)); do
+    printf -v server_name "%s-%s-%02d" "$apply_prefix" "$role" "$index"
+    if ! server_exists "$server_name"; then
+      role_missing=$((role_missing + 1))
+    fi
+  done
+  role_missing_disk_gb=$((role_missing * disk_gb))
   total_vcpus=$((total_vcpus + role_vcpus))
   total_ram_mb=$((total_ram_mb + role_ram_mb))
   total_disk_gb=$((total_disk_gb + role_disk_gb))
-  summary+=("${role}: count=${count} flavor=${flavor} vcpus=${role_vcpus} ram_mb=${role_ram_mb} disk_gb=${role_disk_gb}")
+  missing_disk_gb=$((missing_disk_gb + role_missing_disk_gb))
+  summary+=("${role}: count=${count} missing=${role_missing} flavor=${flavor} vcpus=${role_vcpus} ram_mb=${role_ram_mb} disk_gb=${role_disk_gb} additional_disk_gb=${role_missing_disk_gb}")
 done
 
 while IFS=$'\t' read -r name status flavor; do
@@ -2011,13 +2075,12 @@ while IFS=$'\t' read -r name status flavor; do
   existing_disk_gb=$((existing_disk_gb + disk_gb))
   existing_summary+=("${name}: status=${status} flavor=${flavor} vcpus=${vcpus} ram_mb=${ram_mb} disk_gb=${disk_gb}")
 done < <(
-  openstack server list --all-projects -f json -c Name -c Status -c Flavor \
-    | python3 - "$apply_prefix" <<'PY'
+  python3 - "$apply_prefix" "$server_list_json" <<'PY'
 import json
 import sys
 
 prefix = sys.argv[1]
-servers = json.load(sys.stdin)
+servers = json.loads(sys.argv[2] or "[]")
 skip_statuses = {"DELETED", "SOFT_DELETED"}
 for server in servers:
     name = str(server.get("Name") or "")
@@ -2035,7 +2098,6 @@ PY
 
 total_after_vcpus=$((total_vcpus + existing_vcpus))
 total_after_ram_mb=$((total_ram_mb + existing_ram_mb))
-total_after_disk_gb=$((total_disk_gb + existing_disk_gb))
 
 echo "host capacity requested target stack: vcpus=${total_vcpus} ram_mb=${total_ram_mb} disk_gb=${total_disk_gb}"
 printf '  %s\n' "${summary[@]}"
@@ -2043,8 +2105,9 @@ echo "host capacity existing other stacks: vcpus=${existing_vcpus} ram_mb=${exis
 if [[ "${#existing_summary[@]}" -gt 0 ]]; then
   printf '  %s\n' "${existing_summary[@]}"
 fi
-echo "host capacity total after apply: vcpus=${total_after_vcpus}/${max_guest_vcpus} ram_mb=${total_after_ram_mb}/${max_guest_ram_mb} disk_gb=${total_after_disk_gb}/${max_guest_disk_gb}"
-if (( total_after_vcpus > max_guest_vcpus || total_after_ram_mb > max_guest_ram_mb || total_after_disk_gb > max_guest_disk_gb )); then
+echo "host capacity total after apply: vcpus=${total_after_vcpus}/${max_guest_vcpus} ram_mb=${total_after_ram_mb}/${max_guest_ram_mb}"
+echo "host capacity additional disk required: disk_gb=${missing_disk_gb}/${max_guest_disk_gb}"
+if (( total_after_vcpus > max_guest_vcpus || total_after_ram_mb > max_guest_ram_mb || missing_disk_gb > max_guest_disk_gb )); then
   cat >&2 <<EOF
 Host capacity preflight failed.
 Requested VM resources plus existing OpenStack VMs exceed the physical host budget for this local DevStack.
@@ -2529,7 +2592,7 @@ detect_tailscale_ip() {
 }
 
 sync_cloudflare_dns() {
-  local tailscale_ip
+  local tailscale_ip internal_dns_enabled internal_dns_records
 
   if [[ -z "${CLOUDFLARE_API_TOKEN:-}" || -z "${CLOUDFLARE_ZONE_ID:-}" ]]; then
     log "skip Cloudflare DNS sync: CLOUDFLARE_API_TOKEN or CLOUDFLARE_ZONE_ID is missing"
@@ -2547,6 +2610,18 @@ sync_cloudflare_dns() {
   export PRIVATE_CLOUD_DNS_TTL
   export PRIVATE_CLOUD_DNS_SERVICES
   export PRIVATE_CLOUD_DNS_SSH_ALIASES
+  internal_dns_enabled="$(tf_bool_value PRIVATE_CLOUD_INTERNAL_DNS_ENABLED "${PRIVATE_CLOUD_INTERNAL_DNS_ENABLED}")"
+  export PRIVATE_CLOUD_INTERNAL_DNS_ENABLED="${internal_dns_enabled}"
+  export PRIVATE_CLOUD_INTERNAL_DNS_ZONE
+  if [[ "${internal_dns_enabled}" == "true" ]]; then
+    internal_dns_records="$(internal_dns_records_from_inventory || true)"
+    if [[ -z "${internal_dns_records}" ]]; then
+      log "warning: internal DNS is enabled, but no internal records are available"
+    fi
+    export PRIVATE_CLOUD_INTERNAL_DNS_RECORDS="${internal_dns_records}"
+  else
+    export PRIVATE_CLOUD_INTERNAL_DNS_RECORDS=""
+  fi
 
   python3 "${ROOT}/private/reverse-proxy/cloudflare_dns.py" --apply
   log "Cloudflare DNS records synced for ${PRIVATE_CLOUD_BASE_DOMAIN}"
@@ -2922,6 +2997,7 @@ terraform_apply() {
   local effective_control_plane_flavor effective_build_worker_flavor effective_gpu_worker_flavor effective_gitlab_flavor effective_harbor_flavor
   local key_pair_name
   local apply_prefix
+  local assign_floating_ips
   ensure_ssh_key
   cd "${ROOT}/private/openstack"
   rm -f backend.generated.tf backend.hcl private-cloud.auto.tfvars zz-local-devstack.auto.tfvars private-cloud.tfplan
@@ -2958,10 +3034,11 @@ terraform_apply() {
   public_network_id="$(lxc exec ha-openstack -- sudo -u stack -H bash -lc 'cd /opt/stack/devstack && set +u && source openrc admin admin >/dev/null && set -u && openstack network show public -f value -c id')"
   public_subnet_id="$(lxc exec ha-openstack -- sudo -u stack -H bash -lc 'cd /opt/stack/devstack && set +u && source openrc admin admin >/dev/null && set -u && openstack subnet list --network public --ip-version 4 -f value -c ID | head -n 1')"
   public_subnet_cidr="$(lxc exec ha-openstack -- sudo -u stack -H bash -lc "cd /opt/stack/devstack && set +u && source openrc admin admin >/dev/null && set -u && openstack subnet show '${public_subnet_id}' -f value -c cidr")"
+  assign_floating_ips="$(tf_bool_value PRIVATE_CLOUD_ASSIGN_FLOATING_IPS "${PRIVATE_CLOUD_ASSIGN_FLOATING_IPS}")"
   {
     printf 'external_network_id = "%s"\n' "$public_network_id"
     printf 'floating_ip_pool = "public"\n'
-    printf 'assign_floating_ips = true\n'
+    printf 'assign_floating_ips = %s\n' "$assign_floating_ips"
     printf 'install_node_dependencies = %s\n' "${effective_install_node_dependencies}"
     printf 'ssh_allowed_cidrs = ["%s"]\n' "$public_subnet_cidr"
     printf 'gitlab_http_allowed_cidrs = ["%s"]\n' "$public_subnet_cidr"
@@ -3059,7 +3136,7 @@ import json
 import sys
 with open(sys.argv[1], "r", encoding="utf-8") as handle:
     data = json.load(handle)
-for key in ("control_plane_nodes", "build_worker_nodes", "gpu_worker_nodes"):
+for key in ("control_plane_nodes", "build_worker_nodes", "gpu_worker_nodes", "harbor_nodes"):
     for node in data.get(key, {}).get("value", []):
         ip = node.get("private_ip") or node.get("floating_ip")
         if ip:
@@ -3248,6 +3325,51 @@ if nodes:
 PY
 }
 
+internal_dns_records_from_inventory() {
+  if [[ -n "${PRIVATE_CLOUD_INTERNAL_DNS_RECORDS:-}" ]]; then
+    printf '%s\n' "${PRIVATE_CLOUD_INTERNAL_DNS_RECORDS}"
+    return 0
+  fi
+  ensure_tf_output_json_available || return 0
+
+  python3 - "${TF_OUTPUT_JSON}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    data = json.load(handle)
+
+roles = (
+    ("control", "control_plane_nodes"),
+    ("build", "build_worker_nodes"),
+    ("gpu", "gpu_worker_nodes"),
+    ("gitlab", "gitlab_nodes"),
+    ("harbor", "harbor_nodes"),
+)
+
+records = []
+first_ips = {}
+for label, key in roles:
+    nodes = data.get(key, {}).get("value", [])
+    if not nodes:
+        continue
+    ip = nodes[0].get("private_ip")
+    if not ip:
+        continue
+    first_ips[label] = ip
+    records.append(f"{label}={ip}")
+
+if "control" in first_ips:
+    records.append(f"k8s-api={first_ips['control']}")
+    records.append(f"nfs={first_ips['control']}")
+if "build" in first_ips:
+    records.append(f"minio={first_ips['build']}")
+    records.append(f"minio-console={first_ips['build']}")
+
+print(",".join(records))
+PY
+}
+
 start_kubectl_tunnel() {
   local first_cp_ip
   ensure_openstack_private_route
@@ -3279,6 +3401,22 @@ bootstrap_k8s() {
   kubectl -n kube-system rollout status deployment/calico-kube-controllers --timeout=600s
   kubectl -n kube-system rollout status deployment/coredns --timeout=600s
   kubectl apply -k "${ROOT}/private/kubernetes"
+  apply_gpu_worker_resources
+}
+
+apply_gpu_worker_resources() {
+  local gpu_node_count
+  gpu_node_count="$(kubectl get nodes -l hybrid-ai.io/accelerator=nvidia --no-headers 2>/dev/null | wc -l | tr -d '[:space:]')"
+  if [[ "${gpu_node_count}" == "0" ]]; then
+    log "skipping GPU worker resources; no NVIDIA GPU node labels found"
+    return 0
+  fi
+
+  kubectl apply -k "${ROOT}/private/gpu-worker"
+  kubectl -n kube-system rollout status daemonset/nvidia-device-plugin-daemonset --timeout=600s
+  kubectl -n kube-system rollout status daemonset/gpu-image-prepuller --timeout=900s
+  kubectl get nodes -l hybrid-ai.io/accelerator=nvidia \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" nvidia.com/gpu capacity="}{.status.capacity.nvidia\.com/gpu}{" allocatable="}{.status.allocatable.nvidia\.com/gpu}{"\n"}{end}'
 }
 
 storage_inputs_env() {
@@ -3691,6 +3829,7 @@ setup_harbor() {
   write_systemd_env_line "${harbor_env_file}" HARBOR_DOMAIN "${HARBOR_DOMAIN}"
   write_systemd_env_line "${harbor_env_file}" HARBOR_EXTERNAL_URL "${HARBOR_EXTERNAL_URL}"
   write_systemd_env_line "${harbor_env_file}" HARBOR_VERSION "${HARBOR_VERSION}"
+  write_systemd_env_line "${harbor_env_file}" HARBOR_ADMIN_USERNAME "${HARBOR_ADMIN_USERNAME}"
   write_systemd_env_line "${harbor_env_file}" HARBOR_PROJECTS "${HARBOR_PROJECTS}"
   write_systemd_env_line "${harbor_env_file}" HARBOR_ROBOT_NAME "${HARBOR_ROBOT_NAME}"
   write_systemd_env_line "${harbor_env_file}" HARBOR_HTTP_PORT "${HARBOR_HTTP_PORT}"
@@ -3795,11 +3934,58 @@ print(f"HARBOR_ROBOT_TOKEN={shlex.quote(token)}")
 PY
 }
 
+apply_ca_secret() {
+  local namespace="$1"
+  local secret_name="$2"
+  local cert_value="$3"
+  [[ -n "${cert_value}" ]] || return 0
+
+  local cert_file
+  cert_file="$(mktemp)"
+  if [[ -f "${cert_value}" ]]; then
+    cp "${cert_value}" "${cert_file}"
+  else
+    printf '%s\n' "${cert_value}" >"${cert_file}"
+  fi
+
+  kubectl create namespace "${namespace}" --dry-run=client -o yaml | kubectl apply -f -
+  kubectl -n "${namespace}" create secret generic "${secret_name}" \
+    --from-file=ca.crt="${cert_file}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+  rm -f "${cert_file}"
+}
+
+apply_literal_secret() {
+  local namespace="$1"
+  local secret_name="$2"
+  local key="$3"
+  local value="$4"
+  [[ -n "${value}" ]] || return 0
+
+  kubectl create namespace "${namespace}" --dry-run=client -o yaml | kubectl apply -f -
+  kubectl -n "${namespace}" create secret generic "${secret_name}" \
+    --from-literal="${key}=${value}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+}
+
+apply_harbor_registry_secret() {
+  local namespace="$1"
+  local secret_name="$2"
+
+  kubectl create namespace "${namespace}" --dry-run=client -o yaml | kubectl apply -f -
+  kubectl -n "${namespace}" create secret docker-registry "${secret_name}" \
+    --docker-server="${HARBOR_REGISTRY_SERVER}" \
+    --docker-username="${HARBOR_ROBOT_USERNAME}" \
+    --docker-password="${HARBOR_ROBOT_TOKEN}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+}
+
 setup_model_build_platform() {
   ensure_openstack_private_route
   start_kubectl_tunnel
   export KUBECONFIG="${KUBECONFIG_PATH}"
   kubectl apply -k "${ROOT}/private/kubernetes"
+  apply_gpu_worker_resources
 
   # Create the Harbor kaniko pull/push secret from credentials saved by the
   # registry phase (setup_harbor). Done here because this is where the cluster
@@ -3817,15 +4003,18 @@ setup_model_build_platform() {
   if [[ -f "${robot_env}" ]]; then
     # shellcheck disable=SC1090
     source "${robot_env}"
-    kubectl create namespace model-build --dry-run=client -o yaml | kubectl apply -f -
-    kubectl -n model-build create secret docker-registry harbor-kaniko-push \
-      --docker-server="${HARBOR_REGISTRY_SERVER}" \
-      --docker-username="${HARBOR_ROBOT_USERNAME}" \
-      --docker-password="${HARBOR_ROBOT_TOKEN}" \
-      --dry-run=client -o yaml | kubectl apply -f -
+    apply_harbor_registry_secret model-build harbor-kaniko-push
+    apply_harbor_registry_secret default harbor-docker-secret
+    apply_harbor_registry_secret default harbor-secret
   else
     echo "warning: harbor robot credentials not found (${robot_env}); skipping harbor-kaniko-push secret" >&2
   fi
+  apply_ca_secret model-build harbor-tls-ca "${HARBOR_CA_CERT}"
+  apply_ca_secret model-build gitlab-tls-ca "${HARBOR_CA_CERT}"
+  apply_ca_secret default harbor-tls-ca "${HARBOR_CA_CERT}"
+  apply_ca_secret default gitlab-tls-ca "${HARBOR_CA_CERT}"
+  apply_literal_secret model-build gitlab-pipeline-trigger token "${GITLAB_PIPELINE_TRIGGER_TOKEN}"
+  apply_literal_secret default gitlab-pipeline-trigger token "${GITLAB_PIPELINE_TRIGGER_TOKEN}"
   if [[ "${ARGO_WORKFLOWS_INSTALL_ENABLED}" == "true" ]]; then
     kubectl create namespace argo --dry-run=client -o yaml | kubectl apply -f -
     kubectl apply -n argo -f "${ARGO_WORKFLOWS_INSTALL_MANIFEST}"

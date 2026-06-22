@@ -24,6 +24,43 @@ upsert합니다.
 - `openstack`, `k8s`, `grafana`, `argocd`, `gitlab`, `harbor`, `minio`, `minio-console` CNAME -> `ssh.<base-domain>`
 - `control-ssh`, `build-ssh`, `gpu-ssh`, `gitlab-ssh`, `harbor-ssh` CNAME -> `ssh.<base-domain>`
 
+기존 서비스 URL은 유지합니다:
+
+```text
+openstack.<base-domain>
+gitlab.<base-domain>
+harbor.<base-domain>
+minio.<base-domain>
+minio-console.<base-domain>
+```
+
+관리/내부 자동화용 private IP 이름은 별도 internal DNS로 추가할 수 있습니다.
+
+```text
+PRIVATE_CLOUD_INTERNAL_DNS_ENABLED=true
+PRIVATE_CLOUD_INTERNAL_DNS_ZONE=internal.<base-domain>
+```
+
+이 값을 켜면 Terraform output의 private IP 기준으로 아래 A record를 생성합니다.
+
+```text
+control.internal.<base-domain> -> control-plane private IP
+build.internal.<base-domain> -> build-worker private IP
+gpu.internal.<base-domain> -> gpu-worker private IP
+gitlab.internal.<base-domain> -> GitLab VM private IP
+harbor.internal.<base-domain> -> Harbor VM private IP
+k8s-api.internal.<base-domain> -> control-plane private IP
+nfs.internal.<base-domain> -> control-plane private IP
+minio.internal.<base-domain> -> build-worker private IP
+minio-console.internal.<base-domain> -> build-worker private IP
+```
+
+수동 지정이 필요하면 `PRIVATE_CLOUD_INTERNAL_DNS_RECORDS`에 `name=ip` 목록을 넣습니다.
+
+```text
+PRIVATE_CLOUD_INTERNAL_DNS_RECORDS=control=10.42.0.88,build=10.42.0.5,gpu=10.42.0.11
+```
+
 SSH는 DNS 이름만으로 VM을 구분할 수 없어서 포트별 TCP tunnel을 같이 사용합니다.
 기본 Caddy는 HTTP/S reverse proxy만 담당하고, SSH tunnel은 LXD proxy device가
 host TCP port를 OpenStack VM의 SSH port로 전달합니다.

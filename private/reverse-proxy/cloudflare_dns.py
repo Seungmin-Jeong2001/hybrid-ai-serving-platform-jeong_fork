@@ -35,6 +35,17 @@ def first_env(*names: str, default: str | None = None) -> str:
     raise SystemExit(f"missing env: {' or '.join(names)}")
 
 
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name, "").strip().lower()
+    if not value:
+        return default
+    if value in {"true", "1", "yes", "on"}:
+        return True
+    if value in {"false", "0", "no", "off"}:
+        return False
+    raise SystemExit(f"{name} must be true or false; got: {value}")
+
+
 def api_request(method: str, path: str, token: str, payload: dict | None = None) -> dict:
     body = None
     headers = {
@@ -125,6 +136,7 @@ def desired_records(
     ttl: int,
     services: tuple[str, ...],
     ssh_aliases: tuple[str, ...],
+    internal_records: tuple[dict, ...] = (),
 ) -> list[dict]:
     ipaddress.ip_address(tailscale_ip)
     base = base_domain.rstrip(".")
@@ -137,6 +149,7 @@ def desired_records(
     for alias in ssh_aliases:
         if alias != "ssh":
             records.append(record_payload("CNAME", f"{alias}.{base}", ssh_name, ttl))
+    records.extend(internal_records)
 
     deduplicated = []
     seen = set()
@@ -175,6 +188,31 @@ def parse_ssh_aliases(raw_aliases: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(aliases))
 
 
+def parse_internal_records(raw_records: str, zone: str, ttl: int) -> tuple[dict, ...]:
+    records = []
+    seen = set()
+    base = zone.rstrip(".")
+    for item in raw_records.replace(";", ",").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise SystemExit(f"internal DNS record must use name=ip format: {item}")
+        name, ip = item.split("=", 1)
+        name = name.strip().rstrip(".")
+        ip = ip.strip()
+        if not name or not ip:
+            raise SystemExit(f"internal DNS record must use name=ip format: {item}")
+        ipaddress.ip_address(ip)
+        fqdn = name if name.endswith(f".{base}") or "." in name else f"{name}.{base}"
+        key = ("A", fqdn)
+        if key in seen:
+            continue
+        seen.add(key)
+        records.append(record_payload("A", fqdn, ip, ttl))
+    return tuple(records)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="apply changes to Cloudflare")
@@ -206,6 +244,19 @@ def main() -> int:
     ttl = int(first_env("PRIVATE_CLOUD_DNS_TTL", "HA_CLOUDFLARE_DNS_TTL", default="120"))
     services = parse_services(args.services)
     ssh_aliases = parse_ssh_aliases(args.ssh_aliases)
+    internal_enabled = env_bool("PRIVATE_CLOUD_INTERNAL_DNS_ENABLED", default=False)
+    internal_zone = first_env(
+        "PRIVATE_CLOUD_INTERNAL_DNS_ZONE",
+        "HA_INTERNAL_DNS_ZONE",
+        default=f"internal.{base_domain}",
+    )
+    internal_records = ()
+    if internal_enabled:
+        internal_records = parse_internal_records(
+            os.environ.get("PRIVATE_CLOUD_INTERNAL_DNS_RECORDS", ""),
+            internal_zone,
+            ttl,
+        )
 
     operation = "delete" if args.delete else "upsert"
     mode = "apply" if args.apply else "dry-run"
@@ -213,8 +264,10 @@ def main() -> int:
     print(f"operation: {operation}")
     print(f"zone: {zone_id}")
     print(f"base domain: {base_domain}")
+    if internal_enabled:
+        print(f"internal DNS zone: {internal_zone}")
 
-    for payload in desired_records(base_domain, tailscale_ip, ttl, services, ssh_aliases):
+    for payload in desired_records(base_domain, tailscale_ip, ttl, services, ssh_aliases, internal_records):
         if args.delete:
             delete_record(zone_id, token, payload, args.apply)
         else:

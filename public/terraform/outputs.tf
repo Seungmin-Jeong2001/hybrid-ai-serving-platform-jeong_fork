@@ -177,6 +177,33 @@ output "private_hosted_zone_id" {
   value       = aws_route53_zone.private.zone_id
 }
 
+# Bastion(strongSwan) 자동 설정용 — bh render 가 terraform output -json 으로 소비
+output "vpn_tunnel_addresses" {
+  description = "AWS VPN tunnel outside addresses keyed by site name"
+  value = {
+    for k, vpn in aws_vpn_connection.sites : k => {
+      tunnel1 = vpn.tunnel1_address
+      tunnel2 = vpn.tunnel2_address
+    }
+  }
+}
+
+output "vpn_tunnel_preshared_keys" {
+  description = "AWS VPN tunnel pre-shared keys keyed by site name (ipsec.secrets 생성용)"
+  sensitive   = true
+  value = {
+    for k, vpn in aws_vpn_connection.sites : k => {
+      tunnel1 = vpn.tunnel1_preshared_key
+      tunnel2 = vpn.tunnel2_preshared_key
+    }
+  }
+}
+
+output "vpn_local_vpc_cidr" {
+  description = "AWS VPC CIDR (strongSwan rightsubnet 용)"
+  value       = var.vpc_cidr
+}
+
 # Route 53 Resolver outputs
 # 비활성화됨 - route53_resolver.tf 참고
 # output "inbound_resolver_ips" {

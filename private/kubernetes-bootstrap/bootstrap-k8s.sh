@@ -163,6 +163,7 @@ for output_name, role in (
     ("control_plane_nodes", "control-plane"),
     ("build_worker_nodes", "build-worker"),
     ("gpu_worker_nodes", "gpu-worker"),
+    ("harbor_nodes", "harbor"),
 ):
     for node in nodes(output_name):
         ip = target_ip(node)
@@ -398,6 +399,34 @@ apt_get install -y -qq apt-transport-https ca-certificates curl gpg containerd
 mkdir -p /etc/containerd
 containerd config default >/etc/containerd/config.toml
 sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml || true
+if command -v nvidia-container-runtime >/dev/null 2>&1; then
+  mkdir -p /etc/containerd/conf.d
+  if grep -q 'io.containerd.cri.v1.runtime' /etc/containerd/config.toml; then
+    cat >/etc/containerd/conf.d/99-nvidia.toml <<'EOF'
+version = 3
+
+[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.nvidia]
+  runtime_type = "io.containerd.runc.v2"
+  privileged_without_host_devices = false
+
+  [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.nvidia.options]
+    BinaryName = "/usr/bin/nvidia-container-runtime"
+    SystemdCgroup = true
+EOF
+  else
+    cat >/etc/containerd/conf.d/99-nvidia.toml <<'EOF'
+version = 2
+
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.nvidia]
+  runtime_type = "io.containerd.runc.v2"
+  privileged_without_host_devices = false
+
+  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.nvidia.options]
+    BinaryName = "/usr/bin/nvidia-container-runtime"
+    SystemdCgroup = true
+EOF
+  fi
+fi
 systemctl enable --now containerd
 systemctl restart containerd
 
@@ -736,6 +765,9 @@ label_nodes() {
         ssh_node "$host" "sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf label node '${NODE_NAMES[$index]}' hybrid-ai.io/node-role=gpu-worker hybrid-ai.io/accelerator=nvidia node-role.kubernetes.io/gpu-worker=true --overwrite >/dev/null"
         ssh_node "$host" "sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf taint node '${NODE_NAMES[$index]}' nvidia.com/gpu=true:NoSchedule --overwrite >/dev/null"
         ;;
+      harbor)
+        ssh_node "$host" "sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf label node '${NODE_NAMES[$index]}' hybrid-ai.io/node-role=harbor node-role.kubernetes.io/harbor=true --overwrite >/dev/null"
+        ;;
     esac
   done
 }
@@ -795,7 +827,7 @@ wait_for_kubernetes() {
 
   wait_for_kubernetes_api "$host"
   ssh_node "$host" 'sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf wait --for=condition=Ready nodes --all --timeout=300s'
-  ssh_node "$host" 'if sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf get pods -n kube-system --no-headers 2>/dev/null | grep -q .; then sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf wait --for=condition=Ready pods --all -n kube-system --timeout=300s; fi'
+  ssh_node "$host" 'running_pods="$(sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf get pods -n kube-system --field-selector=status.phase=Running -o name 2>/dev/null || true)"; if [[ -n "$running_pods" ]]; then sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf wait --for=condition=Ready -n kube-system --timeout=300s $running_pods; fi'
 }
 
 wait_for_kubernetes_api() {
@@ -856,7 +888,7 @@ main() {
       control-plane)
         needs_control_plane_join=1
         ;;
-      build-worker|gpu-worker)
+      build-worker|gpu-worker|harbor)
         needs_worker_join=1
         ;;
     esac
@@ -885,7 +917,7 @@ main() {
   for index in "${!NODE_ROLES[@]}"; do
     [[ "$index" != "$first_index" ]] || continue
     case "${NODE_ROLES[$index]}" in
-      build-worker|gpu-worker)
+      build-worker|gpu-worker|harbor)
         ( join_k8s_worker_index "$index" "$server_target_ip" "$worker_join_command" ) &
         worker_pids+=("$!")
         ;;
