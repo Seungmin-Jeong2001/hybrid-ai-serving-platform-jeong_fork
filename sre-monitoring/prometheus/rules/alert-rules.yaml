@@ -267,32 +267,32 @@ spec:
     #         description: "DLQ 발생률이 1% SLO를 초과했습니다."
 
     # ============================================================
-    # [② 안예원 + ④ 최호성 완성 후 주석 해제] HTTP / 추론 알림
+    # HTTP / 추론 알림 — Istio Ambient Mode 메트릭 기반
     # ============================================================
-    # - name: inference.alerts
-    #   rules:
-    #
-    #     - alert: HighErrorRate5xx
-    #       expr: |
-    #         slo:http_error_rate:ratio_rate5m > 0.05
-    #       for: 5m
-    #       labels:
-    #         severity: critical
-    #         plane: PUBLIC
-    #       annotations:
-    #         summary: "5xx 에러율 높음 ({{ $value | humanizePercentage }})"
-    #         description: "추론 서버 5xx 에러율이 5% SLO를 초과했습니다."
-    #
-    #     - alert: InferenceLatencyHigh
-    #       expr: |
-    #         slo:http_latency_p99:5m > 5
-    #       for: 5m
-    #       labels:
-    #         severity: warning
-    #         plane: PUBLIC
-    #       annotations:
-    #         summary: "P99 레이턴시 높음 ({{ $value | printf \"%.2f\" }}s)"
-    #         description: "추론 P99 레이턴시가 5s SLO를 초과했습니다."
+    - name: inference.alerts
+      rules:
+
+        - alert: HighErrorRate5xx
+          expr: |
+            slo:http_error_rate:ratio_rate5m > 0.05
+          for: 5m
+          labels:
+            severity: critical
+            plane: PUBLIC
+          annotations:
+            summary: "5xx 에러율 높음 ({{ $value | humanizePercentage }})"
+            description: "추론 서버 5xx 에러율이 5% SLO를 초과했습니다."
+
+        - alert: InferenceLatencyHigh
+          expr: |
+            slo:http_latency_p99:5m > 5
+          for: 5m
+          labels:
+            severity: warning
+            plane: PUBLIC
+          annotations:
+            summary: "P99 레이턴시 높음 ({{ $value | printf \"%.2f\" }}s)"
+            description: "추론 P99 레이턴시가 5s SLO를 초과했습니다."
 
     # ============================================================
     # [③ 정승민 완성 후 주석 해제] ArgoCD 배포 알림

@@ -87,46 +87,47 @@ spec:
             )
 
     # ============================================================
-    # HTTP 기반 SLO
-    # [② 안예원 BentoML + ④ 최호성 KServe 배포 완료 후 활성화]
+    # HTTP 기반 SLO — Istio Ambient Mode 메트릭 기반
+    # inference 네임스페이스: istio.io/dataplane-mode: ambient 적용
     # ============================================================
     - name: slo.http
       interval: 30s
       rules:
 
-        # TODO(통합 #1): [② 안예원 + ④ 최호성 완성 후] vector(0) → 아래 주석 표현식으로 교체
+        # inference-api 5xx 에러율 (Istio istio_requests_total 기반)
         - record: slo:http_error_rate:ratio_rate5m
-          expr: vector(0)
-          labels:
-            note: "placeholder"
+          expr: |
+            sum(rate(istio_requests_total{
+              reporter="destination",
+              response_code=~"5..",
+              destination_service=~"inference-api.*"
+            }[5m]))
+            /
+            clamp_min(
+              sum(rate(istio_requests_total{
+                reporter="destination",
+                destination_service=~"inference-api.*"
+              }[5m])),
+              1
+            )
 
-        # BentoML 연동 후 아래로 교체:
-        # - record: slo:http_error_rate:ratio_rate5m
-        #   expr: |
-        #     sum(rate(bentoml_request_total{http_response_code=~"5.."}[5m]))
-        #     /
-        #     sum(rate(bentoml_request_total[5m]))
-
-        # TODO(통합 #1): [② 안예원 + ④ 최호성 완성 후] vector(0) → 아래 주석 표현식으로 교체
+        # inference-api P99 레이턴시 (Istio 히스토그램 기반, 초 단위)
         - record: slo:http_latency_p99:5m
-          expr: vector(0)
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(istio_request_duration_milliseconds_bucket{
+                reporter="destination",
+                destination_service=~"inference-api.*"
+              }[5m])) by (le)
+            ) / 1000
+
+        # HTTP 기반 가용성 SLO (pod-based SLO 대체)
+        - record: slo:service_availability:ratio
+          expr: |
+            1 - slo:http_error_rate:ratio_rate5m
           labels:
-            note: "placeholder"
-
-        # BentoML 연동 후 아래로 교체:
-        # - record: slo:http_latency_p99:5m
-        #   expr: |
-        #     histogram_quantile(0.99,
-        #       sum(rate(bentoml_request_duration_seconds_bucket[5m])) by (le)
-        #     )
-
-        # HTTP 기반 가용성 SLO (연동 후 위 pod-based SLO 대체)
-        # - record: slo:service_availability:ratio
-        #   expr: |
-        #     1 - slo:http_error_rate:ratio_rate5m
-        #   labels:
-        #     slo: "availability"
-        #     version: "v2-http-based"
+            slo: "availability"
+            version: "v2-http-based"
 
     # ============================================================
     # Kafka / DLQ SLO
