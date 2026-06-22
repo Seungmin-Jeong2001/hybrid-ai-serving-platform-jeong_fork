@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: EventSource
+metadata:
+  name: minio-event-source
+  namespace: argo-events
+  labels:
+    app.kubernetes.io/name: minio-event-source
+    app.kubernetes.io/part-of: hybrid-ai-serving-platform
+spec:
+  serviceAccountName: argo-events-sa
+
+  minio:
+    dataset-success:
+      endpoint: 10.42.0.88:30900
+      insecure: true
+      bucket:
+        name: datasets
+      events:
+        - s3:ObjectCreated:Put
+        - s3:ObjectCreated:Post
+        - s3:ObjectCreated:CompleteMultipartUpload
+      filter:
+        prefix: raw-data/
+        suffix: /_SUCCESS
+      accessKey:
+        name: minio-secret
+        key: accessKey
+      secretKey:
+        name: minio-secret
+        key: secretKey

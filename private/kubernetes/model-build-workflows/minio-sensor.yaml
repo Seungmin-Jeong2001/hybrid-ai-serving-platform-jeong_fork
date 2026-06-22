@@ -1,0 +1,50 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: minio-sensor
+  namespace: argo-events
+  labels:
+    app.kubernetes.io/name: minio-sensor
+    app.kubernetes.io/part-of: hybrid-ai-serving-platform
+spec:
+  eventBusName: default
+  template:
+    serviceAccountName: argo-events-sa
+
+  dependencies:
+    - name: minio-dep
+      eventSourceName: minio-event-source
+      eventName: raw-data-upload
+
+  triggers:
+    - template:
+        name: minio-trigger
+        argoWorkflow:
+          operation: submit
+          group: argoproj.io
+          version: v1alpha1
+          kind: Workflow
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: model-build-job-
+                namespace: model-build
+                labels:
+                  app.kubernetes.io/name: model-build-job
+                  app.kubernetes.io/part-of: hybrid-ai-serving-platform
+                  triggered-by: minio
+              spec:
+                workflowTemplateRef:
+                  name: model-build-job
+                arguments:
+                  parameters:
+                    - name: image_tag
+                      value: raw-data%2Fdev%2F_SUCCESS
+          parameters:
+            - src:
+                dependencyName: minio-dep
+                dataKey: body.Records.0.s3.object.key
+              dest: spec.arguments.parameters.0.value
+              operation: overwrite

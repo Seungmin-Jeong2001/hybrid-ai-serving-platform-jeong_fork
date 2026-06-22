@@ -3,3 +3,6 @@ kind: Kustomization
 resources:
   - rbac.yaml
   - workflowtemplates.yaml
+  - minio-event-sensor.yaml
+  - minio-sensor.yaml
+  - eventbus.yaml

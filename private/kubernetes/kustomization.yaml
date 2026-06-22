@@ -6,3 +6,4 @@ resources:
   - resourcequotas.yaml
   - rbac.yaml
   - networkpolicies.yaml
+  - model-build-workflow.yaml
