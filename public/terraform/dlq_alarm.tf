@@ -157,7 +157,6 @@ resource "aws_lambda_function" "dlq_alarm" {
       PROJECT_NAME          = var.project_name
       ENVIRONMENT           = var.environment != "" ? var.environment : "public"
       DLQ_TOPIC_NAME        = var.dlq_alert_topic_name
-      AWS_REGION            = var.aws_region
       EKS_CLUSTER_NAME      = aws_eks_cluster.main.name
       EKS_NAMESPACE         = "inference"
       WORKER_SELECTOR       = "app=inference-worker"
