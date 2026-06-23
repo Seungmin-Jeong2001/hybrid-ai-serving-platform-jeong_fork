@@ -11,7 +11,7 @@ metadata:
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
     alb.ingress.kubernetes.io/ssl-redirect: '443'
     alb.ingress.kubernetes.io/certificate-arn: 
-    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    
     alb.ingress.kubernetes.io/success-codes: "200"
     alb.ingress.kubernetes.io/inbound-cidrs: 10.0.0.0/16,192.168.0.0/24
     # IngressGroup: unify Ingress resources from multiple namespaces behind one ALB.
