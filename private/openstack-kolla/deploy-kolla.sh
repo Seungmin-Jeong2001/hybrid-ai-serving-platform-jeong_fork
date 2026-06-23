@@ -9,7 +9,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KOLLA_VENV="${KOLLA_VENV:-${HOME}/.ha/kolla-venv}"
 KOLLA_ANSIBLE_VERSION="${KOLLA_ANSIBLE_VERSION:-}" # 비움 시 openstack_release 호환 최신
 KOLLA_ETC="${KOLLA_ETC:-/etc/kolla}"
-KOLLA_INVENTORY="${KOLLA_INVENTORY:-${SCRIPT_DIR}/inventory/all-in-one}"
+# kolla 공식 all-in-one inventory 사용 (직접 작성본은 그룹 누락으로 bifrost 등 실패)
+KOLLA_INVENTORY="${KOLLA_INVENTORY:-${KOLLA_VENV}/share/kolla-ansible/ansible/inventory/all-in-one}"
 
 info() { printf '[kolla] %s\n' "$*"; }
 die() { printf '[kolla] error: %s\n' "$*" >&2; exit 1; }
@@ -27,6 +28,9 @@ else
   pip install kolla-ansible
 fi
 kolla-ansible install-deps
+# prechecks 의존성 (실배포서 누락 확인): python docker/dbus 모듈 + dbus 빌드 라이브러리
+sudo apt-get install -y libdbus-1-dev libglib2.0-dev libsystemd-dev 2>/dev/null || true
+pip install docker dbus-python
 
 info "${KOLLA_ETC} 구성 (globals.yml / passwords.yml)"
 sudo mkdir -p "${KOLLA_ETC}/config/nova"
@@ -41,6 +45,9 @@ else
   info "passwords.yml 존재 — 유지"
 fi
 
+# /etc/kolla 가 root:600 이면 이후 ansible/CLI 읽기 실패 → 실행 사용자 소유로
+sudo chown -R "$(id -u):$(id -g)" "${KOLLA_ETC}"
+
 info "FILL 자동 채움 (NIC/GPU 런타임 탐지)"
 sudo "${SCRIPT_DIR}/autodetect.sh" "${KOLLA_ETC}/globals.yml" "${KOLLA_ETC}/config/nova.conf"
 
@@ -48,14 +55,15 @@ if grep -vE '^[[:space:]]*#' "${KOLLA_ETC}/globals.yml" | grep -q '<FILL'; then
   die "자동 도출 불가 FILL 잔존 (위 목록 참고) — ${KOLLA_ETC}/globals.yml 입력 후 재실행"
 fi
 
+# kolla-ansible CLI는 command-first 순서 (구버전 -i 선행 문법 폐기됨)
 info "bootstrap-servers"
-kolla-ansible -i "${KOLLA_INVENTORY}" bootstrap-servers
+kolla-ansible bootstrap-servers -i "${KOLLA_INVENTORY}"
 info "prechecks"
-kolla-ansible -i "${KOLLA_INVENTORY}" prechecks
+kolla-ansible prechecks -i "${KOLLA_INVENTORY}"
 info "deploy"
-kolla-ansible -i "${KOLLA_INVENTORY}" deploy
+kolla-ansible deploy -i "${KOLLA_INVENTORY}"
 info "post-deploy (admin-openrc 생성)"
-kolla-ansible -i "${KOLLA_INVENTORY}" post-deploy
+kolla-ansible post-deploy -i "${KOLLA_INVENTORY}"
 
 info "완료. 자격증명: ${KOLLA_ETC}/admin-openrc.sh"
 info "다음: source ${KOLLA_ETC}/admin-openrc.sh && ${SCRIPT_DIR}/post-deploy.sh"

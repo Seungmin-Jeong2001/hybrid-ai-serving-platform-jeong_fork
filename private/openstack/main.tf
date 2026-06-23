@@ -203,6 +203,9 @@ resource "openstack_compute_instance_v2" "control_plane" {
       flavor_name,
       image_name,
       user_data,
+      config_drive,
+      key_pair,
+      network,
     ]
   }
 
@@ -273,6 +276,9 @@ resource "openstack_compute_instance_v2" "build_worker" {
       flavor_name,
       image_name,
       user_data,
+      config_drive,
+      key_pair,
+      network,
     ]
   }
 
@@ -343,6 +349,9 @@ resource "openstack_compute_instance_v2" "gpu_worker" {
       flavor_name,
       image_name,
       user_data,
+      config_drive,
+      key_pair,
+      network,
     ]
   }
 
@@ -413,6 +422,9 @@ resource "openstack_compute_instance_v2" "gitlab" {
       flavor_name,
       image_name,
       user_data,
+      config_drive,
+      key_pair,
+      network,
     ]
   }
 
@@ -483,6 +495,9 @@ resource "openstack_compute_instance_v2" "harbor" {
       flavor_name,
       image_name,
       user_data,
+      config_drive,
+      key_pair,
+      network,
     ]
   }
 

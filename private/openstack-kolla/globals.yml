@@ -8,7 +8,7 @@
 # Base
 #####################
 kolla_base_distro: "ubuntu"
-openstack_release: "2024.1" # Caracal LTS. 서버 OS/요구에 맞춰 조정
+openstack_release: "2025.1" # kolla-ansible 20.4.0 (2026.1 이미지 미공개로 정렬)
 
 #####################
 # Networking
