@@ -5,8 +5,23 @@ metadata:
   namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "2"
+    argocd-image-updater.argoproj.io/image-list: inference-worker=808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/inference-worker
+    argocd-image-updater.argoproj.io/inference-worker.update-strategy: newest-build
+    argocd-image-updater.argoproj.io/inference-worker.allow-tags: regexp:^[a-f0-9]{40}$
+    argocd-image-updater.argoproj.io/inference-worker.force-update: "true"
+    argocd-image-updater.argoproj.io/inference-worker.kustomize.image-name: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/inference-worker
+    argocd-image-updater.argoproj.io/write-back-method: git
+    argocd-image-updater.argoproj.io/write-back-target: kustomization
+    argocd-image-updater.argoproj.io/git-branch: main
 spec:
   project: default
+  ignoreDifferences:
+    - group: ""
+      kind: ServiceAccount
+      name: inference-worker
+      namespace: inference
+      jsonPointers:
+        - /metadata/annotations/eks.amazonaws.com~1role-arn
   source:
     repoURL: https://github.com/SGS-Strategy/hybrid-ai-serving-platform.git
     targetRevision: main

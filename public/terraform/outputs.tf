@@ -45,6 +45,11 @@ output "ses_alert_recipient_email" {
   value       = var.ses_alert_recipient_email
 }
 
+output "alb_certificate_arn" {
+  description = "ACM certificate ARN used by the internal ALB ingress resources"
+  value       = var.alb_certificate_arn
+}
+
 output "account_id" {
   description = "AWS account ID"
   value       = data.aws_caller_identity.current.account_id

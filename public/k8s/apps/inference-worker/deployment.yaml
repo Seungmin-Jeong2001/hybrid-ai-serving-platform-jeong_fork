@@ -54,7 +54,10 @@ spec:
             - name: WORKER_CONSUMER_GROUP
               value: inference-worker-group
             - name: DYNAMODB_TABLE_NAME
-              value: sgs-hasp-inference-results
+              valueFrom:
+                configMapKeyRef:
+                  name: inference-config
+                  key: DYNAMODB_TABLE_NAME
             - name: MAX_RETRY_COUNT
               value: "3"
             - name: RETRY_JITTER_SECONDS
@@ -64,11 +67,20 @@ spec:
             - name: PREDICTOR_ENDPOINT
               value: "/v1/models/pdm:predict"
             - name: ALERT_STATE_TABLE_NAME
-              value: sgs-hasp-equipment-alert-state
+              valueFrom:
+                configMapKeyRef:
+                  name: inference-config
+                  key: ALERT_STATE_TABLE_NAME
             - name: SES_SENDER_EMAIL
-              value: pswk0907@gmail.com
+              valueFrom:
+                configMapKeyRef:
+                  name: inference-config
+                  key: SES_SENDER_EMAIL
             - name: SES_RECIPIENT_EMAIL
-              value: pswk0907@gmail.com
+              valueFrom:
+                configMapKeyRef:
+                  name: inference-config
+                  key: SES_RECIPIENT_EMAIL
           resources:
             requests:
               cpu: "200m"

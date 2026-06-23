@@ -235,6 +235,12 @@ variable "argocd_chart_version" {
   default     = "7.8.23"
 }
 
+variable "alb_certificate_arn" {
+  description = "ACM certificate ARN used by the internal ALB ingress resources"
+  type        = string
+  default     = ""
+}
+
 variable "additional_eks_admin_role_arns" {
   description = "Additional IAM role ARNs that should receive EKS cluster admin access"
   type        = list(string)

@@ -20,6 +20,10 @@ resource "kubernetes_config_map" "inference_config" {
     BOOTSTRAP_SERVERS       = data.terraform_remote_state.platform.outputs.msk_bootstrap_brokers
     KAFKA_TLS               = "enable"
     KAFKA_SECURITY_PROTOCOL = "SSL"
+    DYNAMODB_TABLE_NAME     = data.terraform_remote_state.platform.outputs.dynamodb_table_name
+    ALERT_STATE_TABLE_NAME  = data.terraform_remote_state.platform.outputs.dynamodb_alert_state_table_name
+    SES_SENDER_EMAIL        = data.terraform_remote_state.platform.outputs.ses_alert_sender_email
+    SES_RECIPIENT_EMAIL     = data.terraform_remote_state.platform.outputs.ses_alert_recipient_email
   }
 }
 
