@@ -16,8 +16,9 @@ port="${2:?port required}"
 [[ "$port" =~ ^[0-9]{1,5}$ ]] || { echo "bad port: $port" >&2; exit 1; }
 netns="$(ip netns list 2>/dev/null | grep -oE 'qdhcp-[0-9a-f-]+' | head -1)"
 [[ -n "$netns" ]] || { echo "no qdhcp netns found" >&2; exit 1; }
-# nc 미설치 환경 대비: netns 안에서 python3로 stdio<->TCP 중계
-exec ip netns exec "$netns" python3 - "$host" "$port" <<'PY'
+# netns 안에서 python3로 stdio<->TCP 중계.
+# 주의: 'python3 -c'로 코드 전달 — heredoc(python3 -)을 쓰면 ssh의 stdin을 코드가 먹어버려 끊김.
+exec ip netns exec "$netns" python3 -c '
 import os, socket, sys, threading
 host, port = sys.argv[1], int(sys.argv[2])
 s = socket.create_connection((host, port))
@@ -35,4 +36,4 @@ while True:
     if not d:
         os._exit(0)
     os.write(1, d)
-PY
+' "$host" "$port"
