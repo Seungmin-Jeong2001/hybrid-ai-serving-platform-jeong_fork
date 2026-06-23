@@ -3555,6 +3555,8 @@ PY
     'export MINIO_SERVER_URL="http://127.0.0.1:9000"' \
     "export MINIO_BROWSER_REDIRECT_URL=\"https://${MINIO_CONSOLE_DOMAIN}\""
   kubectl -n minio-tenant create secret generic minio-creds-secret --from-literal=accessKey="${minio_root_user}" --from-literal=secretKey="${minio_root_password}" --dry-run=client -o yaml | kubectl apply -f -
+  kubectl apply -f "${ROOT}/private/kubernetes/namespaces.yaml"
+  kubectl -n model-build create secret generic minio-client-credentials --from-literal=accessKey="${minio_root_user}" --from-literal=secretKey="${minio_root_password}" --dry-run=client -o yaml | kubectl apply -f -
   kubectl -n minio-tenant create secret generic model-admin --from-literal=CONSOLE_ACCESS_KEY="${minio_console_user}" --from-literal=CONSOLE_SECRET_KEY="${minio_console_password}" --dry-run=client -o yaml | kubectl apply -f -
   kubectl -n minio-tenant create secret generic minio-configuration --from-literal=config.env="${minio_config_env}" --dry-run=client -o yaml | kubectl apply -f -
   sed -E "s/storage: [0-9]+Gi/storage: ${MINIO_VOLUME_SIZE}Gi/g" "${ROOT}/private/storage/minio-tenant.yaml" | kubectl apply -f -
