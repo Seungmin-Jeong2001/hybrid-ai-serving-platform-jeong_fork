@@ -24,22 +24,20 @@ def _decode_record(record: dict) -> dict:
 
 
 def _build_message(payload: dict) -> str:
-    project_name = os.getenv("PROJECT_NAME", "project")
-    environment = os.getenv("ENVIRONMENT", "public")
-    topic_name = os.getenv("DLQ_TOPIC_NAME", "inference-dlq")
+    environment = os.getenv("ENVIRONMENT", "public").upper()
     request_id = payload.get("request_id", "unknown")
     equipment_id = payload.get("equipment_id", "unknown")
     retry_count = payload.get("retry_count", 0)
     failure_stage = payload.get("failure_stage", "unknown")
     last_error = payload.get("last_error", "unknown")
     return (
-        f"[{project_name}/{environment}] DLQ message detected\n"
-        f"- Topic: {topic_name}\n"
-        f"- Request ID: {request_id}\n"
-        f"- Equipment ID: {equipment_id}\n"
-        f"- Retry Count: {retry_count}\n"
-        f"- Failure Stage: {failure_stage}\n"
-        f"- Error: {last_error}"
+        f"[CRITICAL][{environment}]\n"
+        f"Inference DLQ detected\n\n"
+        f"Request ID: {request_id}\n"
+        f"Equipment ID: {equipment_id}\n"
+        f"Failed At: {failure_stage}\n"
+        f"Reason: {last_error}\n"
+        f"Retry Count: {retry_count}"
     )
 
 
