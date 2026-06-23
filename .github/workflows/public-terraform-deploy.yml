@@ -458,7 +458,7 @@ jobs:
           export DASHBOARD_BACKEND_ROLE_ARN="$(terraform output -raw dashboard_backend_role_arn)"
           export ALB_CERTIFICATE_ARN="$(terraform output -raw alb_certificate_arn)"
 
-          python - <<PY
+          python - <<'PY'
           import json, os
 
           commands = [
