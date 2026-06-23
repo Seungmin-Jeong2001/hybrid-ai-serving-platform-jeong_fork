@@ -1,0 +1,15 @@
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: pdm-predictor-allow-inference-worker
+  namespace: inference
+spec:
+  selector:
+    matchLabels:
+      app: isvc.pdm-predictor
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - spiffe://cluster.local/ns/inference/sa/inference-worker
