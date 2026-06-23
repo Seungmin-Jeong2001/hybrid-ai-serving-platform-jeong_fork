@@ -90,6 +90,14 @@ HA_DEVSTACK_CONTAINER_CACHE_RESTORE="${HA_DEVSTACK_CONTAINER_CACHE_RESTORE:-true
 HA_DEVSTACK_CONTAINER_CACHE_REFRESH="${HA_DEVSTACK_CONTAINER_CACHE_REFRESH:-true}"
 HA_DEVSTACK_CONTAINER_CACHE_COW_DRIVERS="${HA_DEVSTACK_CONTAINER_CACHE_COW_DRIVERS:-btrfs,zfs,lvm}"
 HA_DEVSTACK_CONTAINER_CACHE_VERSION="${HA_DEVSTACK_CONTAINER_CACHE_VERSION:-20260610.1}"
+
+# ── OpenStack 백엔드 선택 (DevStack → Kolla 마이그레이션) ──────────────
+# /etc/kolla/globals.yml 존재 시 자동으로 kolla. devstack 강제는 HA_OPENSTACK_PROVIDER=devstack.
+HA_OPENSTACK_PROVIDER="${HA_OPENSTACK_PROVIDER:-$([ -f /etc/kolla/globals.yml ] && echo kolla || echo devstack)}"
+HA_KOLLA_VENV="${HA_KOLLA_VENV:-${HOME}/.ha/kolla-venv}"
+HA_KOLLA_DEPLOY_SCRIPT="${HA_KOLLA_DEPLOY_SCRIPT:-${ROOT}/private/openstack-kolla/deploy-kolla.sh}"
+HA_KOLLA_ADMIN_OPENRC="${HA_KOLLA_ADMIN_OPENRC:-/etc/kolla/admin-openrc.sh}"
+
 PRIVATE_CLOUD_BASE_DOMAIN="${PRIVATE_CLOUD_BASE_DOMAIN:-${HA_BASE_DOMAIN:-intp.me}}"
 OS_PASSWORD_INPUT_PROVIDED=false
 [[ -n "${OS_PASSWORD+x}" ]] && OS_PASSWORD_INPUT_PROVIDED=true
@@ -2788,6 +2796,59 @@ setup_reverse_proxy() {
   fi
 }
 
+# ── Kolla provider 함수 (DevStack lxc-exec 경로 대체) ───────────────────
+# Kolla openrc로 openstack 실행 (DevStack의 'lxc exec ha-openstack -- source openrc' 대체)
+kolla_os() {
+  (
+    set -euo pipefail
+    # shellcheck disable=SC1091
+    source "${HA_KOLLA_VENV}/bin/activate"
+    # shellcheck disable=SC1091
+    source "${HA_KOLLA_ADMIN_OPENRC}"
+    openstack "$@"
+  )
+}
+
+# terraform이 참조하는 flavor 보장 (Kolla 네이티브, 멱등 — 있으면 no-op)
+_kolla_ensure_flavor() {
+  local name="$1" ram="$2" vcpus="$3" disk="$4"
+  if kolla_os flavor show "$name" >/dev/null 2>&1; then
+    kolla_os flavor set --property "hw_rng:allowed=True" "$name" >/dev/null 2>&1 || true
+    return 0
+  fi
+  kolla_os flavor create --ram "$ram" --vcpus "$vcpus" --disk "$disk" "$name" >/dev/null
+  kolla_os flavor set --property "hw_rng:allowed=True" "$name" >/dev/null 2>&1 || true
+}
+
+ensure_flavors_kolla() {
+  _kolla_ensure_flavor "${HA_DEVSTACK_CONTROL_FLAVOR_NAME}" "${HA_DEVSTACK_CONTROL_FLAVOR_RAM}" "${HA_DEVSTACK_CONTROL_FLAVOR_VCPUS}" "${HA_DEVSTACK_CONTROL_FLAVOR_DISK}"
+  _kolla_ensure_flavor "${HA_DEVSTACK_WORKER_FLAVOR_NAME}" "${HA_DEVSTACK_WORKER_FLAVOR_RAM}" "${HA_DEVSTACK_WORKER_FLAVOR_VCPUS}" "${HA_DEVSTACK_WORKER_FLAVOR_DISK}"
+  _kolla_ensure_flavor "${HA_DEVSTACK_GITLAB_FLAVOR_NAME}" "${HA_DEVSTACK_GITLAB_FLAVOR_RAM}" "${HA_DEVSTACK_GITLAB_FLAVOR_VCPUS}" "${HA_DEVSTACK_GITLAB_FLAVOR_DISK}"
+  _kolla_ensure_flavor "${HA_DEVSTACK_HARBOR_FLAVOR_NAME}" "${HA_DEVSTACK_HARBOR_FLAVOR_RAM}" "${HA_DEVSTACK_HARBOR_FLAVOR_VCPUS}" "${HA_DEVSTACK_HARBOR_FLAVOR_DISK}"
+  _kolla_ensure_flavor "${HA_OPENSTACK_GPU_FLAVOR_NAME}" "${HA_OPENSTACK_GPU_FLAVOR_RAM}" "${HA_OPENSTACK_GPU_FLAVOR_VCPUS}" "${HA_OPENSTACK_GPU_FLAVOR_DISK}"
+  kolla_os flavor set --property "pci_passthrough:alias=nvidia-gpu:1" --property "hw:pci_numa_affinity_policy=preferred" "${HA_OPENSTACK_GPU_FLAVOR_NAME}" >/dev/null 2>&1 || true
+}
+
+# apply 모드: Kolla 헬스 검증 (재배포·컨테이너 조작 없음 = 멱등·무파괴)
+kolla_apply_check() {
+  [[ -f "${HA_KOLLA_ADMIN_OPENRC}" ]] || { log "error: ${HA_KOLLA_ADMIN_OPENRC} 없음 — deploy-kolla.sh로 먼저 배포 필요"; return 1; }
+  [[ -d "${HA_KOLLA_VENV}" ]] || { log "error: kolla venv(${HA_KOLLA_VENV}) 없음 — deploy-kolla.sh 먼저"; return 1; }
+  if kolla_os endpoint list >/dev/null 2>&1; then
+    log "Kolla OpenStack 정상 (keystone endpoint 응답)"
+  else
+    log "error: Kolla OpenStack 미응답 — 컨트롤플레인 점검 필요"
+    return 1
+  fi
+  ensure_flavors_kolla
+}
+
+# reinstall 모드: Kolla 배포 스크립트 호출 (deploy-kolla.sh가 멱등 처리)
+kolla_reinstall() {
+  log "Kolla 배포/재구성: ${HA_KOLLA_DEPLOY_SCRIPT}"
+  bash "${HA_KOLLA_DEPLOY_SCRIPT}"
+  ensure_flavors_kolla
+}
+
 devstack_reinstall() {
   local product_id
   create_devstack_container
@@ -4134,6 +4195,14 @@ run_tools_phases() {
 }
 
 run_devstack_steps() {
+  if [[ "${HA_OPENSTACK_PROVIDER}" == "kolla" ]]; then
+    if [[ "${MODE}" == "reinstall" ]]; then
+      phase kolla_reinstall kolla_reinstall
+    else
+      phase kolla_apply_check kolla_apply_check
+    fi
+    return
+  fi
   if [[ "${MODE}" == "reinstall" ]]; then
     phase devstack_reinstall devstack_reinstall
   else
@@ -4142,6 +4211,11 @@ run_devstack_steps() {
 }
 
 run_proxy_steps() {
+  if [[ "${HA_OPENSTACK_PROVIDER}" == "kolla" ]]; then
+    # Kolla: 외부 접속은 in-cluster cloudflared(private/cloudflared)가 담당 → 레거시 LXD 프록시/터널/DNS 불필요
+    skip_phase setup_reverse_proxy "Kolla: 접속은 in-cluster cloudflared 담당 (레거시 프록시 스킵)"
+    return
+  fi
   phase ensure_openstack_private_route ensure_openstack_private_route
   phase setup_minio_entrypoints setup_minio_entrypoints
   phase setup_reverse_proxy setup_reverse_proxy
@@ -4150,6 +4224,11 @@ run_proxy_steps() {
 }
 
 run_images_steps() {
+  if [[ "${HA_OPENSTACK_PROVIDER}" == "kolla" ]]; then
+    # Kolla: VM 이미지는 glance에서 직접 관리(*-restore) → DevStack 캐시 단계 불필요
+    skip_phase prepare_cached_images "Kolla: 이미지는 glance에서 직접 관리 (캐시 스킵)"
+    return
+  fi
   phase prepare_cached_images prepare_cached_images
 }
 
