@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 import ssl
 from datetime import datetime, timedelta, timezone
@@ -7,6 +8,9 @@ from urllib import parse, request
 
 import boto3
 from botocore.signers import RequestSigner
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 
 def _env(name: str, default: str = "") -> str:
@@ -254,6 +258,10 @@ def _invoke_bedrock_summary(payload: dict, kafka_context: dict, worker_status: d
     model_id = _env("BEDROCK_MODEL_ID")
     if not model_id:
         likely_causes, recommended_actions = _heuristic_summary(payload, kafka_context, worker_status, predictor_status)
+        logger.info(
+            "incident_summary_source=fallback reason=no_model_id request_id=%s",
+            payload.get("request_id", "unknown"),
+        )
         return {
             "likely_causes": likely_causes,
             "recommended_actions": recommended_actions,
@@ -285,6 +293,12 @@ def _invoke_bedrock_summary(payload: dict, kafka_context: dict, worker_status: d
     text = "".join(block.get("text", "") for block in body.get("content", []) if block.get("type") == "text").strip()
     parsed = json.loads(text)
     parsed["source"] = "bedrock"
+    logger.info(
+        "incident_summary_source=bedrock request_id=%s model_id=%s confidence=%s",
+        payload.get("request_id", "unknown"),
+        model_id,
+        parsed.get("confidence", "unknown"),
+    )
     return parsed
 
 
@@ -292,6 +306,11 @@ def _safe_collect_pod_status(label_selector: str) -> dict:
     try:
         return _summarize_pods(label_selector)
     except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "pod_status_collection_failed selector=%s error=%s",
+            label_selector,
+            exc,
+        )
         return {
             "total": 0,
             "running": 0,
@@ -353,6 +372,11 @@ def handler(event, _context):
                 summary = _invoke_bedrock_summary(payload, kafka_context, worker_status, predictor_status)
             except Exception as exc:  # noqa: BLE001
                 likely_causes, recommended_actions = _heuristic_summary(payload, kafka_context, worker_status, predictor_status)
+                logger.exception(
+                    "incident_summary_fallback request_id=%s error=%s",
+                    payload.get("request_id", "unknown"),
+                    exc,
+                )
                 summary = {
                     "likely_causes": likely_causes,
                     "recommended_actions": recommended_actions,
@@ -360,5 +384,10 @@ def handler(event, _context):
                     "source": f"fallback:{exc}",
                 }
             _post_to_slack(_build_message(payload, kafka_context, worker_status, predictor_status, summary))
+            logger.info(
+                "incident_alert_sent request_id=%s summary_source=%s",
+                payload.get("request_id", "unknown"),
+                summary.get("source", "unknown"),
+            )
             sent += 1
     return {"statusCode": 200, "records": sent}
