@@ -378,8 +378,8 @@ write_ssh_config() {
   local tmp_config proxy_cmd
   ensure_ssh_key
   if [[ "${HA_OPENSTACK_PROVIDER}" == "kolla" ]]; then
-    # Kolla: tenant VM은 qdhcp netns nc 래퍼 경유 (DevStack lxc 대체, 좁은 NOPASSWD sudoers)
-    proxy_cmd="sudo ${HA_KOLLA_NETNS_NC} %h %p"
+    # Kolla: VM은 OpenStack Floating IP(ext-net)로 직접 접근 → ProxyCommand 불필요
+    proxy_cmd=""
   else
     proxy_cmd="lxc exec ha-openstack -- nc %h %p"
   fi
@@ -393,7 +393,7 @@ write_ssh_config() {
     printf '  CheckHostIP no\n'
     printf '  UserKnownHostsFile /dev/null\n'
     printf '  LogLevel ERROR\n'
-    printf '  ProxyCommand %s\n' "${proxy_cmd}"
+    [[ -n "${proxy_cmd}" ]] && printf '  ProxyCommand %s\n' "${proxy_cmd}"
   } >"${tmp_config}"
   chmod 600 "${tmp_config}"
   mv "${tmp_config}" "${SSH_CONFIG}"
@@ -427,8 +427,17 @@ ensure_lxc_proxy_device_unlocked() {
   return "${rc}"
 }
 
+# 호스트→VM 서비스 엔드포인트: Kolla=FIP(target):service_port 직접, DevStack=127.0.0.1:upstream(LXD)
+host_svc_ep() {
+  if [[ "${HA_OPENSTACK_PROVIDER}" == "kolla" ]]; then printf '%s:%s' "$1" "$2"; else printf '127.0.0.1:%s' "$3"; fi
+}
+
 ensure_lxc_proxy_device() {
   local lock_file lock_fd rc
+  # Kolla: 호스트가 OpenStack Floating IP로 VM 서비스에 직접 접근 → LXD proxy device 불필요 (no-op)
+  if [[ "${HA_OPENSTACK_PROVIDER}" == "kolla" ]]; then
+    return 0
+  fi
   lock_file="${ROOT}/.ha/openstack/lxc-config.lock"
   mkdir -p "$(dirname "${lock_file}")"
   exec {lock_fd}>"${lock_file}"
@@ -2769,7 +2778,7 @@ for role, key, port_name, port_value in roles:
     if not nodes:
         continue
     node = nodes[0]
-    ip = node.get("private_ip") or node.get("floating_ip")
+    ip = node.get("floating_ip") or node.get("private_ip")
     if not ip:
         continue
     print(f"{role}\t{port}\t{ip}\t{node.get('name', '')}")
@@ -3142,16 +3151,19 @@ terraform_apply() {
     public_network_id="$(kolla_os network show "${_extnet}" -f value -c id)"
     public_subnet_id="$(kolla_os subnet list --network "${_extnet}" --ip-version 4 -f value -c ID | head -n 1)"
     public_subnet_cidr="$(kolla_os subnet show "${public_subnet_id}" -f value -c cidr)"
-    assign_floating_ips=false
+    # Kolla: OpenStack Floating IP로 호스트→VM 직접 접근 (DevStack LXD proxy 대체)
+    assign_floating_ips="$(tf_bool_value PRIVATE_CLOUD_ASSIGN_FLOATING_IPS "${PRIVATE_CLOUD_ASSIGN_FLOATING_IPS}")"
+    fip_pool="${_extnet}"
   else
     public_network_id="$(lxc exec ha-openstack -- sudo -u stack -H bash -lc 'cd /opt/stack/devstack && set +u && source openrc admin admin >/dev/null && set -u && openstack network show public -f value -c id')"
     public_subnet_id="$(lxc exec ha-openstack -- sudo -u stack -H bash -lc 'cd /opt/stack/devstack && set +u && source openrc admin admin >/dev/null && set -u && openstack subnet list --network public --ip-version 4 -f value -c ID | head -n 1')"
     public_subnet_cidr="$(lxc exec ha-openstack -- sudo -u stack -H bash -lc "cd /opt/stack/devstack && set +u && source openrc admin admin >/dev/null && set -u && openstack subnet show '${public_subnet_id}' -f value -c cidr")"
     assign_floating_ips="$(tf_bool_value PRIVATE_CLOUD_ASSIGN_FLOATING_IPS "${PRIVATE_CLOUD_ASSIGN_FLOATING_IPS}")"
+    fip_pool="public"
   fi
   {
     printf 'external_network_id = "%s"\n' "$public_network_id"
-    printf 'floating_ip_pool = "public"\n'
+    printf 'floating_ip_pool = "%s"\n' "${fip_pool:-public}"
     printf 'assign_floating_ips = %s\n' "$assign_floating_ips"
     printf 'install_node_dependencies = %s\n' "${effective_install_node_dependencies}"
     printf 'ssh_allowed_cidrs = ["%s"]\n' "$public_subnet_cidr"
@@ -3252,7 +3264,7 @@ with open(sys.argv[1], "r", encoding="utf-8") as handle:
     data = json.load(handle)
 for key in ("control_plane_nodes", "build_worker_nodes", "gpu_worker_nodes", "harbor_nodes"):
     for node in data.get(key, {}).get("value", []):
-        ip = node.get("private_ip") or node.get("floating_ip")
+        ip = node.get("floating_ip") or node.get("private_ip")
         if ip:
             print(ip, node.get("name", ""))
 PY
@@ -3282,7 +3294,7 @@ with open(sys.argv[1], "r", encoding="utf-8") as handle:
     data = json.load(handle)
 
 for node in data.get(sys.argv[2], {}).get("value", []):
-    ip = node.get("private_ip") or node.get("floating_ip")
+    ip = node.get("floating_ip") or node.get("private_ip")
     if ip:
         print(f"{ip}\t{node.get('name', '')}")
 PY
@@ -3911,8 +3923,9 @@ sudo journalctl -u hybrid-ai-gitlab-bootstrap.service -n 100 --no-pager || true
 sudo cat /var/lib/hybrid-ai/gitlab-bootstrap/status.env 2>/dev/null || true
 REMOTE
   ensure_lxc_proxy_device gitlab-proxy "tcp:127.0.0.1:${GITLAB_UPSTREAM_PORT}" "tcp:${target}:80"
-  curl -fsS "http://127.0.0.1:${GITLAB_UPSTREAM_PORT}/users/sign_in" >/dev/null 2>&1 \
-    || curl -fsS "http://127.0.0.1:${GITLAB_UPSTREAM_PORT}/-/readiness" >/dev/null
+  local _gl_ep; _gl_ep="$(host_svc_ep "${target}" 80 "${GITLAB_UPSTREAM_PORT}")"
+  curl -fsS "http://${_gl_ep}/users/sign_in" >/dev/null 2>&1 \
+    || curl -fsS "http://${_gl_ep}/-/readiness" >/dev/null
 }
 
 setup_harbor() {
@@ -4025,8 +4038,9 @@ sudo cat /var/lib/hybrid-ai/harbor-bootstrap/status.env 2>/dev/null || true
 REMOTE
 
   ensure_lxc_proxy_device harbor-proxy "tcp:127.0.0.1:${HARBOR_UPSTREAM_PORT}" "tcp:${target}:${HARBOR_HTTP_PORT}"
-  curl -fsS "http://127.0.0.1:${HARBOR_UPSTREAM_PORT}/api/v2.0/ping" >/dev/null 2>&1 \
-    || curl -fsS "http://127.0.0.1:${HARBOR_UPSTREAM_PORT}/api/v2.0/health" >/dev/null
+  local _hb_ep; _hb_ep="$(host_svc_ep "${target}" "${HARBOR_HTTP_PORT}" "${HARBOR_UPSTREAM_PORT}")"
+  curl -fsS "http://${_hb_ep}/api/v2.0/ping" >/dev/null 2>&1 \
+    || curl -fsS "http://${_hb_ep}/api/v2.0/health" >/dev/null
 
   # Persist the kaniko robot credentials to a run-independent path. The k8s pull
   # secret is created later by the platform phase (setup_model_build_platform),
