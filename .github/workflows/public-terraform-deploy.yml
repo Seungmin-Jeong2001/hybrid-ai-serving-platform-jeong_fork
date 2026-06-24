@@ -458,6 +458,7 @@ jobs:
           export INFERENCE_WORKER_ROLE_ARN="$(terraform output -raw inference_worker_role_arn)"
           export DASHBOARD_BACKEND_ROLE_ARN="$(terraform output -raw dashboard_backend_role_arn)"
           export ALB_CERTIFICATE_ARN="$(terraform output -raw alb_certificate_arn)"
+          [[ -n "${ALB_CERTIFICATE_ARN}" ]] || { echo "alb_certificate_arn is empty"; exit 1; }
 
           python - <<'PY'
           import os

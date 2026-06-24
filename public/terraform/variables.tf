@@ -236,9 +236,15 @@ variable "argocd_chart_version" {
 }
 
 variable "alb_certificate_arn" {
-  description = "ACM certificate ARN used by the internal ALB ingress resources"
+  description = "Optional override for the ACM certificate ARN used by the internal ALB ingress resources; when empty Terraform auto-discovers a matching ACM certificate"
   type        = string
   default     = ""
+}
+
+variable "alb_certificate_domain" {
+  description = "Primary ACM certificate domain name to discover automatically for the internal ALB ingress resources"
+  type        = string
+  default     = "*.sgs-hasp.click"
 }
 
 variable "additional_eks_admin_role_arns" {

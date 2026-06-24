@@ -47,7 +47,7 @@ output "ses_alert_recipient_email" {
 
 output "alb_certificate_arn" {
   description = "ACM certificate ARN used by the internal ALB ingress resources"
-  value       = var.alb_certificate_arn
+  value       = local.effective_alb_certificate_arn
 }
 
 output "account_id" {
