@@ -512,26 +512,52 @@ jobs:
 
       - name: Update Route53 A records for Internal ALB
         if: ${{ inputs.action == 'apply' && steps.resolve_instance.outputs.value != '' }}
+        env:
+          BOOTSTRAP_ROLE_ARN: ${{ steps.bootstrap_role.outputs.value }}
         working-directory: public/terraform
         run: |
           HOSTED_ZONE_ID="$(terraform output -raw public_hosted_zone_id)"
           PRIVATE_HOSTED_ZONE_ID="$(terraform output -raw private_hosted_zone_id)"
 
-          # ArgoCD sync 후 ALB 생성까지 대기
-          sleep 30
-
-          # Internal ALB DNS 주소 조회
-          ALB_DNS=$(aws elbv2 describe-load-balancers \
-            --region "${AWS_REGION}" \
-            --query "LoadBalancers[?Scheme=='internal'].DNSName" \
-            --output text | head -1)
-
-          if [[ -z "${ALB_DNS}" || "${ALB_DNS}" == "None" ]]; then
-            echo "Internal ALB not found, skipping Route53 update."
-            exit 0
+          if ! command -v kubectl >/dev/null 2>&1; then
+            curl -fsSLo /tmp/kubectl https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl
+            chmod +x /tmp/kubectl
+            sudo mv /tmp/kubectl /usr/local/bin/kubectl
           fi
 
-          # ALB의 Hosted Zone ID 조회
+          export KUBECONFIG="$(pwd)/kubeconfig-route53"
+          aws eks update-kubeconfig \
+            --region "${AWS_REGION}" \
+            --name "${EKS_CLUSTER_NAME}" \
+            --role-arn "${BOOTSTRAP_ROLE_ARN}" \
+            --kubeconfig "${KUBECONFIG}"
+
+          ALB_DNS=""
+          for ((i=1; i<=40; i++)); do
+            INFERENCE_ALB_DNS=$(kubectl get ingress -n inference inference-api -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            DASHBOARD_ALB_DNS=$(kubectl get ingress -n app dashboard-frontend -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+
+            if [[ -n "${INFERENCE_ALB_DNS}" ]]; then
+              ALB_DNS="${INFERENCE_ALB_DNS}"
+              break
+            fi
+
+            if [[ -n "${DASHBOARD_ALB_DNS}" ]]; then
+              ALB_DNS="${DASHBOARD_ALB_DNS}"
+              break
+            fi
+
+            echo "Waiting for internal ALB hostname from ingress (${i}/40)..."
+            sleep 15
+          done
+
+          if [[ -z "${ALB_DNS}" || "${ALB_DNS}" == "None" ]]; then
+            echo "Internal ALB hostname not found from ingress status."
+            kubectl get ingress -A || true
+            exit 1
+          fi
+
+          # Resolve the ALB hosted zone from the exact hostname attached to ingress status.
           ALB_HOSTED_ZONE_ID=$(aws elbv2 describe-load-balancers \
             --region "${AWS_REGION}" \
             --query "LoadBalancers[?DNSName=='${ALB_DNS}'].CanonicalHostedZoneId" \
