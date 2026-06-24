@@ -411,9 +411,13 @@ Rules:
 - Recommended actions must be specific to the observed signals, not generic troubleshooting advice.
 - Prioritize the observed_signals section over raw logs when they conflict.
 - Write likely_causes and recommended_actions in Korean.
-- Keep each item concise and operational.
+- Write each item as a complete Korean sentence, not a short noun phrase.
+- Each likely_causes item must include the concrete evidence or signal it is based on when possible.
+- Each recommended_actions item must mention the exact component to inspect, such as predictor 로그, inference-worker 로그, retry 토픽 lag, or 요청 payload.
 - If the evidence points to an application error or malformed request, prefer that over generic infrastructure or network explanations.
 - If observed_signals already contain a diagnosis-style statement starting with "진단:", use it directly instead of replacing it with vague generic wording.
+- Avoid vague labels such as "프로세스 내부 예외", "외부 서비스 연결 실패", or "요청 데이터 문제" unless you also explain the observed evidence.
+- If evidence is insufficient, explicitly say which evidence is missing instead of inventing a broad generic cause.
 
 Incident context:
 {json.dumps(
@@ -518,7 +522,7 @@ def _severity_color(summary: dict) -> str:
 
 
 def _severity_title(environment: str) -> str:
-    return f"[CRITICAL][{environment}]"
+    return f"🚨 [CRITICAL][{environment}]"
 
 
 def _build_message(payload: dict, kafka_context: dict, worker_status: dict, predictor_status: dict, summary: dict) -> dict:
