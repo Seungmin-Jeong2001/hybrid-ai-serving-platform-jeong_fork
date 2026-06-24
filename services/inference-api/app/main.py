@@ -36,6 +36,11 @@ def _request_topic() -> str:
 def _kafka_security_protocol() -> str:
     return os.getenv("KAFKA_SECURITY_PROTOCOL", "SSL")
 
+
+def _kafka_publish_timeout_seconds() -> float:
+    return float(os.getenv("KAFKA_PUBLISH_TIMEOUT_SECONDS", "10"))
+
+
 # Kafka producer 생성 함수 - 환경변수로 설정 조절 가능, JSON 직렬화 포함
 def _create_producer() -> KafkaProducer:
     return KafkaProducer(
@@ -100,7 +105,7 @@ async def infer(request: InferenceRequest) -> dict[str, Any]:
 
     try:
         future = producer.send(_request_topic(), key=request.equipment_id, value=payload) # Kafka 토픽에 발행
-        record_metadata = future.get(timeout=30)
+        record_metadata = future.get(timeout=_kafka_publish_timeout_seconds())
     except KafkaError as exc:
         logger.exception("failed to publish inference request: %s", exc)
         raise HTTPException(status_code=502, detail="failed to publish inference request") from exc

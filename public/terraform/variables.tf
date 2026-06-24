@@ -235,6 +235,12 @@ variable "argocd_chart_version" {
   default     = "7.8.23"
 }
 
+variable "alb_certificate_arn" {
+  description = "ACM certificate ARN used by the internal ALB ingress resources"
+  type        = string
+  default     = ""
+}
+
 variable "additional_eks_admin_role_arns" {
   description = "Additional IAM role ARNs that should receive EKS cluster admin access"
   type        = list(string)
@@ -274,4 +280,23 @@ variable "vpn_static_route_cidrs" {
   description = "Static route CIDR blocks per site for the Site-to-Site VPN connections"
   type        = map(list(string))
   default     = {}
+}
+
+variable "dlq_alert_slack_webhook_url" {
+  description = "Slack incoming webhook URL for DLQ alerts; leave empty to skip Lambda webhook delivery"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "dlq_alert_topic_name" {
+  description = "MSK topic name that stores failed inference requests"
+  type        = string
+  default     = "inference-dlq"
+}
+
+variable "incident_copilot_bedrock_model_id" {
+  description = "Amazon Bedrock model ID used by the inference incident copilot Lambda"
+  type        = string
+  default     = "anthropic.claude-3-haiku-20240307-v1:0"
 }

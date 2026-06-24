@@ -15,6 +15,7 @@ on:
 
 permissions:
   id-token: write
+  contents: write
 
 env:
   AWS_REGION: ap-northeast-2
@@ -61,6 +62,15 @@ jobs:
         run: |
           if [[ -n "$TFVARS_CONTENT" ]]; then
             printf '%s\n' "$TFVARS_CONTENT" > zz-secret.auto.tfvars
+          fi
+
+      - name: Write DLQ Slack webhook secret override
+        env:
+          DLQ_SLACK_WEBHOOK_URL: ${{ secrets.INFRA_ALERTS }}
+        working-directory: public/terraform
+        run: |
+          if [[ -n "$DLQ_SLACK_WEBHOOK_URL" ]]; then
+            python -c "import json, os; open('zz-dlq-alert.auto.tfvars', 'w', encoding='utf-8').write('dlq_alert_slack_webhook_url = ' + json.dumps(os.environ['DLQ_SLACK_WEBHOOK_URL']) + '\\n')"
           fi
 
       - name: Terraform fmt check
@@ -249,11 +259,7 @@ jobs:
               "set -euo pipefail",
               "if ! command -v kubectl >/dev/null 2>&1; then curl -fsSLo /tmp/kubectl https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl && chmod +x /tmp/kubectl && sudo mv /tmp/kubectl /usr/local/bin/kubectl; fi",
               "export KUBECONFIG=/tmp/eks-kubeconfig",
-              f"ASSUME_ROLE_OUTPUT=$(aws sts assume-role --role-arn {os.environ['BOOTSTRAP_ROLE_ARN']} --role-session-name argocd-cleanup --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text)",
-              "if [ -z \"$ASSUME_ROLE_OUTPUT\" ] || [ \"$ASSUME_ROLE_OUTPUT\" = \"None\" ]; then echo 'Failed to assume bootstrap role.'; exit 1; fi",
-              "read AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN <<< \"$ASSUME_ROLE_OUTPUT\"",
-              "export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN",
-              f"aws eks update-kubeconfig --region {os.environ['AWS_REGION']} --name {os.environ['EKS_CLUSTER_NAME']} --kubeconfig /tmp/eks-kubeconfig",
+              f"aws eks update-kubeconfig --region {os.environ['AWS_REGION']} --name {os.environ['EKS_CLUSTER_NAME']} --role-arn {os.environ['BOOTSTRAP_ROLE_ARN']} --kubeconfig /tmp/eks-kubeconfig",
               "kubectl get apiservice v1beta1.external.metrics.k8s.io >/dev/null 2>&1 && kubectl delete apiservice v1beta1.external.metrics.k8s.io || true",
               "kubectl delete application platform-addons -n argocd --ignore-not-found=true --wait=false || true",
               "kubectl get application -n argocd -o name | xargs -I{} kubectl patch {} -n argocd -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge || true",
@@ -354,7 +360,7 @@ jobs:
               "if [ -z \"$ASSUME_ROLE_OUTPUT\" ] || [ \"$ASSUME_ROLE_OUTPUT\" = \"None\" ]; then echo 'Failed to assume bootstrap role.'; exit 1; fi",
               "read AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN <<< \"$ASSUME_ROLE_OUTPUT\"",
               "export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN",
-              f"aws eks update-kubeconfig --region {os.environ['AWS_REGION']} --name {os.environ['EKS_CLUSTER_NAME']} --kubeconfig /tmp/eks-kubeconfig",
+              f"aws eks update-kubeconfig --region {os.environ['AWS_REGION']} --name {os.environ['EKS_CLUSTER_NAME']} --role-arn {os.environ['BOOTSTRAP_ROLE_ARN']} --kubeconfig /tmp/eks-kubeconfig",
               "rm -rf /tmp/hasp-bootstrap && mkdir -p /tmp/hasp-bootstrap",
               f"echo {os.environ['INCLUSTER_TF_B64']} | base64 -d > /tmp/hasp-bootstrap/terraform-incluster.tar.gz",
               "tar -xzf /tmp/hasp-bootstrap/terraform-incluster.tar.gz -C /tmp/hasp-bootstrap",
@@ -444,6 +450,65 @@ jobs:
             --instance-id "${TARGET_INSTANCE_ID}" \
             --query 'StandardOutputContent' \
             --output text || true
+
+      - name: Write runtime values into Git manifests
+        if: ${{ inputs.action == 'apply' }}
+        working-directory: public/terraform
+        run: |
+          export INFERENCE_WORKER_ROLE_ARN="$(terraform output -raw inference_worker_role_arn)"
+          export DASHBOARD_BACKEND_ROLE_ARN="$(terraform output -raw dashboard_backend_role_arn)"
+          export ALB_CERTIFICATE_ARN="$(terraform output -raw alb_certificate_arn)"
+
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          root = Path.cwd().parent.parent
+          updates = [
+              (
+                  root / "public/k8s/apps/inference-worker/serviceaccount.yaml",
+                  r"(eks\.amazonaws\.com/role-arn:\s*).*$",
+                  rf"\1{os.environ['INFERENCE_WORKER_ROLE_ARN']}",
+              ),
+              (
+                  root / "public/k8s/apps/dashboard-backend/service-account.yaml",
+                  r"(eks\.amazonaws\.com/role-arn:\s*).*$",
+                  rf"\1{os.environ['DASHBOARD_BACKEND_ROLE_ARN']}",
+              ),
+              (
+                  root / "public/k8s/apps/inference-api/ingress.yaml",
+                  r"(alb\.ingress\.kubernetes\.io/certificate-arn:\s*).*$",
+                  rf"\1{os.environ['ALB_CERTIFICATE_ARN']}",
+              ),
+              (
+                  root / "public/k8s/apps/dashboard-frontend/ingress.yaml",
+                  r"(alb\.ingress\.kubernetes\.io/certificate-arn:\s*).*$",
+                  rf"\1{os.environ['ALB_CERTIFICATE_ARN']}",
+              ),
+          ]
+
+          for path, pattern, replacement in updates:
+              text = path.read_text(encoding="utf-8")
+              updated = re.sub(pattern, replacement, text, flags=re.MULTILINE)
+              path.write_text(updated, encoding="utf-8")
+          PY
+
+      - name: Commit runtime manifest values
+        if: ${{ inputs.action == 'apply' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/k8s/apps/inference-worker/serviceaccount.yaml \
+            public/k8s/apps/dashboard-backend/service-account.yaml \
+            public/k8s/apps/inference-api/ingress.yaml \
+            public/k8s/apps/dashboard-frontend/ingress.yaml
+          if git diff --cached --quiet; then
+            echo "No runtime manifest changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: refresh public runtime manifest values"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
 
       - name: Update Route53 A records for Internal ALB
         if: ${{ inputs.action == 'apply' && steps.resolve_instance.outputs.value != '' }}

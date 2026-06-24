@@ -45,6 +45,11 @@ output "ses_alert_recipient_email" {
   value       = var.ses_alert_recipient_email
 }
 
+output "alb_certificate_arn" {
+  description = "ACM certificate ARN used by the internal ALB ingress resources"
+  value       = var.alb_certificate_arn
+}
+
 output "account_id" {
   description = "AWS account ID"
   value       = data.aws_caller_identity.current.account_id
@@ -204,5 +209,15 @@ output "vpn_local_vpc_cidr" {
   value       = var.vpc_cidr
 }
 
-# Route 53 Resolver output is defined in route53.tf because the endpoint lives
-# there. Private cloud DNS forwarding consumes resolver_inbound_ips.
+# Route 53 Resolver outputs
+# 비활성화됨 - route53_resolver.tf 참고
+# output "inbound_resolver_ips" {
+#   description = "Inbound Route 53 Resolver IPs for forwarding *.amazonaws.com and private hosted zones"
+#   value       = [for ip in aws_route53_resolver_endpoint.inbound.ip_address : ip.ip]
+# }
+
+output "dlq_alert_lambda_name" {
+  description = "Lambda function name for the inference incident copilot webhook delivery"
+  value       = local.enable_dlq_alert_webhook ? aws_lambda_function.dlq_alarm[0].function_name : null
+  sensitive   = true
+}
