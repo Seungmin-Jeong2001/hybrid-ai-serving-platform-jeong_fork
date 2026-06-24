@@ -97,6 +97,23 @@ def _query_k8s_json(path: str) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
+def _query_k8s_text(path: str) -> str:
+    region = _env("AWS_REGION", "ap-northeast-2")
+    cluster_name = os.environ["EKS_CLUSTER_NAME"]
+    endpoint, ssl_context = _load_cluster_connection()
+    token = _build_eks_bearer_token(cluster_name, region)
+    req = request.Request(
+        f"{endpoint}{path}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "text/plain",
+        },
+        method="GET",
+    )
+    with request.urlopen(req, timeout=5, context=ssl_context) as response:
+        return response.read().decode("utf-8")
+
+
 def _summarize_pods(label_selector: str) -> dict:
     namespace = _env("EKS_NAMESPACE", "inference")
     selector = parse.quote(label_selector, safe="=,")
@@ -142,6 +159,26 @@ def _summarize_pods(label_selector: str) -> dict:
         "phases": phases,
         "pods": pods,
     }
+
+
+def _collect_recent_pod_logs(label_selector: str, tail_lines: int = 20, max_pods: int = 1) -> list[dict]:
+    namespace = _env("EKS_NAMESPACE", "inference")
+    selector = parse.quote(label_selector, safe="=,")
+    payload = _query_k8s_json(f"/api/v1/namespaces/{namespace}/pods?labelSelector={selector}")
+    items = payload.get("items", [])[:max_pods]
+
+    logs = []
+    for item in items:
+        pod_name = item.get("metadata", {}).get("name", "unknown")
+        log_path = (
+            f"/api/v1/namespaces/{namespace}/pods/{pod_name}/log"
+            f"?tailLines={tail_lines}&timestamps=true"
+        )
+        logs.append({
+            "pod": pod_name,
+            "log": _query_k8s_text(log_path),
+        })
+    return logs
 
 
 def _query_msk_lag(topic_name: str) -> int | None:
@@ -227,12 +264,20 @@ def _heuristic_summary(payload: dict, kafka_context: dict, worker_status: dict, 
 
 
 def _build_prompt(payload: dict, kafka_context: dict, worker_status: dict, predictor_status: dict) -> str:
+    worker_logs = payload.get("_worker_logs", [])
+    predictor_logs = payload.get("_predictor_logs", [])
     return f"""
 You are an SRE copilot for an asynchronous inference platform.
 Analyze the incident context and respond in JSON with the following keys:
 - likely_causes: array of up to 3 short strings
 - recommended_actions: array of up to 3 short strings
 - confidence: one of high, medium, low
+
+Rules:
+- Base your answer only on the observed context below.
+- Do not claim a network issue unless the logs or metrics explicitly indicate connectivity failure.
+- Prefer application-level causes when logs include concrete exceptions or HTTP 5xx evidence.
+- Recommended actions must be specific to the observed signals, not generic troubleshooting advice.
 
 Incident context:
 {json.dumps(
@@ -248,6 +293,8 @@ Incident context:
         "kafka": kafka_context,
         "worker": worker_status,
         "predictor": predictor_status,
+        "recent_worker_logs": worker_logs,
+        "recent_predictor_logs": predictor_logs,
     },
     ensure_ascii=False,
 )}
@@ -368,6 +415,17 @@ def handler(event, _context):
             kafka_context = _collect_kafka_context()
             worker_status = _safe_collect_pod_status(_env("WORKER_SELECTOR", "app=inference-worker"))
             predictor_status = _safe_collect_pod_status(_env("PREDICTOR_SELECTOR", "serving.kserve.io/inferenceservice=pdm"))
+            try:
+                payload["_worker_logs"] = _collect_recent_pod_logs(_env("WORKER_SELECTOR", "app=inference-worker"))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("worker_log_collection_failed selector=%s error=%s", _env("WORKER_SELECTOR", "app=inference-worker"), exc)
+                payload["_worker_logs"] = []
+
+            try:
+                payload["_predictor_logs"] = _collect_recent_pod_logs(_env("PREDICTOR_SELECTOR", "serving.kserve.io/inferenceservice=pdm"))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("predictor_log_collection_failed selector=%s error=%s", _env("PREDICTOR_SELECTOR", "serving.kserve.io/inferenceservice=pdm"), exc)
+                payload["_predictor_logs"] = []
             try:
                 summary = _invoke_bedrock_summary(payload, kafka_context, worker_status, predictor_status)
             except Exception as exc:  # noqa: BLE001
