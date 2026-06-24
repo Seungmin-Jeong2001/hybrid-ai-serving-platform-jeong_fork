@@ -21,6 +21,18 @@ resource "aws_security_group" "dlq_alert_lambda" {
   })
 }
 
+resource "aws_security_group_rule" "dlq_alert_lambda_to_eks_api" {
+  count = local.enable_dlq_alert_webhook ? 1 : 0
+
+  type                     = "ingress"
+  description              = "Allow the DLQ alert Lambda to reach the EKS private API endpoint"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  security_group_id        = aws_eks_cluster.main.vpc_config[0].cluster_security_group_id
+  source_security_group_id = aws_security_group.dlq_alert_lambda[0].id
+}
+
 data "archive_file" "dlq_alarm_lambda" {
   count = local.enable_dlq_alert_webhook ? 1 : 0
 
