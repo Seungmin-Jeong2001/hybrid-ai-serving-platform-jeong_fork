@@ -378,8 +378,8 @@ write_ssh_config() {
   local tmp_config proxy_cmd
   ensure_ssh_key
   if [[ "${HA_OPENSTACK_PROVIDER}" == "kolla" ]]; then
-    # Kolla: VM은 OpenStack Floating IP(ext-net)로 직접 접근 → ProxyCommand 불필요
-    proxy_cmd=""
+    # Kolla: tenant VM은 qdhcp netns nc 래퍼 경유 (FIP 미사용 → VM 네트워크 노출 최소화)
+    proxy_cmd="sudo ${HA_KOLLA_NETNS_NC} %h %p"
   else
     proxy_cmd="lxc exec ha-openstack -- nc %h %p"
   fi
@@ -2778,7 +2778,7 @@ for role, key, port_name, port_value in roles:
     if not nodes:
         continue
     node = nodes[0]
-    ip = node.get("floating_ip") or node.get("private_ip")
+    ip = node.get("private_ip") or node.get("floating_ip")
     if not ip:
         continue
     print(f"{role}\t{port}\t{ip}\t{node.get('name', '')}")
@@ -3151,8 +3151,8 @@ terraform_apply() {
     public_network_id="$(kolla_os network show "${_extnet}" -f value -c id)"
     public_subnet_id="$(kolla_os subnet list --network "${_extnet}" --ip-version 4 -f value -c ID | head -n 1)"
     public_subnet_cidr="$(kolla_os subnet show "${public_subnet_id}" -f value -c cidr)"
-    # Kolla: OpenStack Floating IP로 호스트→VM 직접 접근 (DevStack LXD proxy 대체)
-    assign_floating_ips="$(tf_bool_value PRIVATE_CLOUD_ASSIGN_FLOATING_IPS "${PRIVATE_CLOUD_ASSIGN_FLOATING_IPS}")"
+    # Kolla: FIP 미사용 (호스트→VM=qdhcp netns, 외부접속=in-cluster cloudflared) → VM 네트워크 노출 0
+    assign_floating_ips=false
     fip_pool="${_extnet}"
   else
     public_network_id="$(lxc exec ha-openstack -- sudo -u stack -H bash -lc 'cd /opt/stack/devstack && set +u && source openrc admin admin >/dev/null && set -u && openstack network show public -f value -c id')"
@@ -3264,7 +3264,7 @@ with open(sys.argv[1], "r", encoding="utf-8") as handle:
     data = json.load(handle)
 for key in ("control_plane_nodes", "build_worker_nodes", "gpu_worker_nodes", "harbor_nodes"):
     for node in data.get(key, {}).get("value", []):
-        ip = node.get("floating_ip") or node.get("private_ip")
+        ip = node.get("private_ip") or node.get("floating_ip")
         if ip:
             print(ip, node.get("name", ""))
 PY
@@ -3294,7 +3294,7 @@ with open(sys.argv[1], "r", encoding="utf-8") as handle:
     data = json.load(handle)
 
 for node in data.get(sys.argv[2], {}).get("value", []):
-    ip = node.get("floating_ip") or node.get("private_ip")
+    ip = node.get("private_ip") or node.get("floating_ip")
     if ip:
         print(f"{ip}\t{node.get('name', '')}")
 PY
@@ -3923,9 +3923,12 @@ sudo journalctl -u hybrid-ai-gitlab-bootstrap.service -n 100 --no-pager || true
 sudo cat /var/lib/hybrid-ai/gitlab-bootstrap/status.env 2>/dev/null || true
 REMOTE
   ensure_lxc_proxy_device gitlab-proxy "tcp:127.0.0.1:${GITLAB_UPSTREAM_PORT}" "tcp:${target}:80"
-  local _gl_ep; _gl_ep="$(host_svc_ep "${target}" 80 "${GITLAB_UPSTREAM_PORT}")"
-  curl -fsS "http://${_gl_ep}/users/sign_in" >/dev/null 2>&1 \
-    || curl -fsS "http://${_gl_ep}/-/readiness" >/dev/null
+  if [[ "${HA_OPENSTACK_PROVIDER}" != "kolla" ]]; then
+    local _gl_ep; _gl_ep="$(host_svc_ep "${target}" 80 "${GITLAB_UPSTREAM_PORT}")"
+    curl -fsS "http://${_gl_ep}/users/sign_in" >/dev/null 2>&1 \
+      || curl -fsS "http://${_gl_ep}/-/readiness" >/dev/null
+  fi
+  # Kolla: 호스트 직접 체크 생략 (위 VM 내부 self-check + cloudflared gitlab.intp.me로 검증)
 }
 
 setup_harbor() {
@@ -4038,9 +4041,12 @@ sudo cat /var/lib/hybrid-ai/harbor-bootstrap/status.env 2>/dev/null || true
 REMOTE
 
   ensure_lxc_proxy_device harbor-proxy "tcp:127.0.0.1:${HARBOR_UPSTREAM_PORT}" "tcp:${target}:${HARBOR_HTTP_PORT}"
-  local _hb_ep; _hb_ep="$(host_svc_ep "${target}" "${HARBOR_HTTP_PORT}" "${HARBOR_UPSTREAM_PORT}")"
-  curl -fsS "http://${_hb_ep}/api/v2.0/ping" >/dev/null 2>&1 \
-    || curl -fsS "http://${_hb_ep}/api/v2.0/health" >/dev/null
+  if [[ "${HA_OPENSTACK_PROVIDER}" != "kolla" ]]; then
+    local _hb_ep; _hb_ep="$(host_svc_ep "${target}" "${HARBOR_HTTP_PORT}" "${HARBOR_UPSTREAM_PORT}")"
+    curl -fsS "http://${_hb_ep}/api/v2.0/ping" >/dev/null 2>&1 \
+      || curl -fsS "http://${_hb_ep}/api/v2.0/health" >/dev/null
+  fi
+  # Kolla: 호스트 직접 체크 생략 (VM 내부 health + cloudflared harbor.intp.me로 검증)
 
   # Persist the kaniko robot credentials to a run-independent path. The k8s pull
   # secret is created later by the platform phase (setup_model_build_platform),
