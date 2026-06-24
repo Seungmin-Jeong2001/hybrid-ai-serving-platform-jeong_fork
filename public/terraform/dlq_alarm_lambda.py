@@ -184,15 +184,23 @@ def _collect_recent_pod_logs(label_selector: str, tail_lines: int = 20, max_pods
 
 def _extract_signal_patterns(text: str) -> list[str]:
     patterns = [
-        (r"KeyError:\s*'([^']+)'", "application exception KeyError on field {group1}"),
-        (r"ValueError:\s*(.+)", "application exception ValueError"),
-        (r"Traceback \(most recent call last\):", "python traceback observed"),
-        (r"500 Internal Server Error", "HTTP 500 observed"),
-        (r"Connection reset by peer", "connection reset observed"),
-        (r"timed out|Timeout", "timeout observed"),
-        (r"KSERVE_INTERNAL_ERROR", "worker classified request as KSERVE_INTERNAL_ERROR"),
-        (r"HTTPStatusError", "worker observed HTTP status error"),
-        (r"connect|Connection", "connection-related log observed"),
+        (r"KeyError:\s*'([^']+)'", "predictor 입력 데이터에 {group1} 필드 누락 징후"),
+        (r"ValueError:\s*(.+)", "애플리케이션 ValueError 발생"),
+        (r"TypeError:\s*(.+)", "애플리케이션 TypeError 발생"),
+        (r"Traceback \(most recent call last\):", "파이썬 traceback 발생"),
+        (r"500 Internal Server Error|HTTP/1\.[01] 500", "predictor HTTP 500 발생"),
+        (r"502 Bad Gateway|HTTP/1\.[01] 502", "업스트림 502 응답 발생"),
+        (r"Connection reset by peer", "연결 중 peer reset 발생"),
+        (r"timed out|Timeout", "타임아웃 발생"),
+        (r"KSERVE_INTERNAL_ERROR", "worker가 KSERVE_INTERNAL_ERROR로 분류"),
+        (r"HTTPStatusError", "worker가 HTTP 상태 오류 감지"),
+        (r"predictor response missing predictions", "predictor 응답에 predictions 누락"),
+        (r"predictor response missing class_name", "predictor 응답에 class_name 누락"),
+        (r"payload must be an object", "요청 payload 객체 형식 오류"),
+        (r"missing required field: ([A-Za-z0-9_]+)", "요청 필수 필드 {group1} 누락"),
+        (r"invalid field type for ([A-Za-z0-9_]+)", "요청 필드 {group1} 타입 오류"),
+        (r"JSONDecodeError", "JSON 파싱 오류"),
+        (r"Connection refused", "대상 서비스 연결 거부"),
     ]
 
     signals = []
@@ -206,6 +214,51 @@ def _extract_signal_patterns(text: str) -> list[str]:
                 signal = signal.replace(f"{{group{index}}}", match.group(index))
         signals.append(signal)
     return signals
+
+
+def _derive_diagnostic_signals(
+    payload: dict,
+    kafka_context: dict,
+    worker_status: dict,
+    predictor_status: dict,
+    worker_logs: list[dict],
+    predictor_logs: list[dict],
+) -> list[str]:
+    joined_worker_logs = "\n".join(entry.get("log", "") for entry in worker_logs)
+    joined_predictor_logs = "\n".join(entry.get("log", "") for entry in predictor_logs)
+    last_error = str(payload.get("last_error", ""))
+    failure_stage = str(payload.get("failure_stage", "unknown"))
+    retry_lag = kafka_context.get("lag_by_topic", {}).get("inference-retry")
+
+    diagnostics = []
+
+    predictor_ready = predictor_status.get("ready", 0)
+    predictor_total = predictor_status.get("total", 0)
+    worker_ready = worker_status.get("ready", 0)
+    worker_total = worker_status.get("total", 0)
+
+    if "KeyError" in joined_predictor_logs and "sensor" in joined_predictor_logs:
+        diagnostics.append("진단: predictor 입력 스키마 또는 feature 필드 누락 가능성이 높음")
+
+    if "payload must be an object" in joined_worker_logs or "missing required field" in joined_worker_logs or "invalid field type" in joined_worker_logs:
+        diagnostics.append("진단: inference 요청 payload 형식 오류 가능성이 높음")
+
+    if ("predictor response missing predictions" in joined_worker_logs or "predictor response missing class_name" in joined_worker_logs):
+        diagnostics.append("진단: predictor 응답 스키마 불일치 가능성이 높음")
+
+    if "500 Internal Server Error" in joined_predictor_logs and predictor_total > 0 and predictor_ready == predictor_total:
+        diagnostics.append("진단: predictor 파드는 Ready 상태지만 애플리케이션 내부에서 HTTP 500이 발생함")
+
+    if "Connection reset by peer" in last_error and predictor_total > 0 and predictor_ready == predictor_total and worker_total > 0 and worker_ready == worker_total:
+        diagnostics.append("진단: worker와 predictor 파드는 모두 Ready이며, predictor 처리 중 연결이 비정상 종료되었을 가능성이 높음")
+
+    if failure_stage == "predictor-http" and "KSERVE_INTERNAL_ERROR" in joined_worker_logs:
+        diagnostics.append("진단: predictor HTTP 호출 단계에서 반복적인 내부 오류가 발생함")
+
+    if isinstance(retry_lag, int) and retry_lag >= 10:
+        diagnostics.append(f"진단: retry 토픽 backlog가 {retry_lag}건 이상으로 누적됨")
+
+    return diagnostics[:6]
 
 
 def _build_observed_signals(
@@ -235,6 +288,17 @@ def _build_observed_signals(
             extracted = _extract_signal_patterns(log_text)
             for signal in extracted:
                 signals.append(f"{source_name}_pod={pod_name}: {signal}")
+
+    signals.extend(
+        _derive_diagnostic_signals(
+            payload,
+            kafka_context,
+            worker_status,
+            predictor_status,
+            worker_logs,
+            predictor_logs,
+        )
+    )
 
     # Deduplicate while keeping order stable for prompt readability.
     seen = set()
@@ -336,8 +400,8 @@ def _build_prompt(payload: dict, kafka_context: dict, worker_status: dict, predi
     return f"""
 You are an SRE copilot for an asynchronous inference platform.
 Analyze the incident context and respond in JSON with the following keys:
-- likely_causes: array of up to 3 short strings
-- recommended_actions: array of up to 3 short strings
+- likely_causes: array of up to 3 short Korean strings
+- recommended_actions: array of up to 3 short Korean strings
 - confidence: one of high, medium, low
 
 Rules:
@@ -346,6 +410,10 @@ Rules:
 - Prefer application-level causes when logs include concrete exceptions or HTTP 5xx evidence.
 - Recommended actions must be specific to the observed signals, not generic troubleshooting advice.
 - Prioritize the observed_signals section over raw logs when they conflict.
+- Write likely_causes and recommended_actions in Korean.
+- Keep each item concise and operational.
+- If the evidence points to an application error or malformed request, prefer that over generic infrastructure or network explanations.
+- If observed_signals already contain a diagnosis-style statement starting with "진단:", use it directly instead of replacing it with vague generic wording.
 
 Incident context:
 {json.dumps(
