@@ -522,6 +522,7 @@ jobs:
         run: |
           ALB_CERTIFICATE_ARN="$(terraform output -raw alb_certificate_arn)"
           export ALB_CERTIFICATE_ARN
+          export RESOLVE_INTERNAL_ALB_SCRIPT_B64="$(base64 -w 0 scripts/resolve-internal-alb.sh)"
 
           python - <<'PY'
           import json
@@ -529,24 +530,13 @@ jobs:
 
           commands = [
               "set -euo pipefail",
-              "if ! command -v kubectl >/dev/null 2>&1; then curl -fsSLo /tmp/kubectl https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl && chmod +x /tmp/kubectl && sudo mv /tmp/kubectl /usr/local/bin/kubectl; fi",
-              "export KUBECONFIG=/tmp/eks-kubeconfig",
-              f"ASSUME_ROLE_OUTPUT=$(aws sts assume-role --role-arn {os.environ['BOOTSTRAP_ROLE_ARN']} --role-session-name route53-resolve --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text)",
-              "if [ -z \"$ASSUME_ROLE_OUTPUT\" ] || [ \"$ASSUME_ROLE_OUTPUT\" = \"None\" ]; then echo 'Failed to assume bootstrap role.'; exit 1; fi",
-              "read AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN <<< \"$ASSUME_ROLE_OUTPUT\"",
-              "export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN",
-              f"aws eks update-kubeconfig --region {os.environ['AWS_REGION']} --name {os.environ['EKS_CLUSTER_NAME']} --kubeconfig /tmp/eks-kubeconfig",
-              "for i in $(seq 1 20); do if kubectl get ns argocd >/dev/null 2>&1 && kubectl get application -n argocd inference-api >/dev/null 2>&1 && kubectl get application -n argocd dashboard-frontend >/dev/null 2>&1; then echo 'ArgoCD applications are present.'; break; fi; echo \"Waiting for ArgoCD applications to appear ($i/20)...\"; sleep 15; done",
-              "kubectl get ns argocd >/dev/null 2>&1 || { echo 'argocd namespace is missing.'; kubectl get ns || true; exit 1; }",
-              "kubectl get application -n argocd inference-api >/dev/null 2>&1 || { echo 'ArgoCD application inference-api is missing.'; kubectl get application -n argocd || true; exit 1; }",
-              "kubectl get application -n argocd dashboard-frontend >/dev/null 2>&1 || { echo 'ArgoCD application dashboard-frontend is missing.'; kubectl get application -n argocd || true; exit 1; }",
-              "kubectl annotate application -n argocd inference-api argocd.argoproj.io/refresh=hard --overwrite >/dev/null 2>&1 || true",
-              "kubectl annotate application -n argocd dashboard-frontend argocd.argoproj.io/refresh=hard --overwrite >/dev/null 2>&1 || true",
-              f"for i in $(seq 1 40); do INFERENCE_SYNC=$(kubectl get application -n argocd inference-api -o jsonpath='{{.status.sync.status}}' 2>/dev/null || true); DASHBOARD_SYNC=$(kubectl get application -n argocd dashboard-frontend -o jsonpath='{{.status.sync.status}}' 2>/dev/null || true); INFERENCE_CERT=$(kubectl get ingress -n inference inference-api -o jsonpath='{{.metadata.annotations.alb\\.ingress\\.kubernetes\\.io/certificate-arn}}' 2>/dev/null || true); DASHBOARD_CERT=$(kubectl get ingress -n app dashboard-frontend -o jsonpath='{{.metadata.annotations.alb\\.ingress\\.kubernetes\\.io/certificate-arn}}' 2>/dev/null || true); if [ \"$INFERENCE_SYNC\" = \"Synced\" ] && [ \"$DASHBOARD_SYNC\" = \"Synced\" ] && [ \"$INFERENCE_CERT\" = \"{os.environ['ALB_CERTIFICATE_ARN']}\" ] && [ \"$DASHBOARD_CERT\" = \"{os.environ['ALB_CERTIFICATE_ARN']}\" ]; then echo 'ArgoCD applications synced and ingress annotations applied.'; break; fi; echo \"Waiting for ArgoCD sync ($i/40): inference=$INFERENCE_SYNC, dashboard=$DASHBOARD_SYNC\"; sleep 15; done",
-              "ALB_DNS=''",
-              "for i in $(seq 1 40); do INFERENCE_ALB_DNS=$(kubectl get ingress -n inference inference-api -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true); DASHBOARD_ALB_DNS=$(kubectl get ingress -n app dashboard-frontend -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true); if [ -n \"$INFERENCE_ALB_DNS\" ]; then ALB_DNS=\"$INFERENCE_ALB_DNS\"; break; fi; if [ -n \"$DASHBOARD_ALB_DNS\" ]; then ALB_DNS=\"$DASHBOARD_ALB_DNS\"; break; fi; echo \"Waiting for internal ALB hostname from ingress ($i/40)...\"; sleep 15; done",
-              "if [ -z \"$ALB_DNS\" ] || [ \"$ALB_DNS\" = \"None\" ]; then echo 'Internal ALB hostname not found from ingress status.'; kubectl get application -n argocd inference-api dashboard-frontend -o wide || true; kubectl get ingress -A || true; kubectl describe ingress -n inference inference-api || true; kubectl describe ingress -n app dashboard-frontend || true; exit 1; fi",
-              "echo ALB_DNS=$ALB_DNS",
+              f"echo '{os.environ['RESOLVE_INTERNAL_ALB_SCRIPT_B64']}' | base64 -d > /tmp/resolve-internal-alb.sh",
+              "chmod +x /tmp/resolve-internal-alb.sh",
+              f"export AWS_REGION='{os.environ['AWS_REGION']}'",
+              f"export EKS_CLUSTER_NAME='{os.environ['EKS_CLUSTER_NAME']}'",
+              f"export BOOTSTRAP_ROLE_ARN='{os.environ['BOOTSTRAP_ROLE_ARN']}'",
+              f"export ALB_CERTIFICATE_ARN='{os.environ['ALB_CERTIFICATE_ARN']}'",
+              "/bin/sh /tmp/resolve-internal-alb.sh",
           ]
 
           with open("route53-commands.json", "w", encoding="utf-8") as fp:
