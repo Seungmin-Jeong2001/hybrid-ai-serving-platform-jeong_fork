@@ -688,7 +688,7 @@ def _collect_kafka_context() -> dict:
     }
 
 
-def _heuristic_summary(payload: dict, kafka_context: dict, worker_status: dict, predictor_status: dict) -> tuple[list[str], list[str]]:
+def _heuristic_summary(payload: dict, kafka_context: dict, worker_status: dict, predictor_status: dict) -> dict:
     max_lag = kafka_context.get("max_lag")
     failure_stage = payload.get("failure_stage", "unknown")
     predictor_ready = predictor_status.get("ready", 0)
@@ -696,58 +696,74 @@ def _heuristic_summary(payload: dict, kafka_context: dict, worker_status: dict, 
     predictor_restarts = predictor_status.get("restarts", 0)
     worker_ready = worker_status.get("ready", 0)
     worker_total = worker_status.get("total", 0)
-    worker_restarts = worker_status.get("restarts", 0)
+    last_error = str(payload.get("last_error", "unknown"))
 
     if predictor_status.get("running", 0) < predictor_status.get("total", 0):
-        causes = [
-            "pdm-predictor pod가 정상 Running/Ready 상태를 만족하지 못해 predictor-http 단계에서 요청 처리가 중단되었을 가능성이 가장 높습니다.",
-            f"현재 Predictor 상태가 {predictor_ready}/{predictor_total} Ready로 관측되어, 요청 실패 시점에 predictor 워크로드 가용성이 충분하지 않았다는 운영 신호가 확인됩니다.",
-            "Predictor 비정상 상태가 지속되면 retry 토픽 적체와 후속 DLQ 증가로 이어질 수 있으므로 inference-worker 처리 지연 여부도 함께 점검해야 합니다.",
-        ]
-        actions = [
-            "pdm-predictor pod의 phase, readiness, 최근 이벤트를 먼저 확인해 Pending, CrashLoopBackOff, ImagePull 오류가 있는지 즉시 점검하세요.",
-            "pdm-predictor 로그와 Deployment 상태를 확인해 애플리케이션 예외, 모델 로드 실패, 프로브 실패 중 어떤 원인인지 확증하세요.",
-            "동일 시점의 inference-worker retry 증가와 retry 토픽 lag 추이를 함께 확인해 장애 영향 범위가 worker 처리량 저하로 확산되었는지 점검하세요.",
-        ]
-        return causes, actions
+        return {
+            "judgment": "predictor 워크로드가 정상 Running/Ready 상태를 만족하지 못해 predictor-http 단계에서 요청 처리가 중단된 상황으로 판단됩니다.",
+            "priority_checks": [
+                "pdm-predictor pod phase와 최근 이벤트를 확인해 Pending, CrashLoopBackOff, ImagePull 오류가 있는지 확인합니다.",
+                "pdm-predictor 로그에서 모델 로드 실패, probe 실패, 애플리케이션 예외가 있는지 확인합니다.",
+                "Deployment rollout 상태와 최근 변경 이력이 있는지 확인합니다.",
+                "retry topic lag가 계속 증가하는지 확인해 후속 요청 영향 범위를 점검합니다.",
+            ],
+            "recommended_actions": [
+                "predictor 비정상 원인을 확인한 뒤 필요한 경우 rollout restart 또는 이미지 문제를 복구합니다.",
+                "동일 오류가 반복되면 predictor 리소스와 probe 설정을 함께 점검합니다.",
+                "재처리가 필요한 요청은 predictor 정상화 후 DLQ payload 기준으로 재처리 여부를 판단합니다.",
+            ],
+            "confidence": "high",
+        }
 
     if predictor_restarts > 0:
-        causes = [
-            "pdm-predictor가 재시작을 반복하면서 predictor-http 호출 중 연결이 비정상 종료되었을 가능성이 높습니다.",
-            f"Predictor restart count가 {predictor_restarts}회로 관측되어, 단순 일회성 요청 실패보다 워크로드 불안정 신호가 더 강하게 보입니다.",
-            "Predictor 재시작이 반복되면 동일 요청 패턴이 retry와 DLQ로 연쇄 전파될 수 있으므로 worker 측 재처리 부담도 함께 점검해야 합니다.",
-        ]
-        actions = [
-            "pdm-predictor 최근 로그를 확인해 종료 직전 예외, OOM, timeout, 모델 초기화 실패가 있었는지 즉시 확인하세요.",
-            "pdm-predictor Deployment rollout 상태와 liveness/readiness probe 실패 이력을 확인해 재시작의 직접 원인을 확증하세요.",
-            "동일 시간대 inference-worker 재시도 증가와 Kafka retry lag 변화를 함께 확인해 장애 파급 범위를 점검하세요.",
-        ]
-        return causes, actions
+        return {
+            "judgment": f"pdm-predictor 재시작이 {predictor_restarts}회 관측되어 predictor-http 호출 중 워크로드 불안정으로 연결이 끊긴 상황으로 판단됩니다.",
+            "priority_checks": [
+                "pdm-predictor 종료 직전 로그에서 예외, OOMKilled, timeout 흔적이 있는지 확인합니다.",
+                "liveness/readiness probe 실패 이력과 Deployment rollout 상태를 확인합니다.",
+                "최근 이미지나 설정 변경이 있었는지 확인합니다.",
+                "retry topic lag와 worker 재시도 증가가 함께 나타나는지 확인합니다.",
+            ],
+            "recommended_actions": [
+                "재시작 원인이 애플리케이션 오류면 predictor 코드를 수정하거나 이전 정상 버전으로 복구합니다.",
+                "리소스 부족이나 probe 오탐이면 predictor 리소스 또는 probe 설정을 조정합니다.",
+                "장애 영향 요청은 predictor 안정화 후 DLQ 기준으로 재처리 여부를 판단합니다.",
+            ],
+            "confidence": "high",
+        }
 
     if isinstance(max_lag, int) and max_lag >= 20:
-        causes = [
-            "inference-worker 소비 지연이 누적되어 장애 복구 이후에도 retry 처리 backlog가 남아 있을 가능성이 높습니다.",
-            f"현재 Kafka max lag가 {max_lag}로 관측되어, 단순 단건 실패보다 소비 지연이 동반된 운영 신호가 확인됩니다.",
-            "retry backlog가 계속 쌓이면 후속 정상 요청도 지연될 수 있으므로 worker 처리량과 재시도 폭증 여부를 함께 점검해야 합니다.",
-        ]
-        actions = [
-            "inference-worker 처리량과 consumer lag 추이를 먼저 확인해 현재 backlog가 줄고 있는지 즉시 점검하세요.",
-            "inference-worker 로그를 확인해 predictor 호출 실패가 반복되는지, 아니면 Kafka 소비 자체가 막혀 있는지 확증하세요.",
-            "동일 시간대 predictor 상태와 retry 토픽 적체를 함께 확인해 장애 영향이 특정 워크로드에 국한되는지 점검하세요.",
-        ]
-        return causes, actions
+        return {
+            "judgment": f"retry backlog가 {max_lag} 수준으로 누적되어 worker 재처리 지연이 동반된 장애 상황으로 판단됩니다.",
+            "priority_checks": [
+                "inference-worker consumer lag 추이가 줄고 있는지 확인합니다.",
+                "worker 로그에서 predictor 호출 실패 반복인지 Kafka 소비 병목인지 구분합니다.",
+                "predictor 상태가 정상인지 함께 확인해 원인이 worker 측 적체인지 분리합니다.",
+                "동일 시간대 다른 요청도 지연되는지 확인해 영향 범위를 점검합니다.",
+            ],
+            "recommended_actions": [
+                "worker replica나 처리량을 조정해 retry backlog를 우선 완화합니다.",
+                "predictor 호출 실패가 동반되면 predictor 로그와 리소스를 함께 점검합니다.",
+                "지속 적체 시 토픽 소비 설정과 파티션 구성을 재검토합니다.",
+            ],
+            "confidence": "medium",
+        }
 
-    causes = [
-        f"{failure_stage} 단계에서 직접 실패가 발생했지만, 현재 수집된 인프라 신호만으로 단정적인 단일 원인을 확정하기는 어렵습니다.",
-        f"현재 Worker 상태는 {worker_ready}/{worker_total} Ready이고 Predictor 상태는 {predictor_ready}/{predictor_total} Ready로 보여, 추가 애플리케이션 로그 근거가 더 필요합니다.",
-        "명확한 인프라 장애 신호가 약한 경우에는 요청 payload 특성, predictor 애플리케이션 예외, 일시적 연결 종료 가능성을 함께 점검해야 합니다.",
-    ]
-    actions = [
-        "inference-worker와 pdm-predictor의 최근 로그를 먼저 확인해 동일 request_id 또는 동일 시점의 예외 흔적이 있는지 즉시 점검하세요.",
-        "predictor-http 호출 직전후의 worker 로그와 predictor 애플리케이션 로그를 대조해 연결 종료, 5xx, payload 처리 오류 중 어떤 유형인지 확증하세요.",
-        "같은 장비 또는 같은 payload 패턴에서 실패가 반복되는지 확인해 장애 영향이 특정 요청군에 국한되는지 점검하세요.",
-    ]
-    return causes, actions
+    return {
+        "judgment": f"{failure_stage} 단계에서 {last_error}가 발생했고 worker={worker_ready}/{worker_total} Ready, predictor={predictor_ready}/{predictor_total} Ready 상태라 특정 요청 또는 predictor 애플리케이션 계층 오류 가능성이 높습니다.",
+        "priority_checks": [
+            "predictor 로그에서 동일 시간대 connection reset, 5xx, KSERVE_INTERNAL_ERROR가 있는지 확인합니다.",
+            "worker 로그에서 해당 request_id 기준 재시도 흐름과 마지막 오류를 확인합니다.",
+            "predictor 재시작 여부, OOMKilled, readiness/liveness 이벤트가 있었는지 확인합니다.",
+            "retry topic lag가 계속 증가하는지 확인해 단건 실패인지 확산 중인 장애인지 구분합니다.",
+        ],
+        "recommended_actions": [
+            "동일 에러가 반복되면 predictor rollout restart 또는 이전 정상 버전 복구를 검토합니다.",
+            "retry lag가 증가하면 worker replica 증설이나 predictor 리소스 점검을 진행합니다.",
+            "단건 실패로 보이면 DLQ payload를 확인한 뒤 재처리 여부를 판단합니다.",
+        ],
+        "confidence": "medium",
+    }
 
 
 def _build_prompt(payload: dict, kafka_context: dict, worker_status: dict, predictor_status: dict) -> str:
@@ -759,7 +775,8 @@ def _build_prompt(payload: dict, kafka_context: dict, worker_status: dict, predi
     return f"""
 You are an SRE copilot for an asynchronous inference platform.
 Analyze the incident context and respond in JSON with the following keys:
-- likely_causes: array of exactly 3 Korean strings
+- judgment: 1 or 2 concise Korean sentences
+- priority_checks: array of exactly 4 concise Korean strings
 - recommended_actions: array of exactly 3 Korean strings
 - confidence: one of high, medium, low
 
@@ -769,23 +786,21 @@ Rules:
 - Prefer application-level causes when logs include concrete exceptions or HTTP 5xx evidence.
 - Recommended actions must be specific to the observed signals, not generic troubleshooting advice.
 - Prioritize the observed_signals section over raw logs when they conflict.
-- Write likely_causes and recommended_actions in Korean.
+- Write judgment, priority_checks, and recommended_actions in Korean.
 - All explanation sentences must be written in Korean.
 - Technical identifiers may remain in English when needed, such as predictor, inference-worker, Kafka, HTTP 500, Connection reset by peer, request_id, or Kubernetes Warning.
 - Do not write English-only cause or action sentences.
-- Write exactly 3 likely_causes items and exactly 3 recommended_actions items.
-- Structure likely_causes in this exact order:
-  1. the most likely direct root cause,
-  2. the operational signal or observed evidence that supports that cause,
-  3. the adjacent risk, side effect, or surrounding impact that should also be checked.
-- Structure recommended_actions in this exact order:
-  1. the immediate first check or action the operator should take now,
-  2. the follow-up check that would confirm or refute the direct cause,
-  3. the scope or blast-radius check for related downstream impact.
-- Write each item as a complete Korean sentence, not a short noun phrase.
-- Each likely_causes item must include the concrete evidence or signal it is based on when possible.
+- Write exactly 1 judgment, exactly 4 priority_checks items, and exactly 3 recommended_actions items.
+- judgment must read like an operator's current assessment, not a list of vague possibilities.
+- priority_checks must be short, practical, and ordered by what the operator should verify first.
+- recommended_actions must be concrete next actions, not repeated requests to check logs.
+- Write each item as a concise Korean sentence, not a long paragraph.
+- Do not repeat the same meaning across judgment, priority_checks, and recommended_actions.
 - Each recommended_actions item must mention the exact component to inspect, such as predictor 로그, inference-worker 로그, retry 토픽 lag, or 요청 payload.
 - If the evidence points to an application error or malformed request, prefer that over generic infrastructure or network explanations.
+- If predictor is Ready 1/1, do not suggest that predictor is down or not running unless logs or events explicitly prove otherwise.
+- If Kafka lag is low, for example below 10, do not present lag as a primary cause. Mention it only as low-impact context when truly relevant.
+- Prefer the most specific error evidence from logs, such as KSERVE_INTERNAL_ERROR, HTTP 500, validation error, or Connection reset by peer, over generic wording like internal error or service failure.
 - If observed_signals already contain a diagnosis-style statement starting with "진단:", use it directly instead of replacing it with vague generic wording.
 - Avoid vague labels such as "프로세스 내부 예외", "외부 서비스 연결 실패", or "요청 데이터 문제" unless you also explain the observed evidence.
 - If evidence is insufficient, explicitly say which evidence is missing instead of inventing a broad generic cause.
@@ -828,7 +843,8 @@ If any required function cannot be called successfully, mention that missing evi
 Your final answer must be a single JSON object only.
 Response schema:
 {{
-  "likely_causes": ["완전한 한국어 문장", "...", "..."],
+  "judgment": "짧은 한국어 판단 1~2문장",
+  "priority_checks": ["짧은 한국어 문장", "...", "...", "..."],
   "recommended_actions": ["완전한 한국어 문장", "...", "..."],
   "confidence": "high|medium|low"
 }}
@@ -837,21 +853,19 @@ Rules:
 - All explanation sentences must be written in Korean.
 - Technical identifiers may remain in English when needed, such as predictor, inference-worker, Kafka, HTTP 500, Connection reset by peer, request_id, or Kubernetes Warning.
 - Do not write English-only cause or action sentences.
-- Write exactly 3 likely_causes items and exactly 3 recommended_actions items.
-- Structure likely_causes in this exact order:
-  1. the most likely direct root cause,
-  2. the operational signal or observed evidence that supports that cause,
-  3. the adjacent risk, side effect, or surrounding impact that should also be checked.
-- Structure recommended_actions in this exact order:
-  1. the immediate first check or action the operator should take now,
-  2. the follow-up check that would confirm or refute the direct cause,
-  3. the scope or blast-radius check for related downstream impact.
-- Each item must be a complete Korean sentence, not a short label or noun phrase.
-- Each likely_causes item must mention the concrete evidence it is based on whenever possible.
+- Write exactly 1 judgment, exactly 4 priority_checks items, and exactly 3 recommended_actions items.
+- judgment must read like an operator's current assessment, not a list of vague possibilities.
+- priority_checks must be short, practical, and ordered by what the operator should verify first.
+- recommended_actions must be concrete next actions, not repeated requests to check logs.
+- Each item must be a concise Korean sentence, not a long paragraph.
+- Do not repeat the same meaning across judgment, priority_checks, and recommended_actions.
 - Each recommended_actions item must mention the exact component to inspect, such as predictor 로그, inference-worker 로그, retry 토픽 lag, Kubernetes Warning 이벤트, pod 상태, or 요청 payload.
 - If evidence is insufficient, clearly state what evidence is missing instead of guessing.
 - Do not call something a network issue unless logs, events, or metrics explicitly support that conclusion.
 - Prefer application-level causes over generic infrastructure causes when concrete application errors are present.
+- If predictor is Ready 1/1, do not suggest that predictor is down or not running unless logs or events explicitly prove otherwise.
+- If Kafka lag is low, for example below 10, do not present lag as a primary cause. Mention it only as low-impact context when truly relevant.
+- Prefer the most specific error evidence from logs, such as KSERVE_INTERNAL_ERROR, HTTP 500, validation error, or Connection reset by peer, over generic wording like internal error or service failure.
 
 Incident context:
 {json.dumps(
@@ -936,17 +950,13 @@ def _invoke_bedrock_summary(payload: dict, kafka_context: dict, worker_status: d
 
     model_id = _env("BEDROCK_MODEL_ID")
     if not model_id:
-        likely_causes, recommended_actions = _heuristic_summary(payload, kafka_context, worker_status, predictor_status)
+        summary = _heuristic_summary(payload, kafka_context, worker_status, predictor_status)
         logger.info(
             "incident_summary_source=fallback reason=no_model_id request_id=%s",
             payload.get("request_id", "unknown"),
         )
-        return {
-            "likely_causes": likely_causes,
-            "recommended_actions": recommended_actions,
-            "confidence": "low",
-            "source": "heuristic",
-        }
+        summary["source"] = "heuristic"
+        return summary
 
     prompt = _build_prompt(payload, kafka_context, worker_status, predictor_status)
     bedrock = boto3.client("bedrock-runtime", region_name=_env("AWS_REGION", "ap-northeast-2"))
@@ -1016,28 +1026,105 @@ def _severity_title(environment: str) -> str:
     return f"🚨 [CRITICAL][{environment}]"
 
 
+def _build_quick_action_commands(payload: dict) -> list[tuple[str, str]]:
+    namespace = _env("EKS_NAMESPACE", "inference")
+    request_id = payload.get("request_id", "unknown")
+    failure_stage = payload.get("failure_stage", "unknown")
+    predictor_selector = _env("PREDICTOR_SELECTOR", "serving.kserve.io/inferenceservice=pdm")
+
+    commands = [
+        (
+            "가설 A: Predictor 내부 오류 또는 런타임 예외 확인",
+            "\n".join(
+                [
+                    f"kubectl get pod -n {namespace} -l {predictor_selector}",
+                    f"kubectl logs -n {namespace} -l {predictor_selector} --tail=200 | grep -Ei \"error|5xx|kserve|reset|timeout\"",
+                ]
+            ),
+        ),
+        (
+            "가설 B: Worker-Predictor 호출 흐름 확인",
+            "\n".join(
+                [
+                    f"kubectl logs -n {namespace} -l app=inference-worker --tail=500 | grep -E 'KSERVE_INTERNAL_ERROR|retry|{request_id}'",
+                ]
+            ),
+        ),
+    ]
+
+    if failure_stage == "predictor-http":
+        commands.append(
+            (
+                "가설 C: 재시작/OOM/Probe 이상 확인",
+                "\n".join(
+                    [
+                        f"kubectl describe pod -n {namespace} -l {predictor_selector}",
+                        f"kubectl get events -n {namespace} --sort-by=.lastTimestamp | tail -20",
+                    ]
+                ),
+            )
+        )
+
+    return commands
+
+
+def _build_related_links() -> str:
+    links = []
+    monitoring_url = _env("MONITORING_DASHBOARD_URL")
+
+    if monitoring_url:
+        links.append(f"• Monitoring: <{monitoring_url}|dashboard>")
+
+    if not links:
+        return ""
+    return "\n\n*관련 링크*\n" + "\n".join(links)
+
+
 def _build_message(payload: dict, kafka_context: dict, worker_status: dict, predictor_status: dict, summary: dict) -> dict:
     environment = os.getenv("ENVIRONMENT", "public").upper()
     request_id = payload.get("request_id", "unknown")
-    factory_id = payload.get("factory_id", "unknown")
     equipment_id = payload.get("equipment_id", "unknown")
     retry_count = payload.get("retry_count", 0)
     failure_stage = payload.get("failure_stage", "unknown")
     last_error = payload.get("last_error", "unknown")
-    likely_causes = summary.get("likely_causes", [])
+    judgment = str(summary.get("judgment", "")).strip()
+    priority_checks = summary.get("priority_checks", [])
     recommended_actions = summary.get("recommended_actions", [])
-    cause_lines = "\n".join(f"{idx}. {cause}" for idx, cause in enumerate(likely_causes, start=1)) or "1. No cause generated"
-    action_lines = "\n".join(f"{idx}. {action}" for idx, action in enumerate(recommended_actions, start=1)) or "1. No action generated"
+
+    if not judgment:
+        likely_causes = summary.get("likely_causes", [])
+        judgment = " ".join(likely_causes[:2]).strip() or "현재 수집된 신호만으로는 단정적인 원인 확정이 어렵지만 추가 확인이 필요한 장애 상황입니다."
+    if not priority_checks:
+        priority_checks = [
+            "predictor 로그에서 동일 시간대 오류를 확인합니다.",
+            "worker 로그에서 해당 request_id 재시도 흐름을 확인합니다.",
+            "predictor 재시작 및 probe 이벤트를 확인합니다.",
+            "retry topic lag 증가 여부를 확인합니다.",
+        ]
+
+    action_lines = "\n".join(f"• {item}" for item in recommended_actions[:3]) or "• 추가 조치 정보를 생성하지 못했습니다."
+    quick_action_sections = []
+    for title, command in _build_quick_action_commands(payload):
+        quick_action_sections.append(f"*{title}*\n\n```bash\n{command}\n```")
+    quick_action_text = "\n\n".join(quick_action_sections)
+    related_links_text = _build_related_links()
     body = (
-        f"{equipment_id} 요청이 {failure_stage} 단계에서 최종 실패해 DLQ로 이동했습니다.\n\n"
-        f"- Request ID: {request_id}\n"
-        f"- Error: {last_error}\n"
-        f"- Retry: {retry_count}회 초과\n"
-        f"- Kafka Lag: {_format_topic_lag(kafka_context)}\n"
-        f"- Worker: {worker_status.get('ready', 0)}/{worker_status.get('total', 0)} Ready\n"
-        f"- Predictor: {predictor_status.get('ready', 0)}/{predictor_status.get('total', 0)} Ready\n\n"
-        f"원인 후보\n{cause_lines}\n\n"
-        f"즉시 조치\n{action_lines}"
+        f"\"{equipment_id} 요청이 `{failure_stage}` 단계에서 최종 실패하여 DLQ로 인입되었습니다.\"\n\n"
+        f"---\n\n"
+        f"*📊 1. Incident Snapshot*\n"
+        f"• *Request ID*: `{request_id}`\n"
+        f"• *Error*: `{last_error}` (Retry {retry_count}회 초과)\n"
+        f"• *Kafka Lag*: `{_format_topic_lag(kafka_context)}`\n"
+        f"• *Pod Status*: `worker={worker_status.get('ready', 0)}/{worker_status.get('total', 0)} Ready` | `predictor={predictor_status.get('ready', 0)}/{predictor_status.get('total', 0)} Ready`\n\n"
+        f"*💡 Triage 판단*\n\n"
+        f"{judgment}\n\n"
+        f"---\n\n"
+        f"*🔍 2. 가설별 즉시 조치 명령어 (Quick Action)*\n\n"
+        f"{quick_action_text}\n\n"
+        f"---\n\n"
+        f"*🛠️ 3. Next Step (의사결정 가이드)*\n"
+        f"{action_lines}"
+        f"{related_links_text}"
     )
     return {
         "attachments": [
@@ -1085,18 +1172,13 @@ def handler(event, _context):
             try:
                 summary = _invoke_bedrock_summary(payload, kafka_context, worker_status, predictor_status)
             except Exception as exc:  # noqa: BLE001
-                likely_causes, recommended_actions = _heuristic_summary(payload, kafka_context, worker_status, predictor_status)
+                summary = _heuristic_summary(payload, kafka_context, worker_status, predictor_status)
                 logger.exception(
                     "incident_summary_fallback request_id=%s error=%s",
                     payload.get("request_id", "unknown"),
                     exc,
                 )
-                summary = {
-                    "likely_causes": likely_causes,
-                    "recommended_actions": recommended_actions,
-                    "confidence": "low",
-                    "source": f"fallback:{exc}",
-                }
+                summary["source"] = f"fallback:{exc}"
             _post_to_slack(_build_message(payload, kafka_context, worker_status, predictor_status, summary))
             logger.info(
                 "incident_alert_sent request_id=%s summary_source=%s",

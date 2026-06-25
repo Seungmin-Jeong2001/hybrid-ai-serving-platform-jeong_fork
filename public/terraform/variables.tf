@@ -322,3 +322,9 @@ variable "incident_copilot_bedrock_model_id" {
   type        = string
   default     = "anthropic.claude-3-haiku-20240307-v1:0"
 }
+
+variable "incident_copilot_monitoring_url" {
+  description = "Optional monitoring dashboard URL shown in Incident Copilot Slack alerts"
+  type        = string
+  default     = ""
+}

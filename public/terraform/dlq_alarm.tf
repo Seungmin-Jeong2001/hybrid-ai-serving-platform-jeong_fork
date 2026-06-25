@@ -189,6 +189,7 @@ resource "aws_lambda_function" "dlq_alarm" {
       WORKER_CONSUMER_GROUP  = "inference-worker-group"
       BEDROCK_AGENT_ID       = try(aws_bedrockagent_agent.incident_copilot[0].id, "")
       BEDROCK_AGENT_ALIAS_ID = try(aws_bedrockagent_agent_alias.incident_copilot[0].agent_alias_id, "")
+      MONITORING_DASHBOARD_URL = var.incident_copilot_monitoring_url
     }
   }
 
