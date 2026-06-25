@@ -392,18 +392,62 @@ def _available_triage_tools() -> dict[str, str]:
         "collect_namespace_warning_events": "inference 네임스페이스의 Warning 이벤트를 조회한다",
         "collect_worker_deployment_status": "inference-worker Deployment 상태를 조회한다",
         "collect_predictor_deployment_status": "pdm-predictor Deployment 상태를 조회한다",
+        "collect_worker_status": "inference-worker pod들의 readiness, restart, phase 요약을 조회한다",
+        "collect_predictor_status": "pdm-predictor pod들의 readiness, restart, phase 요약을 조회한다",
     }
+
+
+def _required_triage_tools(payload: dict, observed_signals: list[str]) -> list[str]:
+    failure_stage = str(payload.get("failure_stage", "unknown"))
+    last_error = str(payload.get("last_error", "")).lower()
+    required = []
+
+    if failure_stage == "predictor-http":
+        required.extend([
+            "collect_predictor_status",
+            "collect_worker_status",
+            "collect_predictor_logs",
+            "collect_worker_logs",
+        ])
+        if "reset" in last_error or "timeout" in last_error or "disconnect" in last_error:
+            required.append("collect_predictor_events")
+    elif failure_stage == "payload-validation":
+        required.extend([
+            "collect_worker_status",
+            "collect_worker_logs",
+        ])
+    elif failure_stage == "result-storage":
+        required.extend([
+            "collect_worker_status",
+            "collect_worker_logs",
+            "collect_namespace_warning_events",
+        ])
+    else:
+        required.extend([
+            "collect_worker_status",
+            "collect_predictor_status",
+        ])
+
+    if any("retry" in signal and "lag" in signal for signal in observed_signals):
+        required.append("collect_worker_deployment_status")
+
+    deduped = []
+    seen = set()
+    for tool in required:
+        if tool in seen:
+            continue
+        seen.add(tool)
+        deduped.append(tool)
+    return deduped
 
 
 def _heuristic_triage_plan(payload: dict, observed_signals: list[str]) -> dict:
     failure_stage = str(payload.get("failure_stage", "unknown"))
     last_error = str(payload.get("last_error", ""))
-    plan = []
+    plan = _required_triage_tools(payload, observed_signals)
 
     if failure_stage == "predictor-http":
         plan.extend([
-            "collect_predictor_logs",
-            "collect_worker_logs",
             "collect_predictor_events",
             "collect_worker_events",
         ])
@@ -412,17 +456,14 @@ def _heuristic_triage_plan(payload: dict, observed_signals: list[str]) -> dict:
             plan.append("collect_predictor_deployment_status")
     elif failure_stage == "payload-validation":
         plan.extend([
-            "collect_worker_logs",
             "collect_worker_events",
         ])
     elif failure_stage == "result-storage":
         plan.extend([
-            "collect_worker_logs",
             "collect_namespace_warning_events",
         ])
     else:
         plan.extend([
-            "collect_worker_logs",
             "collect_predictor_logs",
             "collect_namespace_warning_events",
         ])
@@ -441,6 +482,7 @@ def _heuristic_triage_plan(payload: dict, observed_signals: list[str]) -> dict:
     return {
         "source": "heuristic",
         "tools": deduped[:5],
+        "required_tools": _required_triage_tools(payload, observed_signals),
     }
 
 
@@ -456,8 +498,10 @@ def _invoke_bedrock_triage_plan(payload: dict, observed_signals: list[str]) -> d
             "Select only from the provided tool names.",
             "Prefer tools that best match the failure_stage and observed_signals.",
             "Do not choose every tool. Choose only the most relevant ones.",
+            "You must include every tool listed in required_tools.",
         ],
         "available_tools": _available_triage_tools(),
+        "required_tools": _required_triage_tools(payload, observed_signals),
         "incident": {
             "failure_stage": payload.get("failure_stage"),
             "last_error": payload.get("last_error"),
@@ -492,12 +536,18 @@ def _invoke_bedrock_triage_plan(payload: dict, observed_signals: list[str]) -> d
     body = json.loads(response["body"].read())
     text = "".join(block.get("text", "") for block in body.get("content", []) if block.get("type") == "text").strip()
     parsed = json.loads(text)
-    tools = [tool for tool in parsed.get("tools", []) if tool in _available_triage_tools()]
+    required_tools = _required_triage_tools(payload, observed_signals)
+    selected_tools = [tool for tool in parsed.get("tools", []) if tool in _available_triage_tools()]
+    tools = []
+    for tool in required_tools + selected_tools:
+        if tool not in tools:
+            tools.append(tool)
     if not tools:
         return _heuristic_triage_plan(payload, observed_signals)
     return {
         "source": "bedrock",
         "tools": tools[:5],
+        "required_tools": required_tools,
         "reason": parsed.get("reason", ""),
     }
 
@@ -539,6 +589,10 @@ def _run_triage_tool(tool_name: str) -> dict:
         return {"tool": tool_name, "data": _collect_deployment_status(worker_selector)}
     if tool_name == "collect_predictor_deployment_status":
         return {"tool": tool_name, "data": _collect_deployment_status(predictor_selector)}
+    if tool_name == "collect_worker_status":
+        return {"tool": tool_name, "data": _summarize_pods(worker_selector)}
+    if tool_name == "collect_predictor_status":
+        return {"tool": tool_name, "data": _summarize_pods(predictor_selector)}
     raise ValueError(f"unsupported triage tool: {tool_name}")
 
 
@@ -644,8 +698,8 @@ def _build_prompt(payload: dict, kafka_context: dict, worker_status: dict, predi
     return f"""
 You are an SRE copilot for an asynchronous inference platform.
 Analyze the incident context and respond in JSON with the following keys:
-- likely_causes: array of up to 3 short Korean strings
-- recommended_actions: array of up to 3 short Korean strings
+- likely_causes: array of exactly 3 Korean strings
+- recommended_actions: array of exactly 3 Korean strings
 - confidence: one of high, medium, low
 
 Rules:
@@ -655,6 +709,18 @@ Rules:
 - Recommended actions must be specific to the observed signals, not generic troubleshooting advice.
 - Prioritize the observed_signals section over raw logs when they conflict.
 - Write likely_causes and recommended_actions in Korean.
+- All explanation sentences must be written in Korean.
+- Technical identifiers may remain in English when needed, such as predictor, inference-worker, Kafka, HTTP 500, Connection reset by peer, request_id, or Kubernetes Warning.
+- Do not write English-only cause or action sentences.
+- Write exactly 3 likely_causes items and exactly 3 recommended_actions items.
+- Structure likely_causes in this exact order:
+  1. the most likely direct root cause,
+  2. the operational signal or observed evidence that supports that cause,
+  3. the adjacent risk, side effect, or surrounding impact that should also be checked.
+- Structure recommended_actions in this exact order:
+  1. the immediate first check or action the operator should take now,
+  2. the follow-up check that would confirm or refute the direct cause,
+  3. the scope or blast-radius check for related downstream impact.
 - Write each item as a complete Korean sentence, not a short noun phrase.
 - Each likely_causes item must include the concrete evidence or signal it is based on when possible.
 - Each recommended_actions item must mention the exact component to inspect, such as predictor 로그, inference-worker 로그, retry 토픽 lag, or 요청 payload.
@@ -690,27 +756,43 @@ Incident context:
 
 def _build_agent_input_text(payload: dict, kafka_context: dict, worker_status: dict, predictor_status: dict) -> str:
     observed_signals = payload.get("_observed_signals", [])
+    required_tools = _required_triage_tools(payload, observed_signals)
     return f"""
-당신은 비동기 추론 플랫폼의 장애 분석 에이전트입니다.
-아래 사건 정보를 바탕으로, 필요한 경우에만 action group 함수를 선택적으로 호출해 추가 증거를 수집하세요.
-모든 함수를 호출하지 말고, 현재 failure_stage와 observed_signals를 기준으로 가장 관련 있는 함수만 최소한으로 호출하세요.
+You are an incident triage agent for an asynchronous inference platform.
+Use action group tools only when they are actually needed to reduce uncertainty.
+Do not call every tool. Select only the minimum set of tools that is relevant to the current failure_stage and observed_signals.
+However, you must invoke every function listed in required_action_group_functions before producing the final answer.
+If any required function cannot be called successfully, mention that missing evidence explicitly in the final JSON.
 
-최종 응답은 반드시 JSON 하나만 반환하세요.
-응답 스키마:
+Your final answer must be a single JSON object only.
+Response schema:
 {{
-  "likely_causes": ["완전한 한국어 문장", "..."],
-  "recommended_actions": ["완전한 한국어 문장", "..."],
+  "likely_causes": ["완전한 한국어 문장", "...", "..."],
+  "recommended_actions": ["완전한 한국어 문장", "...", "..."],
   "confidence": "high|medium|low"
 }}
 
-규칙:
-- likely_causes와 recommended_actions는 각각 최대 3개까지만 작성하세요.
-- 원인 후보는 반드시 관찰된 증거를 포함한 완전한 한국어 문장으로 쓰세요.
-- 즉시 조치는 반드시 확인해야 할 정확한 대상 컴포넌트를 포함하세요. 예: predictor 로그, inference-worker 로그, retry 토픽 lag, Kubernetes Warning 이벤트
-- 근거가 부족하면 무엇이 부족한지 분명히 쓰고 추측하지 마세요.
-- 네트워크 문제라고 단정하려면 로그나 이벤트에 연결 실패 근거가 있어야 합니다.
+Rules:
+- All explanation sentences must be written in Korean.
+- Technical identifiers may remain in English when needed, such as predictor, inference-worker, Kafka, HTTP 500, Connection reset by peer, request_id, or Kubernetes Warning.
+- Do not write English-only cause or action sentences.
+- Write exactly 3 likely_causes items and exactly 3 recommended_actions items.
+- Structure likely_causes in this exact order:
+  1. the most likely direct root cause,
+  2. the operational signal or observed evidence that supports that cause,
+  3. the adjacent risk, side effect, or surrounding impact that should also be checked.
+- Structure recommended_actions in this exact order:
+  1. the immediate first check or action the operator should take now,
+  2. the follow-up check that would confirm or refute the direct cause,
+  3. the scope or blast-radius check for related downstream impact.
+- Each item must be a complete Korean sentence, not a short label or noun phrase.
+- Each likely_causes item must mention the concrete evidence it is based on whenever possible.
+- Each recommended_actions item must mention the exact component to inspect, such as predictor 로그, inference-worker 로그, retry 토픽 lag, Kubernetes Warning 이벤트, pod 상태, or 요청 payload.
+- If evidence is insufficient, clearly state what evidence is missing instead of guessing.
+- Do not call something a network issue unless logs, events, or metrics explicitly support that conclusion.
+- Prefer application-level causes over generic infrastructure causes when concrete application errors are present.
 
-사건 정보:
+Incident context:
 {json.dumps(
     {
         "request_id": payload.get("request_id"),
@@ -725,6 +807,7 @@ def _build_agent_input_text(payload: dict, kafka_context: dict, worker_status: d
         "worker": worker_status,
         "predictor": predictor_status,
         "observed_signals": observed_signals,
+        "required_action_group_functions": required_tools,
     },
     ensure_ascii=False,
 )}
