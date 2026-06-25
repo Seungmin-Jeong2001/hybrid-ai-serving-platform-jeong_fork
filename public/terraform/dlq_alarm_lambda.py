@@ -163,6 +163,29 @@ def _summarize_pods(label_selector: str) -> dict:
     }
 
 
+def _select_log_container(pod: dict) -> str | None:
+    containers = pod.get("spec", {}).get("containers", [])
+    names = [container.get("name", "") for container in containers if container.get("name")]
+    if not names:
+        return None
+
+    preferred_order = [
+        "kserve-container",
+        "predictor",
+        "inference-worker",
+        "inference-api",
+    ]
+    for preferred in preferred_order:
+        if preferred in names:
+            return preferred
+
+    for name in names:
+        if name not in {"queue-proxy", "istio-proxy"}:
+            return name
+
+    return names[0]
+
+
 def _collect_recent_pod_logs(label_selector: str, tail_lines: int = 20, max_pods: int = 1) -> list[dict]:
     namespace = _env("EKS_NAMESPACE", "inference")
     selector = parse.quote(label_selector, safe="=,")
@@ -172,12 +195,16 @@ def _collect_recent_pod_logs(label_selector: str, tail_lines: int = 20, max_pods
     logs = []
     for item in items:
         pod_name = item.get("metadata", {}).get("name", "unknown")
+        container_name = _select_log_container(item)
         log_path = (
             f"/api/v1/namespaces/{namespace}/pods/{pod_name}/log"
             f"?tailLines={tail_lines}&timestamps=true"
         )
+        if container_name:
+            log_path += f"&container={parse.quote(container_name, safe='')}"
         logs.append({
             "pod": pod_name,
+            "container": container_name or "default",
             "log": _query_k8s_text(log_path),
         })
     return logs
@@ -662,31 +689,65 @@ def _collect_kafka_context() -> dict:
 
 
 def _heuristic_summary(payload: dict, kafka_context: dict, worker_status: dict, predictor_status: dict) -> tuple[list[str], list[str]]:
-    causes = []
-    actions = []
-
     max_lag = kafka_context.get("max_lag")
-    if isinstance(max_lag, int) and max_lag >= 20:
-        causes.append(f"Kafka consumer lag is elevated ({max_lag}).")
-        actions.append("Check inference-worker throughput and consumer lag trend.")
+    failure_stage = payload.get("failure_stage", "unknown")
+    predictor_ready = predictor_status.get("ready", 0)
+    predictor_total = predictor_status.get("total", 0)
+    predictor_restarts = predictor_status.get("restarts", 0)
+    worker_ready = worker_status.get("ready", 0)
+    worker_total = worker_status.get("total", 0)
+    worker_restarts = worker_status.get("restarts", 0)
 
     if predictor_status.get("running", 0) < predictor_status.get("total", 0):
-        causes.append("Predictor pods are not fully running.")
-        actions.append("Inspect pdm predictor pod phase, events, and resource usage.")
+        causes = [
+            "pdm-predictor pod가 정상 Running/Ready 상태를 만족하지 못해 predictor-http 단계에서 요청 처리가 중단되었을 가능성이 가장 높습니다.",
+            f"현재 Predictor 상태가 {predictor_ready}/{predictor_total} Ready로 관측되어, 요청 실패 시점에 predictor 워크로드 가용성이 충분하지 않았다는 운영 신호가 확인됩니다.",
+            "Predictor 비정상 상태가 지속되면 retry 토픽 적체와 후속 DLQ 증가로 이어질 수 있으므로 inference-worker 처리 지연 여부도 함께 점검해야 합니다.",
+        ]
+        actions = [
+            "pdm-predictor pod의 phase, readiness, 최근 이벤트를 먼저 확인해 Pending, CrashLoopBackOff, ImagePull 오류가 있는지 즉시 점검하세요.",
+            "pdm-predictor 로그와 Deployment 상태를 확인해 애플리케이션 예외, 모델 로드 실패, 프로브 실패 중 어떤 원인인지 확증하세요.",
+            "동일 시점의 inference-worker retry 증가와 retry 토픽 lag 추이를 함께 확인해 장애 영향 범위가 worker 처리량 저하로 확산되었는지 점검하세요.",
+        ]
+        return causes, actions
 
-    if predictor_status.get("restarts", 0) > 0:
-        causes.append("Predictor pod restarts were detected.")
-        actions.append("Review predictor logs for recent crash or timeout symptoms.")
+    if predictor_restarts > 0:
+        causes = [
+            "pdm-predictor가 재시작을 반복하면서 predictor-http 호출 중 연결이 비정상 종료되었을 가능성이 높습니다.",
+            f"Predictor restart count가 {predictor_restarts}회로 관측되어, 단순 일회성 요청 실패보다 워크로드 불안정 신호가 더 강하게 보입니다.",
+            "Predictor 재시작이 반복되면 동일 요청 패턴이 retry와 DLQ로 연쇄 전파될 수 있으므로 worker 측 재처리 부담도 함께 점검해야 합니다.",
+        ]
+        actions = [
+            "pdm-predictor 최근 로그를 확인해 종료 직전 예외, OOM, timeout, 모델 초기화 실패가 있었는지 즉시 확인하세요.",
+            "pdm-predictor Deployment rollout 상태와 liveness/readiness probe 실패 이력을 확인해 재시작의 직접 원인을 확증하세요.",
+            "동일 시간대 inference-worker 재시도 증가와 Kafka retry lag 변화를 함께 확인해 장애 파급 범위를 점검하세요.",
+        ]
+        return causes, actions
 
-    if worker_status.get("restarts", 0) > 0:
-        causes.append("Inference worker restarts were detected.")
-        actions.append("Inspect inference-worker logs around the latest restart.")
+    if isinstance(max_lag, int) and max_lag >= 20:
+        causes = [
+            "inference-worker 소비 지연이 누적되어 장애 복구 이후에도 retry 처리 backlog가 남아 있을 가능성이 높습니다.",
+            f"현재 Kafka max lag가 {max_lag}로 관측되어, 단순 단건 실패보다 소비 지연이 동반된 운영 신호가 확인됩니다.",
+            "retry backlog가 계속 쌓이면 후속 정상 요청도 지연될 수 있으므로 worker 처리량과 재시도 폭증 여부를 함께 점검해야 합니다.",
+        ]
+        actions = [
+            "inference-worker 처리량과 consumer lag 추이를 먼저 확인해 현재 backlog가 줄고 있는지 즉시 점검하세요.",
+            "inference-worker 로그를 확인해 predictor 호출 실패가 반복되는지, 아니면 Kafka 소비 자체가 막혀 있는지 확증하세요.",
+            "동일 시간대 predictor 상태와 retry 토픽 적체를 함께 확인해 장애 영향이 특정 워크로드에 국한되는지 점검하세요.",
+        ]
+        return causes, actions
 
-    if not causes:
-        causes.append(f"Primary failure observed at {payload.get('failure_stage', 'unknown')} with no obvious infra signal spike.")
-        actions.append("Review the latest worker and predictor logs for the affected request path.")
-
-    return causes[:3], actions[:3]
+    causes = [
+        f"{failure_stage} 단계에서 직접 실패가 발생했지만, 현재 수집된 인프라 신호만으로 단정적인 단일 원인을 확정하기는 어렵습니다.",
+        f"현재 Worker 상태는 {worker_ready}/{worker_total} Ready이고 Predictor 상태는 {predictor_ready}/{predictor_total} Ready로 보여, 추가 애플리케이션 로그 근거가 더 필요합니다.",
+        "명확한 인프라 장애 신호가 약한 경우에는 요청 payload 특성, predictor 애플리케이션 예외, 일시적 연결 종료 가능성을 함께 점검해야 합니다.",
+    ]
+    actions = [
+        "inference-worker와 pdm-predictor의 최근 로그를 먼저 확인해 동일 request_id 또는 동일 시점의 예외 흔적이 있는지 즉시 점검하세요.",
+        "predictor-http 호출 직전후의 worker 로그와 predictor 애플리케이션 로그를 대조해 연결 종료, 5xx, payload 처리 오류 중 어떤 유형인지 확증하세요.",
+        "같은 장비 또는 같은 payload 패턴에서 실패가 반복되는지 확인해 장애 영향이 특정 요청군에 국한되는지 점검하세요.",
+    ]
+    return causes, actions
 
 
 def _build_prompt(payload: dict, kafka_context: dict, worker_status: dict, predictor_status: dict) -> str:

@@ -128,6 +128,29 @@ def _summarize_pods(label_selector: str) -> dict:
     }
 
 
+def _select_log_container(pod: dict) -> str | None:
+    containers = pod.get("spec", {}).get("containers", [])
+    names = [container.get("name", "") for container in containers if container.get("name")]
+    if not names:
+        return None
+
+    preferred_order = [
+        "kserve-container",
+        "predictor",
+        "inference-worker",
+        "inference-api",
+    ]
+    for preferred in preferred_order:
+        if preferred in names:
+            return preferred
+
+    for name in names:
+        if name not in {"queue-proxy", "istio-proxy"}:
+            return name
+
+    return names[0]
+
+
 def _collect_recent_pod_logs(label_selector: str, tail_lines: int = 40, max_pods: int = 1) -> list[dict]:
     namespace = _env("EKS_NAMESPACE", "inference")
     pods = _list_pods(label_selector, max_pods=max_pods)
@@ -135,9 +158,13 @@ def _collect_recent_pod_logs(label_selector: str, tail_lines: int = 40, max_pods
 
     for pod in pods:
         pod_name = pod.get("metadata", {}).get("name", "unknown")
+        container_name = _select_log_container(pod)
         log_path = f"/api/v1/namespaces/{namespace}/pods/{pod_name}/log?tailLines={tail_lines}&timestamps=true"
+        if container_name:
+            log_path += f"&container={parse.quote(container_name, safe='')}"
         logs.append({
             "pod": pod_name,
+            "container": container_name or "default",
             "log": _query_k8s_text(log_path),
         })
     return logs
