@@ -174,21 +174,21 @@ resource "aws_lambda_function" "dlq_alarm" {
 
   environment {
     variables = {
-      SLACK_WEBHOOK_URL      = var.dlq_alert_slack_webhook_url
-      PROJECT_NAME           = var.project_name
-      ENVIRONMENT            = var.environment != "" ? var.environment : "public"
-      DLQ_TOPIC_NAME         = var.dlq_alert_topic_name
-      EKS_CLUSTER_NAME       = aws_eks_cluster.main.name
-      EKS_NAMESPACE          = "inference"
-      WORKER_SELECTOR        = "app=inference-worker"
-      PREDICTOR_SELECTOR     = "serving.kserve.io/inferenceservice=pdm"
-      BEDROCK_MODEL_ID       = var.incident_copilot_bedrock_model_id
-      MSK_CLUSTER_NAME       = aws_msk_cluster.main.cluster_name
-      REQUEST_TOPIC_NAME     = "inference-request"
-      RETRY_TOPIC_NAME       = "inference-retry"
-      WORKER_CONSUMER_GROUP  = "inference-worker-group"
-      BEDROCK_AGENT_ID       = try(aws_bedrockagent_agent.incident_copilot[0].id, "")
-      BEDROCK_AGENT_ALIAS_ID = try(aws_bedrockagent_agent_alias.incident_copilot[0].agent_alias_id, "")
+      SLACK_WEBHOOK_URL        = var.dlq_alert_slack_webhook_url
+      PROJECT_NAME             = var.project_name
+      ENVIRONMENT              = var.environment != "" ? var.environment : "public"
+      DLQ_TOPIC_NAME           = var.dlq_alert_topic_name
+      EKS_CLUSTER_NAME         = aws_eks_cluster.main.name
+      EKS_NAMESPACE            = "inference"
+      WORKER_SELECTOR          = "app=inference-worker"
+      PREDICTOR_SELECTOR       = "serving.kserve.io/inferenceservice=pdm"
+      BEDROCK_MODEL_ID         = var.incident_copilot_bedrock_model_id
+      MSK_CLUSTER_NAME         = aws_msk_cluster.main.cluster_name
+      REQUEST_TOPIC_NAME       = "inference-request"
+      RETRY_TOPIC_NAME         = "inference-retry"
+      WORKER_CONSUMER_GROUP    = "inference-worker-group"
+      BEDROCK_AGENT_ID         = try(aws_bedrockagent_agent.incident_copilot[0].id, "")
+      BEDROCK_AGENT_ALIAS_ID   = try(aws_bedrockagent_agent_alias.incident_copilot[0].agent_alias_id, "")
       MONITORING_DASHBOARD_URL = var.incident_copilot_monitoring_url
     }
   }
