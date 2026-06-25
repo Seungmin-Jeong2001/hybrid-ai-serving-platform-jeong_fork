@@ -390,10 +390,6 @@ resource "aws_bedrockagent_agent_alias" "incident_copilot" {
   agent_id         = aws_bedrockagent_agent.incident_copilot[0].id
   description      = "Production alias for the inference incident copilot"
 
-  routing_configuration {
-    agent_version = aws_bedrockagent_agent.incident_copilot[0].agent_version
-  }
-
   depends_on = [aws_bedrockagent_agent_action_group.incident_triage]
 }
 
