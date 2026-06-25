@@ -108,7 +108,7 @@ def _query_k8s_text(path: str) -> str:
         f"{endpoint}{path}",
         headers={
             "Authorization": f"Bearer {token}",
-            "Accept": "text/plain",
+            "Accept": "*/*",
         },
         method="GET",
     )
