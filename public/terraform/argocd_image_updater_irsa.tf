@@ -49,9 +49,11 @@ data "aws_iam_policy_document" "argocd_image_updater_ecr" {
   statement {
     effect = "Allow"
     actions = [
+      "ecr:BatchCheckLayerAvailability",
       "ecr:BatchGetImage",
       "ecr:DescribeImages",
       "ecr:DescribeRepositories",
+      "ecr:GetDownloadUrlForLayer",
       "ecr:ListImages",
     ]
     resources = [local.predictive_model_ecr_repository_arn]
