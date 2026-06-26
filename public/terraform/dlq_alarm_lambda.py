@@ -1003,6 +1003,7 @@ def _build_quick_action_commands(payload: dict) -> list[tuple[str, str]]:
     failure_stage = payload.get("failure_stage", "unknown")
     predictor_selector = _env("PREDICTOR_SELECTOR", "serving.kserve.io/inferenceservice=pdm")
     predictor_total = int(payload.get("_predictor_total", 0))
+    predictor_ready = int(payload.get("_predictor_ready", 0))
 
     if predictor_total == 0:
         return [
@@ -1030,6 +1031,36 @@ def _build_quick_action_commands(payload: dict) -> list[tuple[str, str]]:
                     [
                         f"kubectl get events -n {namespace} --sort-by=.lastTimestamp | tail -20",
                         f"kubectl rollout history deployment -n {namespace} -l {predictor_selector}",
+                    ]
+                ),
+            ),
+        ]
+
+    if predictor_total > 0 and predictor_ready < predictor_total:
+        return [
+            (
+                "가설 A: 재시작/OOM/Probe 이상 확인",
+                "\n".join(
+                    [
+                        f"kubectl describe pod -n {namespace} -l {predictor_selector}",
+                        f"kubectl get events -n {namespace} --sort-by=.lastTimestamp | tail -20",
+                    ]
+                ),
+            ),
+            (
+                "가설 B: Predictor 내부 오류 또는 런타임 예외 확인",
+                "\n".join(
+                    [
+                        f"kubectl get pod -n {namespace} -l {predictor_selector}",
+                        f"kubectl logs -n {namespace} -l {predictor_selector} --tail=200 | grep -Ei \"error|5xx|kserve|reset|timeout|probe\"",
+                    ]
+                ),
+            ),
+            (
+                "가설 C: Worker-Predictor 호출 흐름 확인",
+                "\n".join(
+                    [
+                        f"kubectl logs -n {namespace} -l app=inference-worker --tail=500 | grep -E 'KSERVE_INTERNAL_ERROR|retry|{request_id}'",
                     ]
                 ),
             ),
@@ -1531,12 +1562,11 @@ def _build_message(payload: dict, kafka_context: dict, worker_status: dict, pred
     last_error = payload.get("last_error", "unknown")
     judgment = str(summary.get("judgment", "")).strip()
     recommended_actions = summary.get("recommended_actions", [])
+    predictor_ready = predictor_status.get("ready", 0)
     predictor_total = predictor_status.get("total", 0)
     triage_plan = payload.get("_triage_plan", {})
-    tool_labels = _triage_tool_display_names()
-    tool_basis = [tool_labels.get(tool_name, tool_name) for tool_name in triage_plan.get("tools", [])]
-
     payload["_predictor_total"] = predictor_total
+    payload["_predictor_ready"] = predictor_ready
 
     if not judgment:
         likely_causes = summary.get("likely_causes", [])
@@ -1549,6 +1579,13 @@ def _build_message(payload: dict, kafka_context: dict, worker_status: dict, pred
             "predictor 배포 조건과 최근 변경 이력을 확인해 스케일 다운 원인을 파악합니다.",
             "predictor 복구 후 DLQ payload 기준으로 재처리 여부를 판단합니다.",
         ]
+    elif predictor_total > 0 and predictor_ready < predictor_total:
+        judgment = "predictor 파드가 생성되었으나 Ready 상태를 충족하지 못해 트래픽 인입이 차단된 상태입니다. 컨테이너 내부 런타임 크래시 또는 Readiness Probe 실패 가능성이 높으므로 가설 A의 Describe/Event 확인을 최우선으로 진행해야 합니다."
+        recommended_actions = [
+            "컨테이너 크래시가 확인되면 에러 로그 분석 후 정상 이미지 기준으로 롤백하거나 rollout restart를 수행합니다.",
+            "Probe 실패가 확인되면 pdm-predictor 파드의 리소스 할당량과 헬스체크 엔드포인트 상태를 점검합니다.",
+            "단건 실패로 보이면 DLQ payload를 추출해 데이터 이상 유무를 검증한 뒤 재처리 여부를 판단합니다.",
+        ]
 
     action_lines = "\n".join(f"• {item}" for item in recommended_actions[:3]) or "• 추가 조치 정보를 생성하지 못했습니다."
     quick_action_sections = []
@@ -1556,17 +1593,15 @@ def _build_message(payload: dict, kafka_context: dict, worker_status: dict, pred
         quick_action_sections.append(f"*{title}*\n\n```bash\n{command}\n```")
     quick_action_text = "\n\n".join(quick_action_sections)
     related_links_text = _build_related_links()
-    basis_text = ", ".join(tool_basis[:5]) if tool_basis else "기본 운영 신호"
     body = (
         f"\"{equipment_id} 요청이 {failure_stage} 단계에서 최종 실패하여 DLQ로 인입되었습니다.\"\n\n"
         f"---\n\n"
         f"*📌 1. Incident Snapshot*\n"
         f"• *Request ID*: `{request_id}`\n"
-        f"• *Error Type*: `{error_type}`\n"
         f"• *Error*: {last_error} (Retry {retry_count}회 초과)\n"
         f"• *Kafka Lag*: `{_format_topic_lag(kafka_context)}`\n"
         f"• *Pod Status*: `worker={worker_status.get('ready', 0)}/{worker_status.get('total', 0)} Ready | predictor={predictor_status.get('ready', 0)}/{predictor_status.get('total', 0)} Ready`\n"
-        f"• *분석 근거*: {basis_text}\n\n"
+        f"\n"
         f"> 💡 *Quick Triage*\n"
         f"> {judgment}\n\n"
         f"---\n\n"
