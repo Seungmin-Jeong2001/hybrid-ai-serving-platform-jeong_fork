@@ -1,0 +1,24 @@
+apiVersion: argocd-image-updater.argoproj.io/v1alpha1
+kind: ImageUpdater
+metadata:
+  name: pdm-serving-image-updater
+  namespace: argocd
+spec:
+  applicationRefs:
+    - namePattern: pdm-serving
+      useAnnotations: false
+      images:
+        - alias: predictive-model
+          imageName: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/predictive-model
+          commonUpdateSettings:
+            updateStrategy: newest-build
+            allowTags: regexp:^v[0-9]+\.[0-9]+\.[0-9]+$
+            forceUpdate: true
+          manifestTargets:
+            kustomize:
+              name: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/predictive-model
+      writeBackConfig:
+        method: git:secret:argocd/argocd-image-updater-github-app-creds
+        gitConfig:
+          branch: main
+          writeBackTarget: kustomization

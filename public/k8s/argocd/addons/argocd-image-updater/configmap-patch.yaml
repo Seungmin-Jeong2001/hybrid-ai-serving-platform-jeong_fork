@@ -9,3 +9,15 @@ data:
   interval: 2m
   log.level: info
   log.format: text
+  registries.conf: |
+    registries:
+      - name: AWS ECR
+        api_url: https://808379768010.dkr.ecr.ap-northeast-2.amazonaws.com
+        prefix: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com
+        credentials: ext:/app/config/ecr-login.sh
+        credsexpire: 12h
+  ecr-login.sh: |
+    #!/bin/sh
+    set -eu
+    export HOME=/tmp
+    echo "AWS:$(aws ecr get-login-password --region ap-northeast-2)"
