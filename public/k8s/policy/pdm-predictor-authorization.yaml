@@ -1,7 +1,7 @@
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
-  name: pdm-predictor-allow-inference-worker
+  name: pdm-predictor-allow-inference-namespace
   namespace: inference
 spec:
   selector:
@@ -11,5 +11,5 @@ spec:
   rules:
     - from:
         - source:
-            principals:
-              - spiffe://cluster.local/ns/inference/sa/inference-worker
+            namespaces:
+              - inference
