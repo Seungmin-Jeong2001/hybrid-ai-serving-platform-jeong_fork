@@ -262,6 +262,57 @@ def _collect_namespace_warning_events(limit: int = 10) -> list[dict]:
     return warning_events[-limit:]
 
 
+def _collect_hpa_status() -> list[dict]:
+    namespace = _env("EKS_NAMESPACE", "inference")
+    payload = _query_k8s_json(
+        f"/apis/autoscaling/v2/namespaces/{namespace}/horizontalpodautoscalers"
+    )
+    items = payload.get("items", [])
+    return [
+        {
+            "name": item.get("metadata", {}).get("name", "unknown"),
+            "target_kind": item.get("spec", {}).get("scaleTargetRef", {}).get("kind", "unknown"),
+            "target_name": item.get("spec", {}).get("scaleTargetRef", {}).get("name", "unknown"),
+            "min_replicas": item.get("spec", {}).get("minReplicas"),
+            "max_replicas": item.get("spec", {}).get("maxReplicas"),
+            "current_replicas": item.get("status", {}).get("currentReplicas"),
+            "desired_replicas": item.get("status", {}).get("desiredReplicas"),
+        }
+        for item in items
+    ]
+
+
+def _collect_scaledobjects() -> list[dict]:
+    namespace = _env("EKS_NAMESPACE", "inference")
+    payload = _query_k8s_json(
+        f"/apis/keda.sh/v1alpha1/namespaces/{namespace}/scaledobjects"
+    )
+    items = payload.get("items", [])
+    return [
+        {
+            "name": item.get("metadata", {}).get("name", "unknown"),
+            "target_name": item.get("spec", {}).get("scaleTargetRef", {}).get("name", "unknown"),
+            "min_replicas": item.get("spec", {}).get("minReplicaCount"),
+            "max_replicas": item.get("spec", {}).get("maxReplicaCount"),
+            "triggers": [
+                {
+                    "type": trigger.get("type", "unknown"),
+                    "metadata": trigger.get("metadata", {}),
+                }
+                for trigger in item.get("spec", {}).get("triggers", [])
+            ],
+        }
+        for item in items
+    ]
+
+
+def _collect_keda_status() -> dict:
+    return {
+        "scaledobjects": _collect_scaledobjects(),
+        "hpas": _collect_hpa_status(),
+    }
+
+
 def _collect_deployment_status(label_selector: str) -> list[dict]:
     namespace = _env("EKS_NAMESPACE", "inference")
     selector = parse.quote(label_selector, safe="=,")
@@ -276,6 +327,32 @@ def _collect_deployment_status(label_selector: str) -> list[dict]:
             "ready": item.get("status", {}).get("readyReplicas", 0),
             "updated": item.get("status", {}).get("updatedReplicas", 0),
             "available": item.get("status", {}).get("availableReplicas", 0),
+        }
+        for item in items
+    ]
+
+
+def _collect_deployment_rollouts(label_selector: str) -> list[dict]:
+    namespace = _env("EKS_NAMESPACE", "inference")
+    selector = parse.quote(label_selector, safe="=,")
+    payload = _query_k8s_json(
+        f"/apis/apps/v1/namespaces/{namespace}/deployments?labelSelector={selector}"
+    )
+    items = payload.get("items", [])
+    return [
+        {
+            "name": item.get("metadata", {}).get("name", "unknown"),
+            "generation": item.get("metadata", {}).get("generation"),
+            "observed_generation": item.get("status", {}).get("observedGeneration"),
+            "conditions": [
+                {
+                    "type": condition.get("type", "Unknown"),
+                    "status": condition.get("status", "Unknown"),
+                    "reason": condition.get("reason", ""),
+                    "message": condition.get("message", ""),
+                }
+                for condition in item.get("status", {}).get("conditions", [])
+            ],
         }
         for item in items
     ]
@@ -410,109 +487,6 @@ def _build_observed_signals(
     return deduped[:20]
 
 
-def _available_triage_tools() -> dict[str, str]:
-    return {
-        "collect_worker_logs": "최근 inference-worker 로그를 조회한다",
-        "collect_predictor_logs": "최근 pdm-predictor 로그를 조회한다",
-        "collect_worker_events": "inference-worker 관련 Kubernetes 이벤트를 조회한다",
-        "collect_predictor_events": "pdm-predictor 관련 Kubernetes 이벤트를 조회한다",
-        "collect_namespace_warning_events": "inference 네임스페이스의 Warning 이벤트를 조회한다",
-        "collect_worker_deployment_status": "inference-worker Deployment 상태를 조회한다",
-        "collect_predictor_deployment_status": "pdm-predictor Deployment 상태를 조회한다",
-        "collect_worker_status": "inference-worker pod들의 readiness, restart, phase 요약을 조회한다",
-        "collect_predictor_status": "pdm-predictor pod들의 readiness, restart, phase 요약을 조회한다",
-    }
-
-
-def _required_triage_tools(payload: dict, observed_signals: list[str]) -> list[str]:
-    failure_stage = str(payload.get("failure_stage", "unknown"))
-    last_error = str(payload.get("last_error", "")).lower()
-    required = []
-
-    if failure_stage == "predictor-http":
-        required.extend([
-            "collect_predictor_status",
-            "collect_worker_status",
-            "collect_predictor_logs",
-            "collect_worker_logs",
-        ])
-        if "reset" in last_error or "timeout" in last_error or "disconnect" in last_error:
-            required.append("collect_predictor_events")
-    elif failure_stage == "payload-validation":
-        required.extend([
-            "collect_worker_status",
-            "collect_worker_logs",
-        ])
-    elif failure_stage == "result-storage":
-        required.extend([
-            "collect_worker_status",
-            "collect_worker_logs",
-            "collect_namespace_warning_events",
-        ])
-    else:
-        required.extend([
-            "collect_worker_status",
-            "collect_predictor_status",
-        ])
-
-    if any("retry" in signal and "lag" in signal for signal in observed_signals):
-        required.append("collect_worker_deployment_status")
-
-    deduped = []
-    seen = set()
-    for tool in required:
-        if tool in seen:
-            continue
-        seen.add(tool)
-        deduped.append(tool)
-    return deduped
-
-
-def _heuristic_triage_plan(payload: dict, observed_signals: list[str]) -> dict:
-    failure_stage = str(payload.get("failure_stage", "unknown"))
-    last_error = str(payload.get("last_error", ""))
-    plan = _required_triage_tools(payload, observed_signals)
-
-    if failure_stage == "predictor-http":
-        plan.extend([
-            "collect_predictor_events",
-            "collect_worker_events",
-        ])
-        if "reset" in last_error.lower() or "timeout" in last_error.lower():
-            plan.append("collect_namespace_warning_events")
-            plan.append("collect_predictor_deployment_status")
-    elif failure_stage == "payload-validation":
-        plan.extend([
-            "collect_worker_events",
-        ])
-    elif failure_stage == "result-storage":
-        plan.extend([
-            "collect_namespace_warning_events",
-        ])
-    else:
-        plan.extend([
-            "collect_predictor_logs",
-            "collect_namespace_warning_events",
-        ])
-
-    if any("retry" in signal and "lag" in signal for signal in observed_signals):
-        plan.append("collect_worker_deployment_status")
-
-    deduped = []
-    seen = set()
-    for tool in plan:
-        if tool in seen:
-            continue
-        seen.add(tool)
-        deduped.append(tool)
-
-    return {
-        "source": "heuristic",
-        "tools": deduped[:5],
-        "required_tools": _required_triage_tools(payload, observed_signals),
-    }
-
-
 def _invoke_bedrock_triage_plan(payload: dict, observed_signals: list[str]) -> dict:
     model_id = _env("BEDROCK_MODEL_ID")
     if not model_id:
@@ -523,13 +497,14 @@ def _invoke_bedrock_triage_plan(payload: dict, observed_signals: list[str]) -> d
         "rules": [
             "Return JSON only.",
             "Select only from the provided tool names.",
-            "Prefer tools that best match the failure_stage and observed_signals.",
+            "Prefer tools that best match the error_type, failure_stage, and observed_signals.",
             "Do not choose every tool. Choose only the most relevant ones.",
             "You must include every tool listed in required_tools.",
         ],
         "available_tools": _available_triage_tools(),
         "required_tools": _required_triage_tools(payload, observed_signals),
         "incident": {
+            "error_type": payload.get("error_type"),
             "failure_stage": payload.get("failure_stage"),
             "last_error": payload.get("last_error"),
             "retry_count": payload.get("retry_count"),
@@ -596,31 +571,6 @@ def _safe_triage_plan(payload: dict, observed_signals: list[str]) -> dict:
             exc,
         )
         return _heuristic_triage_plan(payload, observed_signals)
-
-
-def _run_triage_tool(tool_name: str) -> dict:
-    worker_selector = _env("WORKER_SELECTOR", "app=inference-worker")
-    predictor_selector = _env("PREDICTOR_SELECTOR", "serving.kserve.io/inferenceservice=pdm")
-
-    if tool_name == "collect_worker_logs":
-        return {"tool": tool_name, "data": _collect_recent_pod_logs(worker_selector, tail_lines=40, max_pods=1)}
-    if tool_name == "collect_predictor_logs":
-        return {"tool": tool_name, "data": _collect_recent_pod_logs(predictor_selector, tail_lines=40, max_pods=1)}
-    if tool_name == "collect_worker_events":
-        return {"tool": tool_name, "data": _collect_pod_events(worker_selector)}
-    if tool_name == "collect_predictor_events":
-        return {"tool": tool_name, "data": _collect_pod_events(predictor_selector)}
-    if tool_name == "collect_namespace_warning_events":
-        return {"tool": tool_name, "data": _collect_namespace_warning_events()}
-    if tool_name == "collect_worker_deployment_status":
-        return {"tool": tool_name, "data": _collect_deployment_status(worker_selector)}
-    if tool_name == "collect_predictor_deployment_status":
-        return {"tool": tool_name, "data": _collect_deployment_status(predictor_selector)}
-    if tool_name == "collect_worker_status":
-        return {"tool": tool_name, "data": _summarize_pods(worker_selector)}
-    if tool_name == "collect_predictor_status":
-        return {"tool": tool_name, "data": _summarize_pods(predictor_selector)}
-    raise ValueError(f"unsupported triage tool: {tool_name}")
 
 
 def _collect_triage_tool_results(plan: dict) -> list[dict]:
@@ -697,6 +647,23 @@ def _heuristic_summary(payload: dict, kafka_context: dict, worker_status: dict, 
     worker_ready = worker_status.get("ready", 0)
     worker_total = worker_status.get("total", 0)
     last_error = str(payload.get("last_error", "unknown"))
+
+    if predictor_total == 0:
+        return {
+            "judgment": "현재 predictor 파드의 원하는 복제본 수가 0으로 보이며, 파드가 존재하지 않아 predictor-http 요청을 처리할 수 없는 상태로 판단됩니다. KServe 또는 스케일링 설정 문제를 먼저 확인해야 합니다.",
+            "priority_checks": [
+                "HPA와 ScaledObject 상태를 확인해 predictor가 0으로 스케일 다운된 이유를 확인합니다.",
+                "InferenceService의 minReplicas, maxReplicas, autoscaling 설정을 확인합니다.",
+                "predictor Deployment 이벤트와 최근 변경 이력을 확인합니다.",
+                "retry topic lag가 계속 증가하는지 확인해 영향 범위를 점검합니다.",
+            ],
+            "recommended_actions": [
+                "의도치 않은 스케일 다운이면 HPA, KEDA, InferenceService 설정을 먼저 정상값으로 복구합니다.",
+                "배포 설정 오류가 확인되면 predictor desired replica가 1 이상이 되도록 수정합니다.",
+                "predictor 복구 후 DLQ payload 기준으로 재처리 여부를 판단합니다.",
+            ],
+            "confidence": "high",
+        }
 
     if predictor_status.get("running", 0) < predictor_status.get("total", 0):
         return {
@@ -811,6 +778,7 @@ Incident context:
         "request_id": payload.get("request_id"),
         "factory_id": payload.get("factory_id"),
         "equipment_id": payload.get("equipment_id"),
+        "error_type": payload.get("error_type"),
         "timestamp": payload.get("timestamp"),
         "failure_stage": payload.get("failure_stage"),
         "retry_count": payload.get("retry_count"),
@@ -836,7 +804,7 @@ def _build_agent_input_text(payload: dict, kafka_context: dict, worker_status: d
     return f"""
 You are an incident triage agent for an asynchronous inference platform.
 Use action group tools only when they are actually needed to reduce uncertainty.
-Do not call every tool. Select only the minimum set of tools that is relevant to the current failure_stage and observed_signals.
+Do not call every tool. Select only the minimum set of tools that is relevant to the current error_type, failure_stage, and observed_signals.
 However, you must invoke every function listed in required_action_group_functions before producing the final answer.
 If any required function cannot be called successfully, mention that missing evidence explicitly in the final JSON.
 
@@ -873,6 +841,7 @@ Incident context:
         "request_id": payload.get("request_id"),
         "factory_id": payload.get("factory_id"),
         "equipment_id": payload.get("equipment_id"),
+        "error_type": payload.get("error_type"),
         "timestamp": payload.get("timestamp"),
         "failure_stage": payload.get("failure_stage"),
         "retry_count": payload.get("retry_count"),
@@ -1028,9 +997,198 @@ def _severity_title(environment: str) -> str:
 
 def _build_quick_action_commands(payload: dict) -> list[tuple[str, str]]:
     namespace = _env("EKS_NAMESPACE", "inference")
+    app_namespace = "app"
     request_id = payload.get("request_id", "unknown")
+    error_type = str(payload.get("error_type", "unknown"))
     failure_stage = payload.get("failure_stage", "unknown")
     predictor_selector = _env("PREDICTOR_SELECTOR", "serving.kserve.io/inferenceservice=pdm")
+    predictor_total = int(payload.get("_predictor_total", 0))
+
+    if predictor_total == 0:
+        return [
+            (
+                "가설 A: 스케일링 컴포넌트가 predictor를 0으로 축소함",
+                "\n".join(
+                    [
+                        f"kubectl get hpa -n {namespace}",
+                        f"kubectl get scaledobject -n {namespace}",
+                    ]
+                ),
+            ),
+            (
+                "가설 B: InferenceService 또는 Deployment 설정 문제",
+                "\n".join(
+                    [
+                        f"kubectl get isvc pdm -n {namespace} -o yaml | grep -E \"minReplicas|maxReplicas|scaleTargetRef\"",
+                        f"kubectl describe deployment -n {namespace} -l {predictor_selector}",
+                    ]
+                ),
+            ),
+            (
+                "가설 C: 최근 이벤트 및 배포 이력 확인",
+                "\n".join(
+                    [
+                        f"kubectl get events -n {namespace} --sort-by=.lastTimestamp | tail -20",
+                        f"kubectl rollout history deployment -n {namespace} -l {predictor_selector}",
+                    ]
+                ),
+            ),
+        ]
+
+    if error_type in {"INVALID_FEATURE", "SCHEMA_VALIDATION_ERROR"}:
+        return [
+            (
+                "가설 A: 요청 payload 형식 또는 feature 값 이상 확인",
+                "\n".join(
+                    [
+                        f"kubectl logs -n {namespace} -l app=inference-worker --tail=300 | grep -E 'validation|payload|schema|{request_id}'",
+                        f"kubectl logs -n {namespace} deploy/inference-api --tail=300 | grep -E '4[0-9][0-9]|validation|payload|{request_id}'",
+                    ]
+                ),
+            ),
+            (
+                "가설 B: 동일 payload 패턴 반복 여부 확인",
+                "\n".join(
+                    [
+                        f"kubectl logs -n {namespace} -l app=inference-worker --tail=500 | grep '{request_id}'",
+                        f"kubectl get events -n {namespace} --sort-by=.lastTimestamp | tail -20",
+                    ]
+                ),
+            ),
+            (
+                "가설 C: API 입력 검증 단계 오류 확인",
+                "\n".join(
+                    [
+                        f"kubectl describe deploy -n {namespace} inference-api",
+                        f"kubectl describe deploy -n {namespace} inference-worker",
+                    ]
+                ),
+            ),
+        ]
+
+    if error_type in {"RDS_CONNECTION_ERROR"}:
+        return [
+            (
+                "가설 A: 결과 저장 계층 연결 오류 확인",
+                "\n".join(
+                    [
+                        f"kubectl logs -n {namespace} -l app=inference-worker --tail=300 | grep -E 'rds|database|result|store|persist|{request_id}'",
+                        f"kubectl logs -n {app_namespace} deploy/dashboard-backend --tail=300 | grep -E 'rds|database|query|error|{request_id}'",
+                    ]
+                ),
+            ),
+            (
+                "가설 B: 백엔드 저장 경로 상태 확인",
+                "\n".join(
+                    [
+                        f"kubectl get pods -n {app_namespace} -l app=dashboard-backend -o wide",
+                        f"kubectl describe deploy -n {app_namespace} dashboard-backend",
+                    ]
+                ),
+            ),
+            (
+                "가설 C: 저장 실패 영향 범위 확인",
+                "\n".join(
+                    [
+                        f"kubectl logs -n {namespace} -l app=inference-worker --tail=500 | grep -E 'result-storage|rds|database|{request_id}'",
+                        f"kubectl get events -n {app_namespace} --sort-by=.lastTimestamp | tail -20",
+                    ]
+                ),
+            ),
+        ]
+
+    if error_type in {"KAFKA_PUBLISH_ERROR", "CALLBACK_TIMEOUT"}:
+        return [
+            (
+                "가설 A: worker 처리 경로 오류 확인",
+                "\n".join(
+                    [
+                        f"kubectl logs -n {namespace} -l app=inference-worker --tail=300 | grep -E 'kafka|publish|callback|timeout|{request_id}'",
+                        f"kubectl describe deploy -n {namespace} inference-worker",
+                    ]
+                ),
+            ),
+            (
+                "가설 B: 컨슈머 처리량 및 스케일 상태 확인",
+                "\n".join(
+                    [
+                        f"kubectl get hpa -n {namespace}",
+                        f"kubectl get scaledobject -n {namespace}",
+                    ]
+                ),
+            ),
+            (
+                "가설 C: 최근 이벤트 및 재시작 여부 확인",
+                "\n".join(
+                    [
+                        f"kubectl get pods -n {namespace} -l app=inference-worker -o wide",
+                        f"kubectl get events -n {namespace} --sort-by=.lastTimestamp | tail -20",
+                    ]
+                ),
+            ),
+        ]
+
+    if failure_stage == "payload-validation":
+        return [
+            (
+                "가설 A: 요청 payload 형식 또는 feature 값 이상 확인",
+                "\n".join(
+                    [
+                        f"kubectl logs -n {namespace} -l app=inference-worker --tail=300 | grep -E 'validation|payload|schema|{request_id}'",
+                        f"kubectl logs -n {namespace} deploy/inference-api --tail=300 | grep -E '4[0-9][0-9]|validation|payload|{request_id}'",
+                    ]
+                ),
+            ),
+            (
+                "가설 B: 동일 payload 패턴 반복 여부 확인",
+                "\n".join(
+                    [
+                        f"kubectl logs -n {namespace} -l app=inference-worker --tail=500 | grep '{request_id}'",
+                        f"kubectl get events -n {namespace} --sort-by=.lastTimestamp | tail -20",
+                    ]
+                ),
+            ),
+            (
+                "가설 C: API 입력 검증 단계 오류 확인",
+                "\n".join(
+                    [
+                        f"kubectl describe deploy -n {namespace} inference-api",
+                        f"kubectl describe deploy -n {namespace} inference-worker",
+                    ]
+                ),
+            ),
+        ]
+
+    if failure_stage == "result-storage":
+        return [
+            (
+                "가설 A: 결과 저장 계층 오류 확인",
+                "\n".join(
+                    [
+                        f"kubectl logs -n {namespace} -l app=inference-worker --tail=300 | grep -E 'dynamodb|result|store|persist|{request_id}'",
+                        f"kubectl logs -n {app_namespace} deploy/dashboard-backend --tail=300 | grep -E 'dynamodb|result|query|error|{request_id}'",
+                    ]
+                ),
+            ),
+            (
+                "가설 B: 백엔드 조회/적재 경로 상태 확인",
+                "\n".join(
+                    [
+                        f"kubectl get pods -n {app_namespace} -l app=dashboard-backend -o wide",
+                        f"kubectl describe deploy -n {app_namespace} dashboard-backend",
+                    ]
+                ),
+            ),
+            (
+                "가설 C: 저장 실패 영향 범위 확인",
+                "\n".join(
+                    [
+                        f"kubectl logs -n {namespace} -l app=inference-worker --tail=500 | grep -E 'result-storage|dynamodb|{request_id}'",
+                        f"kubectl get events -n {app_namespace} --sort-by=.lastTimestamp | tail -20",
+                    ]
+                ),
+            ),
+        ]
 
     commands = [
         (
@@ -1065,6 +1223,19 @@ def _build_quick_action_commands(payload: dict) -> list[tuple[str, str]]:
             )
         )
 
+    if failure_stage not in {"predictor-http", "payload-validation", "result-storage"}:
+        commands.append(
+            (
+                "가설 C: 워크로드 기본 상태 및 최근 이벤트 확인",
+                "\n".join(
+                    [
+                        f"kubectl get pods -n {namespace} -o wide",
+                        f"kubectl get events -n {namespace} --sort-by=.lastTimestamp | tail -20",
+                    ]
+                ),
+            )
+        )
+
     return commands
 
 
@@ -1080,26 +1251,309 @@ def _build_related_links() -> str:
     return "\n\n*관련 링크*\n" + "\n".join(links)
 
 
+def _triage_tool_display_names() -> dict[str, str]:
+    return {
+        "collect_predictor_status": "predictor 상태",
+        "collect_worker_status": "worker 상태",
+        "collect_predictor_logs": "predictor 로그",
+        "collect_worker_logs": "worker 로그",
+        "collect_api_logs": "API 로그",
+        "collect_predictor_events": "predictor 이벤트",
+        "collect_worker_events": "worker 이벤트",
+        "collect_namespace_warning_events": "namespace warning 이벤트",
+        "collect_keda_status": "KEDA/HPA 상태",
+        "collect_worker_deployment_status": "worker 배포 상태",
+        "collect_predictor_deployment_status": "predictor 배포 상태",
+        "collect_recent_deploy_changes": "최근 배포 변경",
+    }
+
+
+def _parse_ready_ratio(signal_prefix: str, observed_signals: list[str]) -> tuple[int, int]:
+    pattern = re.compile(rf"{re.escape(signal_prefix)}=(\d+)/(\d+)")
+    for signal in observed_signals:
+        match = pattern.search(signal)
+        if match:
+            return int(match.group(1)), int(match.group(2))
+    return 0, 0
+
+
+def _has_retry_lag_signal(observed_signals: list[str]) -> bool:
+    for signal in observed_signals:
+        if not signal.startswith("kafka_lag_inference-retry="):
+            continue
+        try:
+            return int(signal.split("=", 1)[1]) >= 10
+        except ValueError:
+            return True
+    return False
+
+
+def _available_triage_tools() -> dict[str, str]:
+    return {
+        "collect_worker_logs": "Collect recent logs from the inference-worker pod",
+        "collect_predictor_logs": "Collect recent logs from the pdm-predictor pod",
+        "collect_api_logs": "Collect recent logs from the inference-api pod",
+        "collect_worker_events": "Collect recent Kubernetes events related to inference-worker",
+        "collect_predictor_events": "Collect recent Kubernetes events related to pdm-predictor",
+        "collect_namespace_warning_events": "Collect recent warning events from the inference namespace",
+        "collect_keda_status": "Collect KEDA ScaledObject and HPA scaling status for inference workloads",
+        "collect_worker_deployment_status": "Collect inference-worker deployment rollout status",
+        "collect_predictor_deployment_status": "Collect pdm-predictor deployment rollout status",
+        "collect_recent_deploy_changes": "Collect rollout condition changes for inference API, worker, and predictor deployments",
+        "collect_worker_status": "Collect aggregate readiness and restart status for inference-worker pods",
+        "collect_predictor_status": "Collect aggregate readiness and restart status for pdm-predictor pods",
+    }
+
+
+def _required_triage_tools(payload: dict, observed_signals: list[str]) -> list[str]:
+    error_type = str(payload.get("error_type", "unknown"))
+    failure_stage = str(payload.get("failure_stage", "unknown"))
+    last_error = str(payload.get("last_error", "")).lower()
+    predictor_ready, predictor_total = _parse_ready_ratio("pdm_predictor_ready", observed_signals)
+    worker_ready, worker_total = _parse_ready_ratio("inference_worker_ready", observed_signals)
+    retry_lag_high = _has_retry_lag_signal(observed_signals)
+    required = []
+
+    if predictor_total == 0:
+        required.extend(
+            [
+                "collect_predictor_status",
+                "collect_keda_status",
+                "collect_predictor_deployment_status",
+                "collect_recent_deploy_changes",
+            ]
+        )
+    elif error_type in {"INVALID_FEATURE", "SCHEMA_VALIDATION_ERROR"}:
+        required.extend(
+            [
+                "collect_worker_status",
+                "collect_worker_logs",
+                "collect_api_logs",
+            ]
+        )
+    elif error_type == "RDS_CONNECTION_ERROR":
+        required.extend(
+            [
+                "collect_worker_status",
+                "collect_worker_logs",
+                "collect_namespace_warning_events",
+                "collect_recent_deploy_changes",
+            ]
+        )
+    elif error_type in {"KAFKA_PUBLISH_ERROR", "CALLBACK_TIMEOUT"}:
+        required.extend(
+            [
+                "collect_worker_status",
+                "collect_worker_logs",
+                "collect_worker_deployment_status",
+            ]
+        )
+    elif failure_stage == "predictor-http":
+        required.extend(
+            [
+                "collect_predictor_status",
+                "collect_worker_status",
+                "collect_predictor_logs",
+                "collect_worker_logs",
+            ]
+        )
+        if predictor_ready == predictor_total and worker_total > 0 and worker_ready == worker_total:
+            required.append("collect_recent_deploy_changes")
+        if "reset" in last_error or "timeout" in last_error or "disconnect" in last_error:
+            required.append("collect_predictor_events")
+    elif failure_stage == "payload-validation":
+        required.extend(
+            [
+                "collect_worker_status",
+                "collect_worker_logs",
+                "collect_api_logs",
+            ]
+        )
+    elif failure_stage == "result-storage":
+        required.extend(
+            [
+                "collect_worker_status",
+                "collect_worker_logs",
+                "collect_namespace_warning_events",
+                "collect_recent_deploy_changes",
+            ]
+        )
+    else:
+        required.extend(
+            [
+                "collect_worker_status",
+                "collect_predictor_status",
+            ]
+        )
+
+    if retry_lag_high:
+        required.append("collect_worker_deployment_status")
+        required.append("collect_keda_status")
+
+    deduped = []
+    seen = set()
+    for tool in required:
+        if tool in seen:
+            continue
+        seen.add(tool)
+        deduped.append(tool)
+    return deduped
+
+
+def _heuristic_triage_plan(payload: dict, observed_signals: list[str]) -> dict:
+    error_type = str(payload.get("error_type", "unknown"))
+    failure_stage = str(payload.get("failure_stage", "unknown"))
+    last_error = str(payload.get("last_error", ""))
+    predictor_ready, predictor_total = _parse_ready_ratio("pdm_predictor_ready", observed_signals)
+    retry_lag_high = _has_retry_lag_signal(observed_signals)
+    plan = _required_triage_tools(payload, observed_signals)
+
+    if predictor_total == 0:
+        plan.extend(
+            [
+                "collect_namespace_warning_events",
+            ]
+        )
+    elif error_type in {"INVALID_FEATURE", "SCHEMA_VALIDATION_ERROR"}:
+        plan.extend(
+            [
+                "collect_worker_events",
+                "collect_api_logs",
+            ]
+        )
+    elif error_type == "RDS_CONNECTION_ERROR":
+        plan.extend(
+            [
+                "collect_namespace_warning_events",
+                "collect_recent_deploy_changes",
+            ]
+        )
+    elif error_type in {"KAFKA_PUBLISH_ERROR", "CALLBACK_TIMEOUT"}:
+        plan.extend(
+            [
+                "collect_worker_events",
+                "collect_keda_status",
+            ]
+        )
+    elif failure_stage == "predictor-http":
+        plan.extend(
+            [
+                "collect_predictor_events",
+                "collect_worker_events",
+            ]
+        )
+        if "reset" in last_error.lower() or "timeout" in last_error.lower():
+            plan.append("collect_namespace_warning_events")
+            plan.append("collect_predictor_deployment_status")
+        if predictor_ready > 0:
+            plan.append("collect_recent_deploy_changes")
+    elif failure_stage == "payload-validation":
+        plan.extend(
+            [
+                "collect_worker_events",
+                "collect_api_logs",
+            ]
+        )
+    elif failure_stage == "result-storage":
+        plan.extend(
+            [
+                "collect_namespace_warning_events",
+                "collect_recent_deploy_changes",
+            ]
+        )
+    else:
+        plan.extend(
+            [
+                "collect_predictor_logs",
+                "collect_namespace_warning_events",
+            ]
+        )
+
+    if retry_lag_high:
+        plan.append("collect_worker_deployment_status")
+        plan.append("collect_keda_status")
+
+    deduped = []
+    seen = set()
+    for tool in plan:
+        if tool in seen:
+            continue
+        seen.add(tool)
+        deduped.append(tool)
+
+    return {
+        "source": "heuristic",
+        "tools": deduped[:5],
+        "required_tools": _required_triage_tools(payload, observed_signals),
+    }
+
+
+def _run_triage_tool(tool_name: str) -> dict:
+    worker_selector = _env("WORKER_SELECTOR", "app=inference-worker")
+    predictor_selector = _env("PREDICTOR_SELECTOR", "serving.kserve.io/inferenceservice=pdm")
+    api_selector = "app=inference-api"
+
+    if tool_name == "collect_worker_logs":
+        return {"tool": tool_name, "data": _collect_recent_pod_logs(worker_selector, tail_lines=40, max_pods=1)}
+    if tool_name == "collect_predictor_logs":
+        return {"tool": tool_name, "data": _collect_recent_pod_logs(predictor_selector, tail_lines=40, max_pods=1)}
+    if tool_name == "collect_api_logs":
+        return {"tool": tool_name, "data": _collect_recent_pod_logs(api_selector, tail_lines=40, max_pods=1)}
+    if tool_name == "collect_worker_events":
+        return {"tool": tool_name, "data": _collect_pod_events(worker_selector)}
+    if tool_name == "collect_predictor_events":
+        return {"tool": tool_name, "data": _collect_pod_events(predictor_selector)}
+    if tool_name == "collect_namespace_warning_events":
+        return {"tool": tool_name, "data": _collect_namespace_warning_events()}
+    if tool_name == "collect_keda_status":
+        return {"tool": tool_name, "data": _collect_keda_status()}
+    if tool_name == "collect_worker_deployment_status":
+        return {"tool": tool_name, "data": _collect_deployment_status(worker_selector)}
+    if tool_name == "collect_predictor_deployment_status":
+        return {"tool": tool_name, "data": _collect_deployment_status(predictor_selector)}
+    if tool_name == "collect_recent_deploy_changes":
+        return {
+            "tool": tool_name,
+            "data": {
+                "worker": _collect_deployment_rollouts(worker_selector),
+                "predictor": _collect_deployment_rollouts(predictor_selector),
+                "api": _collect_deployment_rollouts(api_selector),
+            },
+        }
+    if tool_name == "collect_worker_status":
+        return {"tool": tool_name, "data": _summarize_pods(worker_selector)}
+    if tool_name == "collect_predictor_status":
+        return {"tool": tool_name, "data": _summarize_pods(predictor_selector)}
+    raise ValueError(f"unsupported triage tool: {tool_name}")
+
+
 def _build_message(payload: dict, kafka_context: dict, worker_status: dict, predictor_status: dict, summary: dict) -> dict:
     environment = os.getenv("ENVIRONMENT", "public").upper()
     request_id = payload.get("request_id", "unknown")
     equipment_id = payload.get("equipment_id", "unknown")
+    error_type = str(payload.get("error_type", "unknown"))
     retry_count = payload.get("retry_count", 0)
     failure_stage = payload.get("failure_stage", "unknown")
     last_error = payload.get("last_error", "unknown")
     judgment = str(summary.get("judgment", "")).strip()
-    priority_checks = summary.get("priority_checks", [])
     recommended_actions = summary.get("recommended_actions", [])
+    predictor_total = predictor_status.get("total", 0)
+    triage_plan = payload.get("_triage_plan", {})
+    tool_labels = _triage_tool_display_names()
+    tool_basis = [tool_labels.get(tool_name, tool_name) for tool_name in triage_plan.get("tools", [])]
+
+    payload["_predictor_total"] = predictor_total
 
     if not judgment:
         likely_causes = summary.get("likely_causes", [])
-        judgment = " ".join(likely_causes[:2]).strip() or "현재 수집된 신호만으로는 단정적인 원인 확정이 어렵지만 추가 확인이 필요한 장애 상황입니다."
-    if not priority_checks:
-        priority_checks = [
-            "predictor 로그에서 동일 시간대 오류를 확인합니다.",
-            "worker 로그에서 해당 request_id 재시도 흐름을 확인합니다.",
-            "predictor 재시작 및 probe 이벤트를 확인합니다.",
-            "retry topic lag 증가 여부를 확인합니다.",
+        judgment = " ".join(likely_causes[:2]).strip() or "현재 수집된 신호만으로는 확정적인 원인 단정이 어려워 추가 확인이 필요한 상황입니다."
+
+    if predictor_total == 0:
+        judgment = "현재 predictor 파드의 원하는 복제본 수가 0으로 보이며, 파드가 실행되지 않고 있습니다. 애플리케이션 로그보다 KEDA/HPA, InferenceService, 배포 설정을 먼저 확인해야 합니다."
+        recommended_actions = [
+            "KEDA, HPA, InferenceService 스케일 설정을 확인하고 predictor desired replica를 복구합니다.",
+            "predictor 배포 조건과 최근 변경 이력을 확인해 스케일 다운 원인을 파악합니다.",
+            "predictor 복구 후 DLQ payload 기준으로 재처리 여부를 판단합니다.",
         ]
 
     action_lines = "\n".join(f"• {item}" for item in recommended_actions[:3]) or "• 추가 조치 정보를 생성하지 못했습니다."
@@ -1108,21 +1562,24 @@ def _build_message(payload: dict, kafka_context: dict, worker_status: dict, pred
         quick_action_sections.append(f"*{title}*\n\n```bash\n{command}\n```")
     quick_action_text = "\n\n".join(quick_action_sections)
     related_links_text = _build_related_links()
+    basis_text = ", ".join(tool_basis[:5]) if tool_basis else "기본 운영 신호"
     body = (
-        f"\"{equipment_id} 요청이 `{failure_stage}` 단계에서 최종 실패하여 DLQ로 인입되었습니다.\"\n\n"
+        f"\"{equipment_id} 요청이 {failure_stage} 단계에서 최종 실패하여 DLQ로 인입되었습니다.\"\n\n"
         f"---\n\n"
-        f"*📊 1. Incident Snapshot*\n"
+        f"*📌 1. Incident Snapshot*\n"
         f"• *Request ID*: `{request_id}`\n"
-        f"• *Error*: `{last_error}` (Retry {retry_count}회 초과)\n"
+        f"• *Error Type*: `{error_type}`\n"
+        f"• *Error*: {last_error} (Retry {retry_count}회 초과)\n"
         f"• *Kafka Lag*: `{_format_topic_lag(kafka_context)}`\n"
-        f"• *Pod Status*: `worker={worker_status.get('ready', 0)}/{worker_status.get('total', 0)} Ready` | `predictor={predictor_status.get('ready', 0)}/{predictor_status.get('total', 0)} Ready`\n\n"
-        f"*💡 Triage 판단*\n\n"
-        f"{judgment}\n\n"
+        f"• *Pod Status*: `worker={worker_status.get('ready', 0)}/{worker_status.get('total', 0)} Ready | predictor={predictor_status.get('ready', 0)}/{predictor_status.get('total', 0)} Ready`\n"
+        f"• *분석 근거*: {basis_text}\n\n"
+        f"> 💡 *Quick Triage*\n"
+        f"> {judgment}\n\n"
         f"---\n\n"
-        f"*🔍 2. 가설별 즉시 조치 명령어 (Quick Action)*\n\n"
+        f"*🔍 2. Triage Guide*\n\n"
         f"{quick_action_text}\n\n"
         f"---\n\n"
-        f"*🛠️ 3. Next Step (의사결정 가이드)*\n"
+        f"*🛠️ 3. Next Actions*\n"
         f"{action_lines}"
         f"{related_links_text}"
     )

@@ -214,6 +214,57 @@ def _collect_namespace_warning_events(limit: int = 10) -> list[dict]:
     return warning_events[-limit:]
 
 
+def _collect_hpa_status() -> list[dict]:
+    namespace = _env("EKS_NAMESPACE", "inference")
+    payload = _query_k8s_json(
+        f"/apis/autoscaling/v2/namespaces/{namespace}/horizontalpodautoscalers"
+    )
+    items = payload.get("items", [])
+    return [
+        {
+            "name": item.get("metadata", {}).get("name", "unknown"),
+            "target_kind": item.get("spec", {}).get("scaleTargetRef", {}).get("kind", "unknown"),
+            "target_name": item.get("spec", {}).get("scaleTargetRef", {}).get("name", "unknown"),
+            "min_replicas": item.get("spec", {}).get("minReplicas"),
+            "max_replicas": item.get("spec", {}).get("maxReplicas"),
+            "current_replicas": item.get("status", {}).get("currentReplicas"),
+            "desired_replicas": item.get("status", {}).get("desiredReplicas"),
+        }
+        for item in items
+    ]
+
+
+def _collect_scaledobjects() -> list[dict]:
+    namespace = _env("EKS_NAMESPACE", "inference")
+    payload = _query_k8s_json(
+        f"/apis/keda.sh/v1alpha1/namespaces/{namespace}/scaledobjects"
+    )
+    items = payload.get("items", [])
+    return [
+        {
+            "name": item.get("metadata", {}).get("name", "unknown"),
+            "target_name": item.get("spec", {}).get("scaleTargetRef", {}).get("name", "unknown"),
+            "min_replicas": item.get("spec", {}).get("minReplicaCount"),
+            "max_replicas": item.get("spec", {}).get("maxReplicaCount"),
+            "triggers": [
+                {
+                    "type": trigger.get("type", "unknown"),
+                    "metadata": trigger.get("metadata", {}),
+                }
+                for trigger in item.get("spec", {}).get("triggers", [])
+            ],
+        }
+        for item in items
+    ]
+
+
+def _collect_keda_status() -> dict:
+    return {
+        "scaledobjects": _collect_scaledobjects(),
+        "hpas": _collect_hpa_status(),
+    }
+
+
 def _collect_deployment_status(label_selector: str) -> list[dict]:
     namespace = _env("EKS_NAMESPACE", "inference")
     selector = parse.quote(label_selector, safe="=,")
@@ -233,6 +284,32 @@ def _collect_deployment_status(label_selector: str) -> list[dict]:
     ]
 
 
+def _collect_deployment_rollouts(label_selector: str) -> list[dict]:
+    namespace = _env("EKS_NAMESPACE", "inference")
+    selector = parse.quote(label_selector, safe="=,")
+    payload = _query_k8s_json(
+        f"/apis/apps/v1/namespaces/{namespace}/deployments?labelSelector={selector}"
+    )
+    items = payload.get("items", [])
+    return [
+        {
+            "name": item.get("metadata", {}).get("name", "unknown"),
+            "generation": item.get("metadata", {}).get("generation"),
+            "observed_generation": item.get("status", {}).get("observedGeneration"),
+            "conditions": [
+                {
+                    "type": condition.get("type", "Unknown"),
+                    "status": condition.get("status", "Unknown"),
+                    "reason": condition.get("reason", ""),
+                    "message": condition.get("message", ""),
+                }
+                for condition in item.get("status", {}).get("conditions", [])
+            ],
+        }
+        for item in items
+    ]
+
+
 def _tool_context() -> tuple[str, str]:
     worker_selector = _env("WORKER_SELECTOR", "app=inference-worker")
     predictor_selector = _env("PREDICTOR_SELECTOR", "serving.kserve.io/inferenceservice=pdm")
@@ -241,21 +318,35 @@ def _tool_context() -> tuple[str, str]:
 
 def _run_tool(function_name: str) -> dict:
     worker_selector, predictor_selector = _tool_context()
+    api_selector = _env("API_SELECTOR", "app=inference-api")
 
     if function_name == "collect_worker_logs":
         return {"tool": function_name, "data": _collect_recent_pod_logs(worker_selector)}
     if function_name == "collect_predictor_logs":
         return {"tool": function_name, "data": _collect_recent_pod_logs(predictor_selector)}
+    if function_name == "collect_api_logs":
+        return {"tool": function_name, "data": _collect_recent_pod_logs(api_selector)}
     if function_name == "collect_worker_events":
         return {"tool": function_name, "data": _collect_pod_events(worker_selector)}
     if function_name == "collect_predictor_events":
         return {"tool": function_name, "data": _collect_pod_events(predictor_selector)}
     if function_name == "collect_namespace_warning_events":
         return {"tool": function_name, "data": _collect_namespace_warning_events()}
+    if function_name == "collect_keda_status":
+        return {"tool": function_name, "data": _collect_keda_status()}
     if function_name == "collect_worker_deployment_status":
         return {"tool": function_name, "data": _collect_deployment_status(worker_selector)}
     if function_name == "collect_predictor_deployment_status":
         return {"tool": function_name, "data": _collect_deployment_status(predictor_selector)}
+    if function_name == "collect_recent_deploy_changes":
+        return {
+            "tool": function_name,
+            "data": {
+                "worker": _collect_deployment_rollouts(worker_selector),
+                "predictor": _collect_deployment_rollouts(predictor_selector),
+                "api": _collect_deployment_rollouts(api_selector),
+            },
+        }
     if function_name == "collect_worker_status":
         return {"tool": function_name, "data": _summarize_pods(worker_selector)}
     if function_name == "collect_predictor_status":

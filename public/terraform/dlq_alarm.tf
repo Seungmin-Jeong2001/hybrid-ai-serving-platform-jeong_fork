@@ -349,6 +349,10 @@ resource "aws_bedrockagent_agent_action_group" "incident_triage" {
         description = "Collect recent logs from the pdm-predictor pod"
       }
       functions {
+        name        = "collect_api_logs"
+        description = "Collect recent logs from the inference-api pod"
+      }
+      functions {
         name        = "collect_worker_events"
         description = "Collect recent Kubernetes events related to inference-worker"
       }
@@ -361,12 +365,20 @@ resource "aws_bedrockagent_agent_action_group" "incident_triage" {
         description = "Collect recent warning events from the inference namespace"
       }
       functions {
+        name        = "collect_keda_status"
+        description = "Collect KEDA ScaledObject and HPA scaling status for inference workloads"
+      }
+      functions {
         name        = "collect_worker_deployment_status"
         description = "Collect inference-worker deployment rollout status"
       }
       functions {
         name        = "collect_predictor_deployment_status"
         description = "Collect pdm-predictor deployment rollout status"
+      }
+      functions {
+        name        = "collect_recent_deploy_changes"
+        description = "Collect recent rollout condition changes for inference API, worker, and predictor deployments"
       }
       functions {
         name        = "collect_worker_status"
