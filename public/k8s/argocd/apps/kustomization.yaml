@@ -4,6 +4,7 @@ resources:
   - base-app.yaml
   - policy-app.yaml
   - cert-manager-app.yaml
+  - argocd-image-updater-app.yaml
   - istio-base-app.yaml
   - istiod-app.yaml
   - istio-cni-app.yaml

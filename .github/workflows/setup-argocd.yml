@@ -2,6 +2,11 @@ name: Setup Argo CD
 
 on:
   workflow_dispatch:
+    inputs:
+      rotate_github_app_secret:
+        description: "Overwrite GitHub App parameters in SSM Parameter Store"
+        required: false
+        default: "false"
 
 permissions:
   contents: read
@@ -43,6 +48,48 @@ jobs:
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           echo "value=arn:aws:iam::${ACCOUNT_ID}:role/sgs-hasp-eks-bootstrap-admin" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure GitHub App parameters in SSM Parameter Store
+        env:
+          GH_APP_ID: ${{ secrets.GH_APP_ID }}
+          GH_APP_INSTALLATION_ID: ${{ secrets.GH_APP_INSTALLATION_ID }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          ROTATE_GITHUB_APP_SECRET: ${{ github.event.inputs.rotate_github_app_secret || 'false' }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GH_APP_ID}" ] || [ -z "${GH_APP_INSTALLATION_ID}" ] || [ -z "${GH_APP_PRIVATE_KEY}" ]; then
+            echo "Required GitHub App secrets are missing. Check GH_APP_ID, GH_APP_INSTALLATION_ID, and GH_APP_PRIVATE_KEY."
+            exit 1
+          fi
+
+          ensure_secure_parameter() {
+            local name="$1"
+            local value="$2"
+
+            if aws ssm get-parameter --name "$name" --with-decryption >/dev/null 2>&1; then
+              if [ "${ROTATE_GITHUB_APP_SECRET}" = "true" ]; then
+                aws ssm put-parameter \
+                  --name "$name" \
+                  --type "SecureString" \
+                  --value "$value" \
+                  --overwrite >/dev/null
+                echo "Parameter updated: $name"
+              else
+                echo "Parameter already exists. Skip update: $name"
+              fi
+            else
+              aws ssm put-parameter \
+                --name "$name" \
+                --type "SecureString" \
+                --value "$value" >/dev/null
+              echo "Parameter created: $name"
+            fi
+          }
+
+          ensure_secure_parameter "/hasp/argocd/image-updater/github-app/id" "${GH_APP_ID}"
+          ensure_secure_parameter "/hasp/argocd/image-updater/github-app/installation-id" "${GH_APP_INSTALLATION_ID}"
+          ensure_secure_parameter "/hasp/argocd/image-updater/github-app/private-key" "${GH_APP_PRIVATE_KEY}"
 
       - name: Build root application manifest
         run: |
@@ -120,6 +167,9 @@ jobs:
           import os
 
           repo_secret_name = f"repo-{os.environ['GITHUB_REPOSITORY'].replace('/', '-')}"
+          github_app_id_parameter = "/hasp/argocd/image-updater/github-app/id"
+          github_app_installation_parameter = "/hasp/argocd/image-updater/github-app/installation-id"
+          github_app_private_key_parameter = "/hasp/argocd/image-updater/github-app/private-key"
           commands = [
               "set -euo pipefail",
               "if ! command -v kubectl >/dev/null 2>&1; then curl -fsSLo /tmp/kubectl https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl && chmod +x /tmp/kubectl && sudo mv /tmp/kubectl /usr/local/bin/kubectl; fi",
@@ -139,6 +189,27 @@ jobs:
                   f"kubectl -n {os.environ['ARGOCD_NAMESPACE']} label secret {repo_secret_name} "
                   f"argocd.argoproj.io/secret-type=repository --overwrite; fi"
               ),
+              (
+                  f"GITHUB_APP_ID=$(aws ssm get-parameter --name \"{github_app_id_parameter}\" "
+                  "--with-decryption --query Parameter.Value --output text)"
+              ),
+              (
+                  f"GITHUB_APP_INSTALLATION_ID=$(aws ssm get-parameter --name \"{github_app_installation_parameter}\" "
+                  "--with-decryption --query Parameter.Value --output text)"
+              ),
+              (
+                  f"GITHUB_APP_PRIVATE_KEY=$(aws ssm get-parameter --name \"{github_app_private_key_parameter}\" "
+                  "--with-decryption --query Parameter.Value --output text)"
+              ),
+              (
+                  f"kubectl -n {os.environ['ARGOCD_NAMESPACE']} create secret generic "
+                  "argocd-image-updater-github-app-creds "
+                  "--from-literal=githubAppID=\"$GITHUB_APP_ID\" "
+                  "--from-literal=githubAppInstallationID=\"$GITHUB_APP_INSTALLATION_ID\" "
+                  "--from-literal=githubAppPrivateKey=\"$GITHUB_APP_PRIVATE_KEY\" "
+                  "--dry-run=client -o yaml | kubectl apply -f -"
+              ),
+              "unset GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY",
               f"echo {os.environ['ROOT_APP_YAML_B64']} | base64 -d | kubectl apply -f -",
               f"kubectl get application platform-addons -n {os.environ['ARGOCD_NAMESPACE']} -o yaml",
           ]
