@@ -1580,7 +1580,7 @@ def _build_message(payload: dict, kafka_context: dict, worker_status: dict, pred
             "predictor 복구 후 DLQ payload 기준으로 재처리 여부를 판단합니다.",
         ]
     elif predictor_total > 0 and predictor_ready < predictor_total:
-        judgment = "predictor 파드가 생성되었으나 Ready 상태를 충족하지 못해 트래픽 인입이 차단된 상태입니다. 컨테이너 내부 런타임 크래시 또는 Readiness Probe 실패 가능성이 높으므로 가설 A의 Describe/Event 확인을 최우선으로 진행해야 합니다."
+        judgment = "predictor 파드가 생성되었으나 Ready 상태를 충족하지 못해 트래픽 인입이 차단된 상태입니다. 컨테이너 내부 런타임 크래시 또는 Readiness Probe 실패 가능성이 높으므로 가설 A(재시작/OOM/Probe) 확인을 최우선으로 진행해야 합니다."
         recommended_actions = [
             "컨테이너 크래시가 확인되면 에러 로그 분석 후 정상 이미지 기준으로 롤백하거나 rollout restart를 수행합니다.",
             "Probe 실패가 확인되면 pdm-predictor 파드의 리소스 할당량과 헬스체크 엔드포인트 상태를 점검합니다.",
