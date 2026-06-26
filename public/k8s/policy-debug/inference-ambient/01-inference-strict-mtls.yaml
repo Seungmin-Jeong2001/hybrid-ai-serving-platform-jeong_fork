@@ -1,8 +1,0 @@
-apiVersion: security.istio.io/v1
-kind: PeerAuthentication
-metadata:
-  name: inference-strict-mtls
-  namespace: inference
-spec:
-  mtls:
-    mode: STRICT
