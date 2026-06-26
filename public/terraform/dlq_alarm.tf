@@ -373,10 +373,6 @@ resource "aws_bedrockagent_agent_action_group" "incident_triage" {
         description = "Collect inference-worker deployment rollout status"
       }
       functions {
-        name        = "collect_predictor_deployment_status"
-        description = "Collect pdm-predictor deployment rollout status"
-      }
-      functions {
         name        = "collect_recent_deploy_changes"
         description = "Collect recent rollout condition changes for inference API, worker, and predictor deployments"
       }

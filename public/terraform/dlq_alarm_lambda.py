@@ -1263,7 +1263,6 @@ def _triage_tool_display_names() -> dict[str, str]:
         "collect_namespace_warning_events": "namespace warning 이벤트",
         "collect_keda_status": "KEDA/HPA 상태",
         "collect_worker_deployment_status": "worker 배포 상태",
-        "collect_predictor_deployment_status": "predictor 배포 상태",
         "collect_recent_deploy_changes": "최근 배포 변경",
     }
 
@@ -1298,7 +1297,6 @@ def _available_triage_tools() -> dict[str, str]:
         "collect_namespace_warning_events": "Collect recent warning events from the inference namespace",
         "collect_keda_status": "Collect KEDA ScaledObject and HPA scaling status for inference workloads",
         "collect_worker_deployment_status": "Collect inference-worker deployment rollout status",
-        "collect_predictor_deployment_status": "Collect pdm-predictor deployment rollout status",
         "collect_recent_deploy_changes": "Collect rollout condition changes for inference API, worker, and predictor deployments",
         "collect_worker_status": "Collect aggregate readiness and restart status for inference-worker pods",
         "collect_predictor_status": "Collect aggregate readiness and restart status for pdm-predictor pods",
@@ -1319,7 +1317,6 @@ def _required_triage_tools(payload: dict, observed_signals: list[str]) -> list[s
             [
                 "collect_predictor_status",
                 "collect_keda_status",
-                "collect_predictor_deployment_status",
                 "collect_recent_deploy_changes",
             ]
         )
@@ -1444,7 +1441,6 @@ def _heuristic_triage_plan(payload: dict, observed_signals: list[str]) -> dict:
         )
         if "reset" in last_error.lower() or "timeout" in last_error.lower():
             plan.append("collect_namespace_warning_events")
-            plan.append("collect_predictor_deployment_status")
         if predictor_ready > 0:
             plan.append("collect_recent_deploy_changes")
     elif failure_stage == "payload-validation":
@@ -1509,8 +1505,6 @@ def _run_triage_tool(tool_name: str) -> dict:
         return {"tool": tool_name, "data": _collect_keda_status()}
     if tool_name == "collect_worker_deployment_status":
         return {"tool": tool_name, "data": _collect_deployment_status(worker_selector)}
-    if tool_name == "collect_predictor_deployment_status":
-        return {"tool": tool_name, "data": _collect_deployment_status(predictor_selector)}
     if tool_name == "collect_recent_deploy_changes":
         return {
             "tool": tool_name,

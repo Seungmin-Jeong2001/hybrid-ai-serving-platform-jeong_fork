@@ -336,8 +336,6 @@ def _run_tool(function_name: str) -> dict:
         return {"tool": function_name, "data": _collect_keda_status()}
     if function_name == "collect_worker_deployment_status":
         return {"tool": function_name, "data": _collect_deployment_status(worker_selector)}
-    if function_name == "collect_predictor_deployment_status":
-        return {"tool": function_name, "data": _collect_deployment_status(predictor_selector)}
     if function_name == "collect_recent_deploy_changes":
         return {
             "tool": function_name,
