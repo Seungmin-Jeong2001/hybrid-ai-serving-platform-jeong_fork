@@ -264,7 +264,7 @@ variable "enable_site_to_site_vpn" {
 variable "enable_s3_interface_endpoint" {
   description = "S3 인터페이스 엔드포인트 생성 여부 (온프레미스 VPN→S3 직접 접근=ECR-over-VPN에 필요, 비용 발생)"
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "customer_gateways" {
