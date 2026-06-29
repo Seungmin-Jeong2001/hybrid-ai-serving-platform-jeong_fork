@@ -1,0 +1,46 @@
+name: Public Terraform Output
+
+# terraform output(JSON)을 아티팩트로 추출 — Bastion(strongSwan) bh render 입력용.
+# 읽기 전용(plan/apply 없음). PSK가 포함되므로 retention 짧게 유지.
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-2
+
+jobs:
+  output:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: public/terraform
+        run: terraform init
+
+      - name: Export terraform output JSON
+        working-directory: public/terraform
+        run: terraform output -json > tf-output.json
+
+      - name: Upload output artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-tf-output
+          path: public/terraform/tf-output.json
+          retention-days: 1
