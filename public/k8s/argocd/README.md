@@ -32,6 +32,7 @@ Review the following values before syncing:
 2. `kserve-app.yaml`
    - This manifest assumes KServe Standard mode.
    - If the cluster standardizes on `RawDeployment`/older KServe behavior, align this value with the deployed KServe version and the `InferenceService` manifests in [public/k8s/serving/predictive-model/pdm-isvc.yaml](C:/git_clone/hybrid-ai-serving-platform/public/k8s/serving/predictive-model/pdm-isvc.yaml).
+   - This repository uses KServe predictors as internal-only services behind `inference-worker`, so KServe ingress creation is disabled unless a predictor must be exposed directly.
 
 ## Sync model
 
