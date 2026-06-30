@@ -91,6 +91,11 @@ output "argocd_image_updater_role_arn" {
   value       = aws_iam_role.argocd_image_updater.arn
 }
 
+output "cluster_autoscaler_role_arn" {
+  description = "IAM role ARN for the cluster-autoscaler service account (IRSA)"
+  value       = aws_iam_role.cluster_autoscaler.arn
+}
+
 output "eks_bootstrap_admin_role_arn" {
   description = "IAM role ARN used by bootstrap workflows to register the Argo CD root application"
   value       = aws_iam_role.eks_bootstrap_admin.arn

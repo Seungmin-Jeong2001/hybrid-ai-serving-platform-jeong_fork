@@ -12,6 +12,7 @@ resources:
   - inference-api-app.yaml
   - inference-worker-app.yaml
   - metrics-server-app.yaml
+  - cluster-autoscaler-app.yaml
   - keda-app.yaml
   - kube-prometheus-stack-app.yaml
   - loki-app.yaml

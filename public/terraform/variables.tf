@@ -109,8 +109,8 @@ variable "eks_node_groups" {
     inference = {
       instance_types = ["m7i-flex.xlarge"] # 임시 비용 절감, 원래 값: m7i-flex.large (t3.small은 최대 파드 11개 한계로 변경) / t3.medium 파드 부족으로 변경 (06-22)
       az_count       = 3
-      desired_size   = 1 # ★ 원래 값 : 2 (나중에 복구) ★
-      min_size       = 1
+      desired_size   = 3
+      min_size       = 3
       max_size       = 10
       labels         = { workload = "inference" }
       taints         = []
@@ -121,9 +121,9 @@ variable "eks_node_groups" {
       # ★ 운영 전환 시: m7i-flex.large × 2 (8GB × 2, 비용 동일 + HA 확보)
       # ★   → instance_types = ["m7i-flex.large"], desired_size = 2, min_size = 2
       instance_types = ["m7i-flex.xlarge"] # 데모: 4vCPU / 16GB — general 워크로드 전체 수용
-      az_count       = 2
-      desired_size   = 1
-      min_size       = 1
+      az_count       = 3
+      desired_size   = 3
+      min_size       = 3
       max_size       = 5
       labels         = { workload = "general" }
       taints         = []
