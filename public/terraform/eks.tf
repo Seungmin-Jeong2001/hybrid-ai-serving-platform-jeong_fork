@@ -38,6 +38,11 @@ resource "aws_eks_addon" "vpc_cni" {
 resource "aws_eks_addon" "coredns" {
   cluster_name = aws_eks_cluster.main.name
   addon_name   = "coredns"
+  configuration_values = jsonencode({
+    nodeSelector = {
+      workload = "general"
+    }
+  })
 }
 
 # EKS kube-proxy 애드온
