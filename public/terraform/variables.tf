@@ -94,6 +94,7 @@ variable "eks_node_groups" {
   description = "Per-workload EKS managed node group configuration"
   type = map(object({
     instance_types = list(string)
+    capacity_type  = string
     az_count       = number # how many AZs to span (1..3); subnets are taken from eks_private in order
     desired_size   = number
     min_size       = number
@@ -106,13 +107,24 @@ variable "eks_node_groups" {
     }))
   }))
   default = {
-    inference = {
+    inference_ondemand = {
       instance_types = ["m7i-flex.xlarge"] # 임시 비용 절감, 원래 값: m7i-flex.large (t3.small은 최대 파드 11개 한계로 변경) / t3.medium 파드 부족으로 변경 (06-22)
+      capacity_type  = "ON_DEMAND"
       az_count       = 3
       desired_size   = 3
       min_size       = 3
-      max_size       = 10
-      labels         = { workload = "inference" }
+      max_size       = 3
+      labels         = { workload = "inference", capacity = "ondemand" }
+      taints         = []
+    }
+    inference_spot = {
+      instance_types = ["m7i-flex.xlarge"]
+      capacity_type  = "SPOT"
+      az_count       = 3
+      desired_size   = 0
+      min_size       = 0
+      max_size       = 7
+      labels         = { workload = "inference", capacity = "spot" }
       taints         = []
     }
     general = {
@@ -121,6 +133,7 @@ variable "eks_node_groups" {
       # ★ 운영 전환 시: m7i-flex.large × 2 (8GB × 2, 비용 동일 + HA 확보)
       # ★   → instance_types = ["m7i-flex.large"], desired_size = 2, min_size = 2
       instance_types = ["m7i-flex.xlarge"] # 데모: 4vCPU / 16GB — general 워크로드 전체 수용
+      capacity_type  = "ON_DEMAND"
       az_count       = 3
       desired_size   = 3
       min_size       = 3
