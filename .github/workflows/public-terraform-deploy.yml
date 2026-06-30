@@ -13,6 +13,12 @@ on:
           - apply
           - destroy
           - repair-vpn-state
+          - force-unlock
+      lock_id:
+        description: Lock ID to release when action=force-unlock (terraform state lock UUID)
+        required: false
+        default: ""
+        type: string
       trigger_bastion_vpn:
         description: After apply, push the TF output to the bastion repo and dispatch its VPN render/apply (no public egress data plane)
         required: false
@@ -91,6 +97,20 @@ jobs:
       - name: Terraform init
         working-directory: public/terraform
         run: terraform init
+
+      - name: Force-unlock Terraform state
+        if: ${{ inputs.action == 'force-unlock' }}
+        working-directory: public/terraform
+        env:
+          LOCK_ID: ${{ inputs.lock_id }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${LOCK_ID}" ]]; then
+            echo "::error::lock_id input is required for force-unlock"
+            exit 1
+          fi
+          terraform force-unlock -force "${LOCK_ID}"
+          echo "Released state lock ${LOCK_ID}."
 
       - name: Repair MacMini VPN Terraform state
         if: ${{ inputs.action == 'repair-vpn-state' }}
@@ -262,7 +282,7 @@ jobs:
       - name: Terraform plan
         if: ${{ inputs.action == 'apply' || inputs.action == 'plan' }}
         working-directory: public/terraform
-        run: terraform plan -out=tfplan
+        run: terraform plan -lock-timeout=5m -out=tfplan
 
       - name: Disable Bedrock action groups when apply will remove them
         if: ${{ inputs.action == 'apply' }}
@@ -443,7 +463,7 @@ jobs:
       - name: Rebuild Terraform plan after Bedrock disable
         if: ${{ inputs.action == 'apply' && steps.disable_bedrock_apply.outputs.disabled == 'true' }}
         working-directory: public/terraform
-        run: terraform plan -out=tfplan
+        run: terraform plan -lock-timeout=5m -out=tfplan
 
       - name: Upload tfplan artifact
         if: ${{ inputs.action == 'apply' || inputs.action == 'plan' }}
@@ -455,7 +475,7 @@ jobs:
       - name: Terraform apply
         if: ${{ inputs.action == 'apply' }}
         working-directory: public/terraform
-        run: terraform apply -auto-approve tfplan
+        run: terraform apply -lock-timeout=5m -auto-approve tfplan
 
       - name: Resolve SSM bootstrap instance
         id: resolve_instance
@@ -972,7 +992,7 @@ jobs:
       - name: Terraform destroy plan
         if: ${{ inputs.action == 'destroy' }}
         working-directory: public/terraform
-        run: terraform plan -destroy -refresh=false -out=tfdestroy
+        run: terraform plan -lock-timeout=5m -destroy -refresh=false -out=tfdestroy
 
       - name: Upload destroy plan artifact
         if: ${{ inputs.action == 'destroy' }}
@@ -984,4 +1004,4 @@ jobs:
       - name: Terraform destroy
         if: ${{ inputs.action == 'destroy' }}
         working-directory: public/terraform
-        run: terraform apply -auto-approve tfdestroy
+        run: terraform apply -lock-timeout=5m -auto-approve tfdestroy
