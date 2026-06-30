@@ -32,6 +32,11 @@ HA_OPENSTACK_IMAGE_CACHE_CUDNN_PACKAGE="${HA_OPENSTACK_IMAGE_CACHE_CUDNN_PACKAGE
 HA_OPENSTACK_IMAGE_CACHE_GITLAB_IMAGE="${HA_OPENSTACK_IMAGE_CACHE_GITLAB_IMAGE:-${TF_VAR_gitlab_container_image:-gitlab/gitlab-ce:18.11.4-ce.0}}"
 HA_OPENSTACK_IMAGE_CACHE_CONTROL_PLANE_NFS="${HA_OPENSTACK_IMAGE_CACHE_CONTROL_PLANE_NFS:-true}"
 HA_OPENSTACK_IMAGE_CACHE_TRAINING_PYTORCH_INDEX="${HA_OPENSTACK_IMAGE_CACHE_TRAINING_PYTORCH_INDEX:-${TF_VAR_gpu_training_pytorch_cuda_index_url:-https://download.pytorch.org/whl/cu128}}"
+# Air-gap override: point these at the Bastion mirror so the GPU worker never
+# reaches NVIDIA over the public internet. Defaults keep the upstream origin so
+# non-air-gap dev installs are unchanged.
+HA_OPENSTACK_IMAGE_CACHE_NVIDIA_TOOLKIT_BASE_URL="${HA_OPENSTACK_IMAGE_CACHE_NVIDIA_TOOLKIT_BASE_URL:-${TF_VAR_gpu_nvidia_toolkit_base_url:-https://nvidia.github.io/libnvidia-container}}"
+HA_OPENSTACK_IMAGE_CACHE_CUDA_REPO_BASE_URL="${HA_OPENSTACK_IMAGE_CACHE_CUDA_REPO_BASE_URL:-${TF_VAR_gpu_cuda_repo_base_url:-https://developer.download.nvidia.com/compute/cuda/repos}}"
 HA_OPENSTACK_IMAGE_CACHE_TRAINING_PACKAGES_JSON="${HA_OPENSTACK_IMAGE_CACHE_TRAINING_PACKAGES_JSON:-${TF_VAR_gpu_training_python_packages:-}}"
 DEFAULT_OPENSTACK_IMAGE_CACHE_TRAINING_PACKAGES="torch==2.7.0+cu128
 torchvision==0.22.0+cu128
@@ -420,6 +425,8 @@ role_manifest() {
       gpu-worker)
         printf 'gpu_driver_package=%s\n' "$HA_OPENSTACK_IMAGE_CACHE_DRIVER_PACKAGE"
         printf 'nvidia_container_toolkit=stable\n'
+        printf 'nvidia_toolkit_base_url=%s\n' "$HA_OPENSTACK_IMAGE_CACHE_NVIDIA_TOOLKIT_BASE_URL"
+        printf 'cuda_repo_base_url=%s\n' "$HA_OPENSTACK_IMAGE_CACHE_CUDA_REPO_BASE_URL"
         printf 'cuda_toolkit_package=%s\n' "$HA_OPENSTACK_IMAGE_CACHE_CUDA_TOOLKIT_PACKAGE"
         printf 'cudnn_package=%s\n' "$HA_OPENSTACK_IMAGE_CACHE_CUDNN_PACKAGE"
         printf 'pytorch_index=%s\n' "$HA_OPENSTACK_IMAGE_CACHE_TRAINING_PYTORCH_INDEX"
@@ -788,7 +795,9 @@ pytorch_index="$7"
 training_packages="$8"
 dns_servers="$9"
 control_plane_nfs="${10}"
-shift 10
+nvidia_toolkit_base_url="${11}"
+cuda_repo_base_url="${12}"
+shift 12
 common_packages=("$@")
 manifest="$(printf '%s' "$manifest" | base64 -d)"
 training_packages="$(printf '%s' "$training_packages" | base64 -d)"
@@ -834,10 +843,12 @@ install_nvidia_container_toolkit() {
   if dpkg-query -W nvidia-container-toolkit >/dev/null 2>&1; then
     return 0
   fi
+  local toolkit_base="${nvidia_toolkit_base_url:-https://nvidia.github.io/libnvidia-container}"
+  local toolkit_channel="${nvidia_container_toolkit:-stable}"
   install -d -m 0755 /usr/share/keyrings
-  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+  curl -fsSL "${toolkit_base}/gpgkey" \
     | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-  curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+  curl -s -L "${toolkit_base}/${toolkit_channel}/deb/nvidia-container-toolkit.list" \
     | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
     > /etc/apt/sources.list.d/nvidia-container-toolkit.list
   apt_get update
@@ -864,7 +875,8 @@ install_cuda_packages() {
     *) echo "unsupported CUDA apt architecture: $(dpkg --print-architecture)" >&2; return 0 ;;
   esac
   if ! dpkg-query -W cuda-keyring >/dev/null 2>&1; then
-    curl -fsSL "https://developer.download.nvidia.com/compute/cuda/repos/${cuda_distro}/${cuda_arch}/cuda-keyring_1.1-1_all.deb" -o "$keyring_deb"
+    local cuda_base="${cuda_repo_base_url:-https://developer.download.nvidia.com/compute/cuda/repos}"
+    curl -fsSL "${cuda_base}/${cuda_distro}/${cuda_arch}/cuda-keyring_1.1-1_all.deb" -o "$keyring_deb"
     dpkg -i "$keyring_deb"
   fi
   apt_get update
@@ -1012,6 +1024,8 @@ build_cache_image() {
         "$training_packages_b64" \
         "$dns_servers_b64" \
         "$HA_OPENSTACK_IMAGE_CACHE_CONTROL_PLANE_NFS" \
+        "$HA_OPENSTACK_IMAGE_CACHE_NVIDIA_TOOLKIT_BASE_URL" \
+        "$HA_OPENSTACK_IMAGE_CACHE_CUDA_REPO_BASE_URL" \
         "${COMMON_PACKAGES[@]}"
 
     wait_server_status "$server_name" SHUTOFF

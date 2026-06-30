@@ -176,21 +176,45 @@ has_required_packages() {
   docker compose version >/dev/null 2>&1 || command -v docker-compose >/dev/null 2>&1 || return 1
 }
 
+install_local_debs() {
+  local archive_dir="${HYBRID_AI_APT_ARCHIVE_DIR:-}"
+  local debs=()
+
+  [[ -n "$archive_dir" && -d "$archive_dir" ]] || return 1
+  shopt -s nullglob
+  debs=("$archive_dir"/*.deb)
+  shopt -u nullglob
+  ((${#debs[@]} > 0)) || return 1
+
+  echo "Installing Harbor bootstrap packages from ${archive_dir}"
+  wait_for_apt_locks || true
+  if ! dpkg -i "${debs[@]}"; then
+    apt-get \
+      -o Dir::Cache::archives="$archive_dir" \
+      -o Acquire::Retries=0 \
+      -o Dpkg::Lock::Timeout=900 \
+      -f install -y -qq --no-download
+  fi
+  has_required_packages
+}
+
 ensure_packages() {
   export DEBIAN_FRONTEND=noninteractive
   export NEEDRESTART_MODE=a
   export NEEDRESTART_SUSPEND=1
 
   if ! has_required_packages; then
-    wait_for_install_egress
-    apt_get update -qq
-    apt_get install -y -qq ca-certificates curl docker.io openssh-server openssl python3 tar tzdata
-    if apt-cache show docker-compose-plugin >/dev/null 2>&1; then
-      apt_get install -y -qq docker-compose-plugin
-    elif apt-cache show docker-compose-v2 >/dev/null 2>&1; then
-      apt_get install -y -qq docker-compose-v2
-    elif apt-cache show docker-compose >/dev/null 2>&1; then
-      apt_get install -y -qq docker-compose
+    if ! install_local_debs; then
+      wait_for_install_egress
+      apt_get update -qq
+      apt_get install -y -qq ca-certificates curl docker.io openssh-server openssl python3 tar tzdata
+      if apt-cache show docker-compose-plugin >/dev/null 2>&1; then
+        apt_get install -y -qq docker-compose-plugin
+      elif apt-cache show docker-compose-v2 >/dev/null 2>&1; then
+        apt_get install -y -qq docker-compose-v2
+      elif apt-cache show docker-compose >/dev/null 2>&1; then
+        apt_get install -y -qq docker-compose
+      fi
     fi
   fi
 

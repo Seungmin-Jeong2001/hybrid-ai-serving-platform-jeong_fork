@@ -68,6 +68,14 @@ PATH="${ROOT}/.ha/bin:${PATH}"
 export TF_IN_AUTOMATION="${TF_IN_AUTOMATION:-true}"
 export TF_INPUT="${TF_INPUT:-false}"
 
+HA_AIRGAP_ENV_FILE="${HA_AIRGAP_ENV_FILE:-${ROOT}/.ha/airgap/env}"
+if [[ -s "${HA_AIRGAP_ENV_FILE}" ]]; then
+  # shellcheck disable=SC1090
+  source "${HA_AIRGAP_ENV_FILE}"
+  PATH="${ROOT}/.ha/bin:${PATH}"
+  export PATH
+fi
+
 HA_DEVSTACK_PASSWORD="${HA_DEVSTACK_PASSWORD:-hybrid-ai-devstack}"
 HA_DEVSTACK_LIBVIRT_TYPE="${HA_DEVSTACK_LIBVIRT_TYPE:-auto}"
 HA_OPENSTACK_PERSISTENT_STORAGE="${HA_OPENSTACK_PERSISTENT_STORAGE:-true}"
@@ -81,6 +89,7 @@ HA_OPENSTACK_NOVA_INSTANCES_CONTAINER_DIR="${HA_OPENSTACK_NOVA_INSTANCES_CONTAIN
 HA_DEVSTACK_CACHE_ENABLED="${HA_DEVSTACK_CACHE_ENABLED:-true}"
 HA_DEVSTACK_CACHE_DIR="${HA_DEVSTACK_CACHE_DIR:-${ROOT}/.ha/openstack/devstack-cache}"
 HA_DEVSTACK_APT_CACHE_DIR="${HA_DEVSTACK_APT_CACHE_DIR:-${HA_DEVSTACK_CACHE_DIR}/apt/archives}"
+HA_APT_ARCHIVE_DIR="${HA_APT_ARCHIVE_DIR:-}"
 HA_DEVSTACK_ROOT_CACHE_DIR="${HA_DEVSTACK_ROOT_CACHE_DIR:-${HA_DEVSTACK_CACHE_DIR}/root-cache}"
 HA_DEVSTACK_STACK_CACHE_DIR="${HA_DEVSTACK_STACK_CACHE_DIR:-${HA_DEVSTACK_CACHE_DIR}/stack-cache}"
 HA_DEVSTACK_LXD_STORAGE_POOL="${HA_DEVSTACK_LXD_STORAGE_POOL:-}"
@@ -180,6 +189,7 @@ GITLAB_INSTALL_ENABLED="${GITLAB_INSTALL_ENABLED:-true}"
 GITLAB_DOMAIN="${GITLAB_DOMAIN:-gitlab.${PRIVATE_CLOUD_BASE_DOMAIN}}"
 GITLAB_EXTERNAL_URL="${GITLAB_EXTERNAL_URL:-https://${GITLAB_DOMAIN}}"
 GITLAB_IMAGE="${GITLAB_IMAGE:-${TF_VAR_gitlab_container_image}}"
+GITLAB_IMAGE_ARCHIVE_FILE="${GITLAB_IMAGE_ARCHIVE_FILE:-}"
 GITLAB_SIGNUP_ENABLED="${GITLAB_SIGNUP_ENABLED:-false}"
 GITLAB_ADMIN_USERNAME="${GITLAB_ADMIN_USERNAME:-root}"
 GITLAB_ROOT_PASSWORD="${GITLAB_ROOT_PASSWORD:-}"
@@ -199,6 +209,7 @@ HARBOR_INSTALL_ENABLED="${HARBOR_INSTALL_ENABLED:-true}"
 HARBOR_ADMIN_USERNAME="${HARBOR_ADMIN_USERNAME:-admin}"
 HARBOR_DOMAIN="${HARBOR_DOMAIN:-harbor.${PRIVATE_CLOUD_BASE_DOMAIN}}"
 HARBOR_EXTERNAL_URL="${HARBOR_EXTERNAL_URL:-https://${HARBOR_DOMAIN}}"
+HARBOR_INSTALLER_ARCHIVE_FILE="${HARBOR_INSTALLER_ARCHIVE_FILE:-}"
 HARBOR_VERSION="${HARBOR_VERSION:-v2.14.4}"
 HARBOR_PROJECTS="${HARBOR_PROJECTS:-infra models}"
 HARBOR_ROBOT_NAME="${HARBOR_ROBOT_NAME:-kaniko}"
@@ -233,6 +244,9 @@ PRIVATE_CLOUD_SSH_GITLAB_PORT="${PRIVATE_CLOUD_SSH_GITLAB_PORT:-2204}"
 PRIVATE_CLOUD_SSH_HARBOR_PORT="${PRIVATE_CLOUD_SSH_HARBOR_PORT:-2205}"
 ARGO_WORKFLOWS_INSTALL_ENABLED="${ARGO_WORKFLOWS_INSTALL_ENABLED:-true}"
 ARGO_WORKFLOWS_INSTALL_MANIFEST="${ARGO_WORKFLOWS_INSTALL_MANIFEST:-https://github.com/argoproj/argo-workflows/releases/download/v3.7.14/install.yaml}"
+HA_LOCAL_PATH_PROVISIONER_MANIFEST="${HA_LOCAL_PATH_PROVISIONER_MANIFEST:-https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.31/deploy/local-path-storage.yaml}"
+HA_MINIO_OPERATOR_CHART="${HA_MINIO_OPERATOR_CHART:-}"
+HA_NFS_SUBDIR_EXTERNAL_PROVISIONER_CHART="${HA_NFS_SUBDIR_EXTERNAL_PROVISIONER_CHART:-}"
 MINIO_VOLUME_SIZE="${MINIO_VOLUME_SIZE:-10}"
 MINIO_ROOT_USER="${MINIO_ROOT_USER:-3stacks}"
 MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-}"
@@ -3620,7 +3634,7 @@ setup_storage() {
   export KUBECONFIG="${KUBECONFIG_PATH}"
   storage_inputs_env >"${LOG_DIR}/storage.env"
   prepare_nfs_server
-  kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.31/deploy/local-path-storage.yaml
+  kubectl apply -f "${HA_LOCAL_PATH_PROVISIONER_MANIFEST}"
   kubectl -n local-path-storage rollout status deployment/local-path-provisioner --timeout=600s
   kubectl get storageclass local-path
   values_file="${LOG_DIR}/minio-operator-values.yaml"
@@ -3635,11 +3649,20 @@ operator:
       memory: 512Mi
       cpu: 500m
 VALUES
-  helm repo add minio-operator https://operator.min.io/
-  helm repo update
-  helm upgrade --install minio-operator minio-operator/operator \
-    --namespace minio-operator --create-namespace --version 7.1.1 \
+  minio_chart="${HA_MINIO_OPERATOR_CHART:-minio-operator/operator}"
+  if [[ -z "${HA_MINIO_OPERATOR_CHART}" ]]; then
+    helm repo add minio-operator https://operator.min.io/
+    helm repo update
+  fi
+  minio_helm_args=(
+    helm upgrade --install minio-operator "${minio_chart}"
+    --namespace minio-operator --create-namespace
     --values "${values_file}" --wait --timeout 10m
+  )
+  if [[ -z "${HA_MINIO_OPERATOR_CHART}" ]]; then
+    minio_helm_args+=(--version 7.1.1)
+  fi
+  "${minio_helm_args[@]}"
   kubectl -n minio-operator patch deployment minio-operator --type=merge -p '{"spec":{"template":{"spec":{"dnsConfig":{"options":[{"name":"ndots","value":"1"}]}}}}}'
   kubectl wait --for=condition=Established crd/tenants.minio.min.io --timeout=300s
   kubectl -n minio-operator rollout status deployment/minio-operator --timeout=600s
@@ -3743,10 +3766,20 @@ resources:
     cpu: 500m
     memory: 256Mi
 VALUES
-  helm repo add nfs-subdir-external-provisioner https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner/
-  helm repo update
-  helm upgrade --install nfs-subdir-external-provisioner nfs-subdir-external-provisioner/nfs-subdir-external-provisioner \
-    --namespace nfs-provisioner --create-namespace --version 4.0.18 --values "${nfs_values}" --wait --timeout 10m
+  nfs_chart="${HA_NFS_SUBDIR_EXTERNAL_PROVISIONER_CHART:-nfs-subdir-external-provisioner/nfs-subdir-external-provisioner}"
+  if [[ -z "${HA_NFS_SUBDIR_EXTERNAL_PROVISIONER_CHART}" ]]; then
+    helm repo add nfs-subdir-external-provisioner https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner/
+    helm repo update
+  fi
+  nfs_helm_args=(
+    helm upgrade --install nfs-subdir-external-provisioner "${nfs_chart}"
+    --namespace nfs-provisioner --create-namespace
+    --values "${nfs_values}" --wait --timeout 10m
+  )
+  if [[ -z "${HA_NFS_SUBDIR_EXTERNAL_PROVISIONER_CHART}" ]]; then
+    nfs_helm_args+=(--version 4.0.18)
+  fi
+  "${nfs_helm_args[@]}"
   kubectl -n nfs-provisioner rollout status deployment/nfs-subdir-external-provisioner --timeout=600s
   kubectl apply -f "${ROOT}/private/kubernetes/namespaces.yaml"
   kubectl apply -k "${ROOT}/private/storage"
@@ -3759,7 +3792,7 @@ VALUES
 
 setup_gitlab() {
   [[ "${GITLAB_INSTALL_ENABLED}" == "true" ]] || return 0
-  local target registry_host gitlab_root_password_file
+  local target registry_host gitlab_root_password_file gitlab_image_archive_file apt_archive_file remote_apt_archive_file
   ensure_openstack_private_route
   write_ssh_config
   target="$(first_gitlab_ip)"
@@ -3768,14 +3801,18 @@ setup_gitlab() {
   if [[ "${GITLAB_IMAGE}" == */*/* ]]; then
     registry_host="${GITLAB_IMAGE%%/*}"
   fi
-  for i in {1..90}; do
-    if ssh -o ConnectTimeout=10 -F "${SSH_CONFIG}" "${target}" \
-      "getent ahostsv4 archive.ubuntu.com >/dev/null && curl -4 -fsSI --max-time 15 http://archive.ubuntu.com/ubuntu/ >/dev/null && curl -4 -sSI --max-time 15 https://${registry_host}/v2/ >/dev/null"; then
-      break
-    fi
-    (( i % 6 == 0 )) && ensure_devstack_egress
-    sleep 10
-  done
+  if [[ "${HA_AIRGAP_ENABLED:-false}" == "true" || -n "${GITLAB_IMAGE_ARCHIVE_FILE}" ]]; then
+    log "skipping GitLab public egress preflight because airgap/image archive mode is enabled"
+  else
+    for i in {1..90}; do
+      if ssh -o ConnectTimeout=10 -F "${SSH_CONFIG}" "${target}" \
+        "getent ahostsv4 archive.ubuntu.com >/dev/null && curl -4 -fsSI --max-time 15 http://archive.ubuntu.com/ubuntu/ >/dev/null && curl -4 -sSI --max-time 15 https://${registry_host}/v2/ >/dev/null"; then
+        break
+      fi
+      (( i % 6 == 0 )) && ensure_devstack_egress
+      sleep 10
+    done
+  fi
   ssh -F "${SSH_CONFIG}" "${target}" \
     "sudo install -m 0755 -o root -g root /dev/stdin /usr/local/sbin/hybrid-ai-gitlab-bootstrap" \
     <"${ROOT}/private/openstack/scripts/hybrid-ai-gitlab-bootstrap"
@@ -3786,6 +3823,26 @@ setup_gitlab() {
     printf '%s' "${GITLAB_ROOT_PASSWORD}" | ssh -F "${SSH_CONFIG}" "${target}" "umask 077 && cat > ${gitlab_root_password_file}"
   elif [[ "${GITLAB_ADMIN_USERNAME}" != "root" ]]; then
     log "warning: GITLAB_ROOT_PASSWORD is not set; GitLab admin user ${GITLAB_ADMIN_USERNAME} cannot be provisioned until a password file exists on the VM"
+  fi
+  gitlab_image_archive_file=""
+  if [[ -n "${GITLAB_IMAGE_ARCHIVE_FILE}" ]]; then
+    if [[ -s "${GITLAB_IMAGE_ARCHIVE_FILE}" ]]; then
+      gitlab_image_archive_file="/tmp/gitlab-image-${RUN_ID}.tar"
+      scp -F "${SSH_CONFIG}" "${GITLAB_IMAGE_ARCHIVE_FILE}" "${target}:${gitlab_image_archive_file}"
+    else
+      log "warning: GITLAB_IMAGE_ARCHIVE_FILE is set but not readable: ${GITLAB_IMAGE_ARCHIVE_FILE}"
+    fi
+  fi
+  remote_apt_archive_file=""
+  if [[ -n "${HA_APT_ARCHIVE_DIR}" ]]; then
+    if [[ -d "${HA_APT_ARCHIVE_DIR}" ]]; then
+      apt_archive_file="${LOG_DIR}/apt-archives-gitlab-${RUN_ID}.tar.gz"
+      tar -C "${HA_APT_ARCHIVE_DIR}" -czf "${apt_archive_file}" .
+      remote_apt_archive_file="/tmp/hybrid-ai-apt-archives-${RUN_ID}.tar.gz"
+      scp -F "${SSH_CONFIG}" "${apt_archive_file}" "${target}:${remote_apt_archive_file}"
+    else
+      log "warning: HA_APT_ARCHIVE_DIR is set but not readable: ${HA_APT_ARCHIVE_DIR}"
+    fi
   fi
 
   ssh -F "${SSH_CONFIG}" "${target}" bash -s -- \
@@ -3806,7 +3863,9 @@ setup_gitlab() {
     "${GITLAB_RECREATE_FOR_IO_PROFILE}" \
     "${GITLAB_DOCKER_LOG_MAX_SIZE}" \
     "${GITLAB_DOCKER_LOG_MAX_FILE}" \
-    "${gitlab_root_password_file}" <<'REMOTE'
+    "${gitlab_root_password_file}" \
+    "${gitlab_image_archive_file}" \
+    "${remote_apt_archive_file}" <<'REMOTE'
 set -euo pipefail
 external_url="$1"
 gitlab_domain="$2"
@@ -3826,9 +3885,17 @@ gitlab_recreate_for_io_profile="${15:-true}"
 gitlab_docker_log_max_size="${16:-10m}"
 gitlab_docker_log_max_file="${17:-3}"
 gitlab_root_password_file="${18:-}"
+gitlab_image_archive_file="${19:-}"
+gitlab_apt_archive_file="${20:-}"
 cleanup() {
   if [[ -n "$gitlab_root_password_file" ]]; then
     sudo rm -f "$gitlab_root_password_file" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$gitlab_image_archive_file" ]]; then
+    sudo rm -f "$gitlab_image_archive_file" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$gitlab_apt_archive_file" ]]; then
+    sudo rm -f "$gitlab_apt_archive_file" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -3841,6 +3908,21 @@ if [[ -n "$gitlab_root_password_file" && -s "$gitlab_root_password_file" ]]; the
 elif sudo test -s /etc/hybrid-ai/gitlab-root-password; then
   installed_root_password_file="/etc/hybrid-ai/gitlab-root-password"
 fi
+installed_gitlab_image_archive_file=""
+if [[ -n "$gitlab_image_archive_file" && -s "$gitlab_image_archive_file" ]]; then
+  installed_gitlab_image_archive_file="/var/cache/hybrid-ai/container-images/gitlab-image.tar"
+  sudo install -m 0644 -o root -g root "$gitlab_image_archive_file" "$installed_gitlab_image_archive_file"
+elif sudo test -s /var/cache/hybrid-ai/container-images/gitlab-image.tar; then
+  installed_gitlab_image_archive_file="/var/cache/hybrid-ai/container-images/gitlab-image.tar"
+fi
+installed_apt_archive_dir=""
+if [[ -n "$gitlab_apt_archive_file" && -s "$gitlab_apt_archive_file" ]]; then
+  installed_apt_archive_dir="/var/cache/hybrid-ai/apt/archives"
+  sudo install -d -m 0755 "$installed_apt_archive_dir"
+  sudo tar -C "$installed_apt_archive_dir" -xzf "$gitlab_apt_archive_file"
+elif sudo test -d /var/cache/hybrid-ai/apt/archives; then
+  installed_apt_archive_dir="/var/cache/hybrid-ai/apt/archives"
+fi
 env_file_tmp="$(mktemp)"
 write_env_line() {
   local name="$1" value="$2"
@@ -3851,7 +3933,8 @@ write_env_line() {
 write_env_line GITLAB_EXTERNAL_URL "$external_url"
 write_env_line GITLAB_DOMAIN "$gitlab_domain"
 write_env_line GITLAB_IMAGE "$gitlab_image"
-write_env_line GITLAB_IMAGE_ARCHIVE_FILE ""
+write_env_line GITLAB_IMAGE_ARCHIVE_FILE "$installed_gitlab_image_archive_file"
+write_env_line HYBRID_AI_APT_ARCHIVE_DIR "$installed_apt_archive_dir"
 write_env_line GITLAB_SIGNUP_ENABLED "$gitlab_signup_enabled"
 write_env_line GITLAB_ADMIN_USERNAME "$gitlab_admin_username"
 write_env_line GITLAB_ROOT_PASSWORD_FILE "$installed_root_password_file"
@@ -3936,21 +4019,25 @@ REMOTE
 
 setup_harbor() {
   [[ "${HARBOR_INSTALL_ENABLED}" == "true" ]] || return 0
-  local target admin_password_file harbor_env_file harbor_env_payload
+  local target admin_password_file harbor_env_file harbor_env_payload harbor_installer_url remote_harbor_installer_archive apt_archive_file remote_apt_archive_file
 
   ensure_openstack_private_route
   write_ssh_config
   target="$(first_harbor_ip)"
   [[ -n "${target}" ]] || return 0
 
-  for i in {1..90}; do
-    if ssh -o ConnectTimeout=10 -F "${SSH_CONFIG}" "${target}" \
-      "getent ahostsv4 archive.ubuntu.com >/dev/null && curl -4 -fsSI --max-time 15 http://archive.ubuntu.com/ubuntu/ >/dev/null && curl -4 -fsSI --max-time 15 https://github.com/ >/dev/null"; then
-      break
-    fi
-    (( i % 6 == 0 )) && ensure_devstack_egress
-    sleep 10
-  done
+  if [[ "${HA_AIRGAP_ENABLED:-false}" == "true" || -n "${HARBOR_INSTALLER_ARCHIVE_FILE}" ]]; then
+    log "skipping Harbor public egress preflight because airgap/installer archive mode is enabled"
+  else
+    for i in {1..90}; do
+      if ssh -o ConnectTimeout=10 -F "${SSH_CONFIG}" "${target}" \
+        "getent ahostsv4 archive.ubuntu.com >/dev/null && curl -4 -fsSI --max-time 15 http://archive.ubuntu.com/ubuntu/ >/dev/null && curl -4 -fsSI --max-time 15 https://github.com/ >/dev/null"; then
+        break
+      fi
+      (( i % 6 == 0 )) && ensure_devstack_egress
+      sleep 10
+    done
+  fi
 
   admin_password_file=""
   if [[ -n "${HARBOR_ADMIN_PASSWORD}" ]]; then
@@ -3958,6 +4045,28 @@ setup_harbor() {
     printf '%s' "${HARBOR_ADMIN_PASSWORD}" | ssh -F "${SSH_CONFIG}" "${target}" "umask 077 && cat > ${admin_password_file}"
   else
     log "warning: HARBOR_ADMIN_PASSWORD is not set — Harbor will generate a random admin password stored only on the VM; reprovisioning the VM will lose it"
+  fi
+  harbor_installer_url=""
+  remote_harbor_installer_archive=""
+  if [[ -n "${HARBOR_INSTALLER_ARCHIVE_FILE}" ]]; then
+    if [[ -s "${HARBOR_INSTALLER_ARCHIVE_FILE}" ]]; then
+      remote_harbor_installer_archive="/tmp/harbor-installer-${RUN_ID}.tgz"
+      scp -F "${SSH_CONFIG}" "${HARBOR_INSTALLER_ARCHIVE_FILE}" "${target}:${remote_harbor_installer_archive}"
+      harbor_installer_url="file://${remote_harbor_installer_archive}"
+    else
+      log "warning: HARBOR_INSTALLER_ARCHIVE_FILE is set but not readable: ${HARBOR_INSTALLER_ARCHIVE_FILE}"
+    fi
+  fi
+  remote_apt_archive_file=""
+  if [[ -n "${HA_APT_ARCHIVE_DIR}" ]]; then
+    if [[ -d "${HA_APT_ARCHIVE_DIR}" ]]; then
+      apt_archive_file="${LOG_DIR}/apt-archives-harbor-${RUN_ID}.tar.gz"
+      tar -C "${HA_APT_ARCHIVE_DIR}" -czf "${apt_archive_file}" .
+      remote_apt_archive_file="/tmp/hybrid-ai-apt-archives-${RUN_ID}.tar.gz"
+      scp -F "${SSH_CONFIG}" "${apt_archive_file}" "${target}:${remote_apt_archive_file}"
+    else
+      log "warning: HA_APT_ARCHIVE_DIR is set but not readable: ${HA_APT_ARCHIVE_DIR}"
+    fi
   fi
 
   ssh -F "${SSH_CONFIG}" "${target}" \
@@ -3969,6 +4078,7 @@ setup_harbor() {
   write_systemd_env_line "${harbor_env_file}" HARBOR_DOMAIN "${HARBOR_DOMAIN}"
   write_systemd_env_line "${harbor_env_file}" HARBOR_EXTERNAL_URL "${HARBOR_EXTERNAL_URL}"
   write_systemd_env_line "${harbor_env_file}" HARBOR_VERSION "${HARBOR_VERSION}"
+  write_systemd_env_line "${harbor_env_file}" HARBOR_INSTALLER_URL "${harbor_installer_url}"
   write_systemd_env_line "${harbor_env_file}" HARBOR_ADMIN_USERNAME "${HARBOR_ADMIN_USERNAME}"
   write_systemd_env_line "${harbor_env_file}" HARBOR_PROJECTS "${HARBOR_PROJECTS}"
   write_systemd_env_line "${harbor_env_file}" HARBOR_ROBOT_NAME "${HARBOR_ROBOT_NAME}"
@@ -3979,25 +4089,50 @@ setup_harbor() {
   ssh -F "${SSH_CONFIG}" "${target}" bash -s -- \
     "${harbor_env_payload}" \
     "${admin_password_file}" \
-    "${HARBOR_HTTP_PORT}" <<'REMOTE'
+    "${remote_harbor_installer_archive}" \
+    "${HARBOR_HTTP_PORT}" \
+    "${remote_apt_archive_file}" <<'REMOTE'
 set -euo pipefail
 harbor_env_payload="$1"
 harbor_admin_password_file="${2:-}"
-harbor_http_port="${3:-80}"
+harbor_installer_archive="${3:-}"
+harbor_http_port="${4:-80}"
+harbor_apt_archive_file="${5:-}"
 
 cleanup() {
   if [[ -n "$harbor_admin_password_file" ]]; then
     sudo rm -f "$harbor_admin_password_file" >/dev/null 2>&1 || true
   fi
+  if [[ -n "$harbor_installer_archive" ]]; then
+    sudo rm -f "$harbor_installer_archive" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$harbor_apt_archive_file" ]]; then
+    sudo rm -f "$harbor_apt_archive_file" >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
 
 sudo install -d -m 0700 /etc/hybrid-ai
-sudo install -d -m 0755 /usr/local/sbin /var/lib/hybrid-ai/harbor-bootstrap
+sudo install -d -m 0755 /usr/local/sbin /var/lib/hybrid-ai/harbor-bootstrap /var/cache/hybrid-ai/harbor
 installed_admin_password_file=""
 if [[ -n "$harbor_admin_password_file" && -s "$harbor_admin_password_file" ]]; then
   installed_admin_password_file="/etc/hybrid-ai/harbor-admin-password"
   sudo install -m 0600 -o root -g root "$harbor_admin_password_file" "$installed_admin_password_file"
+fi
+installed_harbor_installer_archive=""
+if [[ -n "$harbor_installer_archive" && -s "$harbor_installer_archive" ]]; then
+  installed_harbor_installer_archive="/var/cache/hybrid-ai/harbor/harbor-installer.tgz"
+  sudo install -m 0644 -o root -g root "$harbor_installer_archive" "$installed_harbor_installer_archive"
+elif sudo test -s /var/cache/hybrid-ai/harbor/harbor-installer.tgz; then
+  installed_harbor_installer_archive="/var/cache/hybrid-ai/harbor/harbor-installer.tgz"
+fi
+installed_apt_archive_dir=""
+if [[ -n "$harbor_apt_archive_file" && -s "$harbor_apt_archive_file" ]]; then
+  installed_apt_archive_dir="/var/cache/hybrid-ai/apt/archives"
+  sudo install -d -m 0755 "$installed_apt_archive_dir"
+  sudo tar -C "$installed_apt_archive_dir" -xzf "$harbor_apt_archive_file"
+elif sudo test -d /var/cache/hybrid-ai/apt/archives; then
+  installed_apt_archive_dir="/var/cache/hybrid-ai/apt/archives"
 fi
 
 env_file_tmp="$(mktemp)"
@@ -4009,6 +4144,10 @@ append_env_line() {
   printf '%s="%s"\n' "$name" "$value" >> "$env_file_tmp"
 }
 append_env_line HARBOR_ADMIN_PASSWORD_FILE "$installed_admin_password_file"
+if [[ -n "$installed_harbor_installer_archive" ]]; then
+  append_env_line HARBOR_INSTALLER_URL "file://${installed_harbor_installer_archive}"
+fi
+append_env_line HYBRID_AI_APT_ARCHIVE_DIR "$installed_apt_archive_dir"
 sudo install -m 0644 -o root -g root "$env_file_tmp" /etc/hybrid-ai/harbor-bootstrap.env
 rm -f "$env_file_tmp"
 

@@ -265,6 +265,8 @@ jobs:
           write_env TF_VAR_gpu_cudnn_package "$GPU_CUDNN_PACKAGE"
           write_env TF_VAR_gpu_training_pytorch_cuda_index_url "$GPU_TRAINING_PYTORCH_CUDA_INDEX_URL"
           write_env TF_VAR_gpu_training_python_packages "$GPU_TRAINING_PYTHON_PACKAGES_JSON"
+          write_env TF_VAR_gpu_nvidia_toolkit_base_url "$GPU_NVIDIA_TOOLKIT_BASE_URL"
+          write_env TF_VAR_gpu_cuda_repo_base_url "$GPU_CUDA_REPO_BASE_URL"
           write_env TF_VAR_gitlab_count "$GITLAB_COUNT"
           write_env TF_VAR_gitlab_image_name "$GITLAB_IMAGE_NAME"
           write_env TF_VAR_gitlab_flavor_name "$GITLAB_FLAVOR_NAME"
@@ -372,6 +374,9 @@ jobs:
           GPU_CUDNN_PACKAGE: ${{ vars.GPU_CUDNN_PACKAGE || 'cudnn9-cuda-12' }}
           GPU_TRAINING_PYTORCH_CUDA_INDEX_URL: ${{ vars.GPU_TRAINING_PYTORCH_CUDA_INDEX_URL || 'https://download.pytorch.org/whl/cu128' }}
           GPU_TRAINING_PYTHON_PACKAGES_JSON: ${{ vars.GPU_TRAINING_PYTHON_PACKAGES_JSON || '["torch==2.7.0+cu128","torchvision==0.22.0+cu128","torchaudio==2.7.0+cu128","numpy==1.26.4","pandas==2.2.2","scipy==1.11.4","scikit-learn==1.4.2","matplotlib==3.8.4","seaborn==0.13.2","notebook==7.2.2","ipykernel==6.29.5","minio==7.2.8"]' }}
+          # Air-gap: set these vars to the Bastion mirror to keep GPU toolkit fetch off the public internet. Empty = upstream origin.
+          GPU_NVIDIA_TOOLKIT_BASE_URL: ${{ vars.GPU_NVIDIA_TOOLKIT_BASE_URL }}
+          GPU_CUDA_REPO_BASE_URL: ${{ vars.GPU_CUDA_REPO_BASE_URL }}
           GITLAB_COUNT: ${{ vars.GITLAB_COUNT || '1' }}
           GITLAB_IMAGE_NAME: ${{ vars.GITLAB_IMAGE_NAME || 'ubuntu-22.04' }}
           GITLAB_FLAVOR_NAME: ${{ vars.GITLAB_FLAVOR_NAME || 'ha.m1.gitlab' }}
