@@ -37,15 +37,18 @@ server=/amazonaws.com/<resolver_inbound_ip_2>
 ```
 미설정 시 공인 IP로 풀려 mock이 "일반 egress"로 차단한다.
 
-## 3. 데이터플레인 no-SNAT — 호스트/Neutron (sudo 필요, 미검증)
+## 3. 데이터플레인 (호스트 route + qrouter no-SNAT) — **자동화 스크립트**
 IPsec selector가 `10.42.0.0/24 === 10.0.0.0/16`이라 패킷 소스가 10.42로 유지돼야 터널을 탄다.
-Neutron qrouter가 tenant→external로 SNAT하면 소스가 바뀌어 selector 불일치 → AWS(10.0.0.0/16) 목적지엔 **no-SNAT 예외** 필요.
+`private/ci/ecr-vpn-dataplane.sh`가 ① 호스트 라우트(VPC→MacMini) ② ip_forward ③ qrouter no-SNAT를 idempotent하게 처리한다. qrouter는 Neutron 재생성 시 규칙이 사라지므로 systemd timer로 주기 재적용.
 ```bash
-# qrouter netns 안에서 (소스 유지). <qrouter-id>는 ip netns list로 확인.
-sudo ip netns exec qrouter-<id> \
-  iptables -t nat -I neutron-l3-agent-POSTROUTING 1 -d 10.0.0.0/16 -j ACCEPT
+# kt-cloud 호스트에서 (root)
+sudo VPC_CIDR=10.0.0.0/16 BASTION_IP=192.168.0.30 \
+  private/ci/ecr-vpn-dataplane.sh apply      # 1회 적용
+sudo VPC_CIDR=10.0.0.0/16 BASTION_IP=192.168.0.30 \
+  private/ci/ecr-vpn-dataplane.sh install    # systemd timer 영구화(2분 주기 재적용)
+private/ci/ecr-vpn-dataplane.sh status       # 확인
 ```
-> kt-cloud 호스트는 NOPASSWD 아님 → 수동 확인 필요. (참고: `private/ci/private-cloud-apply.sh`의 devstack egress MASQUERADE는 `! -d public_cidr`만 예외, AWS VPC 예외는 별도.)
+> kt-cloud 호스트는 NOPASSWD 아님 → root(sudo)로 1회 install 하면 이후 자동 유지.
 
 ## 4. 검증/실행 — build-worker(10.42)에서
 ```bash
