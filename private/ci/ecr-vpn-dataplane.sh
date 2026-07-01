@@ -87,9 +87,9 @@ UNIT
 Description=Reapply ECR-over-VPN dataplane periodically (qrouter 재생성 대비)
 
 [Timer]
-OnBootSec=30s
-OnUnitActiveSec=2min
-AccuracySec=15s
+OnBootSec=15s
+OnUnitActiveSec=20s
+AccuracySec=2s
 
 [Install]
 WantedBy=timers.target
