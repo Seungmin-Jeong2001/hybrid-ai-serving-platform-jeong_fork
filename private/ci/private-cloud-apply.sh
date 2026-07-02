@@ -4569,10 +4569,44 @@ run_registry_phases() {
   fi
 }
 
+wire_ecr_vpn() {
+  # ECR-over-VPN + alert-relay 데이터플레인을 apply 시 자동 배선(idempotent, best-effort).
+  #   1) 호스트 route(VPC→MacMini) + qrouter no-SNAT + systemd  (ecr-vpn-dataplane.sh)
+  #   2) alert-relay SNAT DaemonSet — 파드→bastion:8081 반환경로(Calico 파드풀이 bastion 포함해 SNAT 누락)
+  #   3) CoreDNS amazonaws→resolver inbound 포워딩 — resolver IP는 public tf output에서 주입(apply마다 변동)
+  # 어느 단계가 실패해도 프로비저닝 전체를 막지 않도록 best-effort.
+  if [[ "${HA_ECR_VPN_WIRE:-true}" != "true" ]]; then
+    log "wire_ecr_vpn: HA_ECR_VPN_WIRE=false → 건너뜀"
+    return 0
+  fi
+  local vpc="${HA_ECR_VPN_VPC_CIDR:-10.0.0.0/16}"
+  local bastion="${HA_ECR_VPN_BASTION_IP:-192.168.0.30}"
+
+  log "wire_ecr_vpn: dataplane install (route+no-SNAT+systemd) vpc=${vpc} bastion=${bastion}"
+  sudo env VPC_CIDR="${vpc}" BASTION_IP="${bastion}" \
+    "${ROOT}/private/ci/ecr-vpn-dataplane.sh" install \
+    || log "wire_ecr_vpn: dataplane install 실패(계속)"
+
+  export KUBECONFIG="${KUBECONFIG_PATH}"
+  log "wire_ecr_vpn: alert-relay-snat DaemonSet apply"
+  kubectl apply -f "${ROOT}/private/kubernetes/alert-relay-snat-daemonset.yaml" \
+    || log "wire_ecr_vpn: alert-relay-snat apply 실패(계속)"
+
+  if [[ -n "${HA_ECR_VPN_RESOLVER_IPS:-}" ]]; then
+    log "wire_ecr_vpn: CoreDNS amazonaws→resolver 포워딩 (${HA_ECR_VPN_RESOLVER_IPS})"
+    # shellcheck disable=SC2086
+    "${ROOT}/private/ci/ecr-vpn-coredns.sh" ${HA_ECR_VPN_RESOLVER_IPS} \
+      || log "wire_ecr_vpn: coredns 포워딩 실패(계속)"
+  else
+    log "wire_ecr_vpn: HA_ECR_VPN_RESOLVER_IPS 미설정 → CoreDNS 포워딩 건너뜀(resolver IP 미주입)"
+  fi
+}
+
 run_finalize_phases() {
   if [[ "${VALIDATE_GPU}" == "true" ]]; then
     phase validate_gpu_lightweight validate_gpu_lightweight
   fi
+  phase wire_ecr_vpn wire_ecr_vpn
 }
 
 main() {

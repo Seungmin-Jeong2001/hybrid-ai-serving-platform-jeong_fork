@@ -62,8 +62,16 @@ AWS_ACCOUNT_ID=<acct> ./private/ci/model-build-vpn-ecr-pipeline-mock.sh --push
 ```
 프로브가 `FAIL: ... 공인 IP`면 2번(DNS), `해석은 사설인데 timeout`이면 3번(라우팅/SNAT) 문제다.
 
-## 현재 상태(2026-06-30)
-- VPN 터널: ESTABLISHED (메모리 기준)
-- ECR api/dkr/sts 인터페이스 엔드포인트: 있음 / S3 인터페이스 엔드포인트: **OFF** (1번 미적용)
-- 2·3번: 미적용/미검증
-→ 지금은 **manifest-only(b)로 VPN 경로 실증**이 수정 없이 가능한 최대치. full push(c)는 1·2·3 선행 필요.
+## 자동 배선 (GitHub Actions) — 2026-07-01
+apply 시 위 2·3·데이터플레인이 **finalize 단계에서 자동 적용**된다(수동 불필요).
+- `public-terraform-deploy.yml`: apply 후 `PUBLIC_TF_OUTPUT_JSON` secret 갱신 + bastion VPN dispatch.
+- `private-cloud-remote.yml`: `PUBLIC_TF_OUTPUT_JSON`에서 `resolver_inbound_ips` 추출 → host env `HA_ECR_VPN_RESOLVER_IPS`.
+- `private-cloud-apply.sh` `wire_ecr_vpn`(finalize): ① `ecr-vpn-dataplane.sh install`(route+no-SNAT+systemd) ② `alert-relay-snat` DaemonSet apply ③ `ecr-vpn-coredns.sh <resolver IPs>`(amazonaws→resolver 포워딩). 전부 idempotent·best-effort.
+- 튜닝: `HA_ECR_VPN_WIRE=false`(끄기), `HA_ECR_VPN_VPC_CIDR`/`HA_ECR_VPN_BASTION_IP`(기본 10.0.0.0/16 / 192.168.0.30).
+
+## 현재 상태(2026-07-01)
+- VPN 터널: UP (private 양 터널), MacMini 무인 재기동(NOPASSWD bastion-vpn-up)
+- ECR api/dkr/sts + **S3 인터페이스 엔드포인트: ON**
+- 데이터플레인/CoreDNS/alert-relay SNAT: 적용·**실동작 검증 완료**
+- **실 push 검증**: 파드 skopeo → ECR(`predictive-model:vpn-test`), 실 파이프라인 sync-harbor-to-ecr → ECR(`v1.0.4`) 모두 VPN 경유
+→ full push(c) 동작. 재apply 시 finalize가 자동 재배선(resolver IP 변동 흡수).

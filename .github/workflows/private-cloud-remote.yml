@@ -293,9 +293,22 @@ jobs:
           write_env HA_OPENSTACK_IMAGE_CACHE_PREFIX "$OPENSTACK_IMAGE_CACHE_PREFIX"
           write_env HA_OPENSTACK_IMAGE_CACHE_DRIVER_PACKAGE "$OPENSTACK_IMAGE_CACHE_DRIVER_PACKAGE"
 
+          # ECR-over-VPN 자동 배선: public tf output에서 resolver inbound IP 추출 → finalize의 wire_ecr_vpn가 CoreDNS 포워딩에 사용.
+          ecr_vpn_resolver_ips=""
+          if [ -n "${PUBLIC_TF_OUTPUT_JSON:-}" ]; then
+            ecr_vpn_resolver_ips="$(printf '%s' "$PUBLIC_TF_OUTPUT_JSON" \
+              | python3 -c 'import sys,json;d=json.load(sys.stdin);print(" ".join(d.get("resolver_inbound_ips",{}).get("value",[])))' 2>/dev/null || true)"
+          fi
+          write_env HA_ECR_VPN_RESOLVER_IPS "$ecr_vpn_resolver_ips"
+          write_env HA_ECR_VPN_VPC_CIDR "${HA_ECR_VPN_VPC_CIDR:-}"
+          write_env HA_ECR_VPN_BASTION_IP "${HA_ECR_VPN_BASTION_IP:-}"
+
           chmod 600 "$env_file"
           echo "path=$env_file" >> "$GITHUB_OUTPUT"
         env:
+          PUBLIC_TF_OUTPUT_JSON: ${{ secrets.PUBLIC_TF_OUTPUT_JSON }}
+          HA_ECR_VPN_VPC_CIDR: ${{ vars.HA_ECR_VPN_VPC_CIDR || '' }}
+          HA_ECR_VPN_BASTION_IP: ${{ vars.HA_ECR_VPN_BASTION_IP || '' }}
           OS_AUTH_URL: ${{ vars.OPENSTACK_AUTH_URL }}
           OS_USERNAME: ${{ vars.OPENSTACK_USERNAME }}
           OS_PASSWORD: ${{ secrets.OPENSTACK_PASSWORD }}
