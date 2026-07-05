@@ -16,8 +16,8 @@ spec:
   predictor:
     nodeSelector:
       workload: inference
-    minReplicas: 1
-    maxReplicas: 3
+    minReplicas: 2
+    maxReplicas: 4
     containers:
       - name: kserve-container
         image: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/predictive-model:v1.0.4
