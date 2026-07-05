@@ -17,6 +17,13 @@ spec:
       priorityClassName: app-high
       nodeSelector:
         workload: general
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: dashboard-backend
       containers:
         - name: dashboard-backend
           image: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/dashboard-backend:latest

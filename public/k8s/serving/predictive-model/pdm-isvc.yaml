@@ -18,6 +18,13 @@ spec:
       workload: inference
     minReplicas: 2
     maxReplicas: 4
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app: isvc.pdm-predictor
     containers:
       - name: kserve-container
         image: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/predictive-model:v1.0.4

@@ -3,6 +3,7 @@ kind: Kustomization
 
 resources:
   - deployment.yaml
+  - pdb.yaml
   - scaledobject.yaml
   - serviceaccount.yaml
   - trigger-auth.yaml
