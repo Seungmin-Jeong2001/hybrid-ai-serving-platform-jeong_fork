@@ -1,0 +1,159 @@
+name: VPN Connect (ECR-over-VPN)
+
+# ECR-over-VPN 재배선 원샷 워크플로 (크로스리포 꼬임 없이 단독 실행).
+#   1) public/terraform output(JSON: PSK + resolver_inbound_ips)을 읽는다(읽기전용, plan/apply 없음).
+#   2) [터널] bastion 리포에 PUBLIC_TF_OUTPUT_JSON 주입 + provision.yml(mode=vpn) dispatch → MacMini strongSwan 터널 재수립.
+#   3) [CoreDNS] private-cloud 러너 → 호스트 SSH → ecr-vpn-coredns.sh <resolver IP> (kubectl only, sudo 불필요).
+#   4) [dataplane] (선택) 호스트 route + qrouter no-SNAT 재적용 — 재부팅/Neutron flush 후 필요. sudo 필요.
+#
+# 전제(이미 존재):
+#   secrets: AWS_GITHUB_ACTIONS_ROLE_ARN(OIDC), BASTION_DISPATCH_TOKEN(bastion Actions+Secrets write),
+#            PRIVATE_CLOUD_HOST_SSH_PRIVATE_KEY
+#   vars:    BASTION_REPO, PRIVATE_CLOUD_TAILSCALE_IP, PRIVATE_CLOUD_HOST_USER, PRIVATE_CLOUD_REMOTE_REPO,
+#            PRIVATE_CLOUD_REMOTE_RUNNER_LABELS
+# dataplane 재적용(wire_dataplane=true)을 쓰려면 호스트에 NOPASSWD sudoers 1줄이 있어야 한다:
+#   kt ALL=(root) NOPASSWD: /home/kt/project/hybrid-ai-serving-platform/private/ci/ecr-vpn-dataplane.sh
+# 없으면 sudo -n 실패로 WARN만 남고 계속(라우트는 persist, no-SNAT만 수동 필요).
+
+on:
+  workflow_dispatch:
+    inputs:
+      bring_up_tunnel:
+        description: bastion strongSwan 터널 재수립(provision.yml dispatch)
+        type: boolean
+        default: true
+      wire_coredns:
+        description: CoreDNS amazonaws→resolver 포워딩 재패치
+        type: boolean
+        default: true
+      wire_dataplane:
+        description: 호스트 route + qrouter no-SNAT 재적용(NOPASSWD sudoers 필요)
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-2
+
+jobs:
+  tf-output:
+    name: TF output + tunnel dispatch
+    runs-on: ubuntu-latest
+    outputs:
+      resolver_ips: ${{ steps.extract.outputs.ips }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: public/terraform
+        run: terraform init
+
+      - name: Terraform output JSON
+        working-directory: public/terraform
+        run: |
+          umask 077
+          terraform output -json > "${RUNNER_TEMP}/public-tf-output.json"
+
+      - name: Extract resolver inbound IPs
+        id: extract
+        run: |
+          set -euo pipefail
+          ips="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(" ".join(d.get("resolver_inbound_ips",{}).get("value",[])))' "${RUNNER_TEMP}/public-tf-output.json")"
+          if [[ -z "$ips" ]]; then
+            echo "::error::resolver_inbound_ips 비어있음 — public tf output/state 확인"
+            exit 1
+          fi
+          echo "resolver inbound: $ips"
+          echo "ips=$ips" >> "$GITHUB_OUTPUT"
+
+      # TF output에는 VPN PSK(민감값)가 포함되므로 로그/아티팩트 금지. bastion 암호화 시크릿으로만 전달.
+      - name: Sync TF output to bastion and dispatch VPN render
+        if: ${{ inputs.bring_up_tunnel }}
+        env:
+          GH_TOKEN: ${{ secrets.BASTION_DISPATCH_TOKEN }}
+          BASTION_REPO: ${{ vars.BASTION_REPO || 'SGS-Strategy/bastion-host' }}
+          BASTION_PROVISION_REF: ${{ vars.BASTION_PROVISION_REF || 'main' }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::BASTION_DISPATCH_TOKEN(bastion Actions:write + Secrets:write) 필요"
+            exit 1
+          fi
+          gh secret set PUBLIC_TF_OUTPUT_JSON --repo "${BASTION_REPO}" < "${RUNNER_TEMP}/public-tf-output.json"
+          gh workflow run provision.yml --repo "${BASTION_REPO}" --ref "${BASTION_PROVISION_REF}" \
+            -f mode=vpn -f run_vpn_bootstrap=true -f trigger_private=false
+          echo "Dispatched ${BASTION_REPO} provision (mode=vpn) — 터널 재수립 요청 완료."
+
+      - name: Cleanup sensitive output
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/public-tf-output.json"
+
+  wire-host:
+    name: CoreDNS / dataplane on private host
+    needs: tf-output
+    if: ${{ inputs.wire_coredns || inputs.wire_dataplane }}
+    runs-on: ${{ fromJSON(vars.PRIVATE_CLOUD_REMOTE_RUNNER_LABELS || '["ubuntu-latest"]') }}
+    env:
+      REMOTE_HOST: ${{ vars.PRIVATE_CLOUD_TAILSCALE_IP }}
+      REMOTE_USER: ${{ vars.PRIVATE_CLOUD_HOST_USER }}
+      REMOTE_PORT: ${{ vars.PRIVATE_CLOUD_HOST_PORT || '22' }}
+      REMOTE_REPO: ${{ vars.PRIVATE_CLOUD_REMOTE_REPO }}
+      RESOLVER_IPS: ${{ needs.tf-output.outputs.resolver_ips }}
+      WIRE_COREDNS: ${{ inputs.wire_coredns }}
+      WIRE_DATAPLANE: ${{ inputs.wire_dataplane }}
+      VPC_CIDR: ${{ vars.HA_ECR_VPN_VPC_CIDR || '10.0.0.0/16' }}
+      BASTION_IP: ${{ vars.HA_ECR_VPN_BASTION_IP || '192.168.0.30' }}
+    steps:
+      - name: Setup SSH
+        run: |
+          set -euo pipefail
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "$PRIVATE_CLOUD_HOST_SSH_PRIVATE_KEY" > ~/.ssh/private-cloud-host
+          chmod 600 ~/.ssh/private-cloud-host
+          ssh-keyscan -p "$REMOTE_PORT" "$REMOTE_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+        env:
+          PRIVATE_CLOUD_HOST_SSH_PRIVATE_KEY: ${{ secrets.PRIVATE_CLOUD_HOST_SSH_PRIVATE_KEY }}
+
+      - name: Wire CoreDNS (+ optional dataplane) on host
+        run: |
+          set -euo pipefail
+          # 값은 ssh 인자(positional)로 전달, 원격 스크립트는 quoted heredoc(server-side 확장).
+          # RESOLVER_IPS는 공백 다수 IP라 맨 끝에 두고 원격에서 shift 후 $* 로 재결합.
+          ssh -i ~/.ssh/private-cloud-host -p "$REMOTE_PORT" \
+            -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+            "${REMOTE_USER}@${REMOTE_HOST}" 'bash -s' \
+            "$REMOTE_REPO" "$WIRE_COREDNS" "$WIRE_DATAPLANE" "$VPC_CIDR" "$BASTION_IP" $RESOLVER_IPS <<'REMOTE'
+          set -euo pipefail
+          remote_repo="$1"; wire_coredns="$2"; wire_dataplane="$3"; vpc_cidr="$4"; bastion_ip="$5"
+          shift 5; resolver_ips="$*"
+          cd "$remote_repo"
+          export KUBECONFIG="$remote_repo/.ha/openstack/kubeconfig"
+          export PATH="$PWD/.ha/bin:$PATH"
+          if [ "$wire_dataplane" = "true" ]; then
+            echo "== dataplane install (route + qrouter no-SNAT + systemd) =="
+            sudo -n env VPC_CIDR="$vpc_cidr" BASTION_IP="$bastion_ip" ./private/ci/ecr-vpn-dataplane.sh install \
+              || echo "WARN: dataplane install 실패 — 호스트 NOPASSWD sudoers(ecr-vpn-dataplane.sh) 확인"
+          fi
+          if [ "$wire_coredns" = "true" ]; then
+            echo "== CoreDNS amazonaws -> resolver 포워딩 재패치 =="
+            [ -n "$resolver_ips" ] || { echo "::error::resolver IP 비어있음"; exit 1; }
+            ./private/ci/ecr-vpn-coredns.sh $resolver_ips
+          fi
+          echo "== verify: Corefile amazonaws block =="
+          kubectl -n kube-system get cm coredns -o jsonpath='{.data.Corefile}' | grep -A2 amazonaws || echo "amazonaws block 없음(실패)"
+          REMOTE
