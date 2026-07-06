@@ -4,12 +4,13 @@ import { check, sleep } from "k6";
 const BASE_URL = __ENV.INFERENCE_API_URL || "http://inference-api.inference.svc.cluster.local";
 
 // 점진적 부하 증가 - 서비스 한계점 탐색
+// 시나리오: 정상 100 RPS → 최대 700 RPS까지 점진 증가
 export const options = {
   stages: [
-    { duration: "2m", target: 10  },  // 준비
-    { duration: "2m", target: 30  },  // 점진 증가
-    { duration: "2m", target: 60  },  // 점진 증가
-    { duration: "2m", target: 100 },  // 고부하
+    { duration: "2m", target: 100 },  // 정상 기준 (100 RPS)
+    { duration: "2m", target: 300 },  // 점진 증가 (300 RPS)
+    { duration: "2m", target: 500 },  // 점진 증가 (500 RPS)
+    { duration: "2m", target: 700 },  // 고부하 (700 RPS)
     { duration: "2m", target: 0   },  // 종료
   ],
   thresholds: {

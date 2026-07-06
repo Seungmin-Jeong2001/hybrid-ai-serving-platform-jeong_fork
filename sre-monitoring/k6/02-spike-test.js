@@ -4,13 +4,14 @@ import { check, sleep } from "k6";
 const BASE_URL = __ENV.INFERENCE_API_URL || "http://inference-api.inference.svc.cluster.local";
 
 // KEDA 스케일아웃 트리거 검증 - 급격한 트래픽 스파이크
+// 시나리오: 정상 100 RPS → 500 RPS 급증 (5배 스파이크)
 export const options = {
   stages: [
-    { duration: "30s", target: 5  },  // 정상 상태
-    { duration: "30s", target: 50 },  // 급격한 스파이크
-    { duration: "1m",  target: 50 },  // 스파이크 유지 (KEDA 스케일아웃 확인)
-    { duration: "30s", target: 5  },  // 정상 복귀
-    { duration: "30s", target: 0  },  // 종료
+    { duration: "30s", target: 100 },  // 정상 상태 (100 RPS)
+    { duration: "30s", target: 500 },  // 급격한 스파이크 (500 RPS, 5배)
+    { duration: "1m",  target: 500 },  // 스파이크 유지 (KEDA 스케일아웃 확인)
+    { duration: "30s", target: 100 },  // 정상 복귀
+    { duration: "30s", target: 0   },  // 종료
   ],
   thresholds: {
     http_req_failed:   ["rate<0.01"],   // 스파이크 시 1% 이하 에러 허용
