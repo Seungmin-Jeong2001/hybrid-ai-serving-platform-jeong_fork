@@ -6,11 +6,12 @@ const errorRate = new Rate("errors");
 const BASE_URL = __ENV.INFERENCE_API_URL || "http://inference-api.inference.svc.cluster.local";
 
 // SLO 목표: 가용성 99.9%, p95 응답시간 500ms 이하
+// 시나리오: 설비 100대 × 1초마다 추론 요청 1건 = 100 RPS
 export const options = {
   stages: [
-    { duration: "1m", target: 10 },  // 워밍업
-    { duration: "3m", target: 10 },  // 기준 부하 유지
-    { duration: "1m", target: 0  },  // 종료
+    { duration: "1m", target: 100 },  // 워밍업
+    { duration: "3m", target: 100 },  // 기준 부하 유지 (설비 100대 = 100 RPS)
+    { duration: "1m", target: 0   },  // 종료
   ],
   thresholds: {
     http_req_failed:   ["rate<0.001"],  // 99.9% 가용성 SLO
