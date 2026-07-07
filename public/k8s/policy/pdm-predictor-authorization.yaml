@@ -13,3 +13,7 @@ spec:
         - source:
             namespaces:
               - inference
+    - from:
+        - source:
+            namespaces:
+              - monitoring

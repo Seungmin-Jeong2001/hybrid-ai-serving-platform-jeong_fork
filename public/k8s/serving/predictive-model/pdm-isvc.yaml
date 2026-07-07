@@ -39,7 +39,8 @@ spec:
       - name: kserve-container
         image: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/predictive-model:v1.0.4
         ports:
-          - containerPort: 8080
+          - name: http
+            containerPort: 8080
             protocol: TCP
         env:
           - name: MODEL_NAME

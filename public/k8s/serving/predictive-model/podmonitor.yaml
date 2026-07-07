@@ -10,6 +10,6 @@ spec:
     matchLabels:
       serving.kserve.io/inferenceservice: pdm
   podMetricsEndpoints:
-    - targetPort: 8080
+    - port: http
       path: /metrics
       interval: 30s
