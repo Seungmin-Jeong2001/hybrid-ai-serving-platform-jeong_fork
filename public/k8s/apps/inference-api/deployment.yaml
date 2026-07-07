@@ -12,6 +12,10 @@ spec:
     metadata:
       labels:
         app: inference-api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "8080"
     spec:
       securityContext:
         runAsNonRoot: true
@@ -58,7 +62,8 @@ spec:
             - name: REQUEST_TOPIC
               value: inference-request
           ports:
-            - containerPort: 8080
+            - name: http
+              containerPort: 8080
           readinessProbe:
             httpGet:
               path: /healthz
