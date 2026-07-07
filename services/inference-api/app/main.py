@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException
 from kafka import KafkaProducer
 from kafka.errors import KafkaError
 from pydantic import BaseModel, Field
+from prometheus_fastapi_instrumentator import Instrumentator
 
 
 logging.basicConfig(
@@ -82,6 +83,19 @@ async def lifespan(_: FastAPI):
 
 # FastAPI 애플리케이션 인스턴스 생성 - 수명 주기 관리 포함
 app = FastAPI(title="inference-api", version="0.1.0", lifespan=lifespan)
+
+instrumentator = Instrumentator(
+    should_group_status_codes=False,
+    should_ignore_untemplated=True,
+    should_respect_env_var=False,
+    should_instrument_requests_inprogress=True,
+    excluded_handlers=["/healthz", "/metrics"],
+)
+instrumentator.instrument(app).expose(
+    app,
+    endpoint="/metrics",
+    include_in_schema=False,
+)
 
 # 헬스체크 엔드포인트 - 간단한 상태 반환
 @app.get("/healthz")

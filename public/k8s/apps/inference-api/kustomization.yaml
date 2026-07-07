@@ -5,6 +5,7 @@ resources:
   - deployment.yaml
   - ingress.yaml
   - pdb.yaml
+  - podmonitor.yaml
   - service.yaml
 
 images:
