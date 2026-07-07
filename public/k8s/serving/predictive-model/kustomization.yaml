@@ -6,4 +6,4 @@ resources:
 images:
   - name: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/predictive-model
     newName: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/predictive-model
-    newTag: v1.0.8
+    newTag: v1.0.0
