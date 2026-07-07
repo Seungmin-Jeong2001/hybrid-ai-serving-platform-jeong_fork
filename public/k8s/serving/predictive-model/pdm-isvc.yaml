@@ -16,8 +16,8 @@ spec:
   predictor:
     nodeSelector:
       workload: inference
-    minReplicas: 2
-    maxReplicas: 4
+    minReplicas: 1
+    maxReplicas: 1
     topologySpreadConstraints:
       - maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
