@@ -1,6 +1,7 @@
 # HTTP 추론 요청을 Kafka 토픽으로 발행하는 API 서버
 # 역할 : FastAPI 서버 + Kafka producer
 
+import asyncio
 import json
 import logging
 import os
@@ -40,6 +41,14 @@ def _kafka_security_protocol() -> str:
 
 def _kafka_publish_timeout_seconds() -> float:
     return float(os.getenv("KAFKA_PUBLISH_TIMEOUT_SECONDS", "10"))
+
+
+def _publish_request(payload: dict[str, Any], equipment_id: str):
+    if producer is None:
+        raise RuntimeError("kafka producer is not ready")
+
+    future = producer.send(_request_topic(), key=equipment_id, value=payload)
+    return future.get(timeout=_kafka_publish_timeout_seconds())
 
 
 # Kafka producer 생성 함수 - 환경변수로 설정 조절 가능, JSON 직렬화 포함
@@ -118,8 +127,12 @@ async def infer(request: InferenceRequest) -> dict[str, Any]:
     }
 
     try:
-        future = producer.send(_request_topic(), key=request.equipment_id, value=payload) # Kafka 토픽에 발행
-        record_metadata = future.get(timeout=_kafka_publish_timeout_seconds())
+        # kafka-python future.get() is blocking, so keep it off the event loop.
+        record_metadata = await asyncio.to_thread(
+            _publish_request,
+            payload,
+            request.equipment_id,
+        )
     except KafkaError as exc:
         logger.exception("failed to publish inference request: %s", exc)
         raise HTTPException(status_code=502, detail="failed to publish inference request") from exc
