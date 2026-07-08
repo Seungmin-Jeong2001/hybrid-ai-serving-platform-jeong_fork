@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import random
+import threading
 import time
 from enum import StrEnum
 from typing import Any
@@ -136,64 +137,14 @@ def _results_ttl_seconds() -> int:
     return int(os.getenv("RESULTS_TTL_SECONDS", str(90 * 24 * 60 * 60)))
 
 
-def _alert_state_table_name() -> str:
-    return os.getenv("ALERT_STATE_TABLE_NAME", "sgs-hasp-equipment-alert-state")
-
-
-def _ses_sender_email() -> str:
-    return os.getenv("SES_SENDER_EMAIL", "")
-
-
-def _ses_recipient_email() -> str:
-    return os.getenv("SES_RECIPIENT_EMAIL", "")
+def _worker_concurrency() -> int:
+    return max(1, int(os.getenv("WORKER_CONCURRENCY", "4")))
 
 
 def _create_results_table():
     return boto3.resource("dynamodb", region_name=os.getenv("AWS_REGION")).Table(
         _results_table_name()
     )
-
-
-def _create_alert_state_table():
-    return boto3.resource("dynamodb", region_name=os.getenv("AWS_REGION")).Table(
-        _alert_state_table_name()
-    )
-
-
-def _is_abnormal(prediction: str) -> bool:
-    return prediction.lower() != "normal"
-
-
-def _send_alert_email(equipment_id: str, prediction: str, completed_at: int) -> None:
-    sender = _ses_sender_email()
-    recipient = _ses_recipient_email()
-    if not sender or not recipient:
-        logger.warning("SES sender/recipient email not configured, skipping alert.")
-        return
-
-    ses = boto3.client("ses", region_name=os.getenv("AWS_REGION"))
-    completed_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(completed_at / 1000))
-
-    ses.send_email(
-        Source=sender,
-        Destination={"ToAddresses": [recipient]},
-        Message={
-            "Subject": {"Data": f"[HASP Alert] Equipment anomaly detected - {equipment_id}", "Charset": "UTF-8"},
-            "Body": {
-                "Text": {
-                    "Data": (
-                        f"An abnormal prediction was detected.\n\n"
-                        f"Equipment ID: {equipment_id}\n"
-                        f"Prediction: {prediction}\n"
-                        f"Detected At: {completed_str}\n\n"
-                        f"Please review the dashboard for more details."
-                    ),
-                    "Charset": "UTF-8",
-                }
-            },
-        },
-    )
-    logger.info("alert email sent equipment_id=%s prediction=%s", equipment_id, prediction)
 
 
 def _validate_payload(payload: dict[str, Any]) -> None:
@@ -247,37 +198,12 @@ def _is_retryable_error(error_type: ErrorType) -> bool:
     }
 
 
-def _check_and_send_alert(alert_state_table, equipment_id: str, prediction: str, completed_at: int) -> None:
-    is_abnormal = _is_abnormal(prediction)
-    new_status = "abnormal" if is_abnormal else "normal"
-
-    try:
-        response = alert_state_table.get_item(Key={"equipment_id": equipment_id})
-        current_status = response.get("Item", {}).get("status", "normal")
-    except Exception:
-        current_status = "normal"
-
-    if new_status != current_status:
-        if is_abnormal:
-            _send_alert_email(equipment_id, prediction, completed_at)
-
-        alert_state_table.put_item(Item={
-            "equipment_id": equipment_id,
-            "status": new_status,
-            "updated_at": _now_epoch(),
-        })
-        logger.info(
-            "equipment alert state changed equipment_id=%s %s -> %s",
-            equipment_id, current_status, new_status,
-        )
-
-
-def _create_consumer() -> KafkaConsumer:
+def _create_consumer(worker_index: int) -> KafkaConsumer:
     return KafkaConsumer(
         *_subscribed_topics(),
         bootstrap_servers=_bootstrap_servers(),
         security_protocol=_kafka_security_protocol(),
-        client_id=os.getenv("KAFKA_CONSUMER_CLIENT_ID", "inference-worker"),
+        client_id=f"{os.getenv('KAFKA_CONSUMER_CLIENT_ID', 'inference-worker')}-{worker_index}",
         group_id=_consumer_group(),
         enable_auto_commit=False,
         auto_offset_reset=os.getenv("AUTO_OFFSET_RESET", "earliest"),
@@ -286,11 +212,11 @@ def _create_consumer() -> KafkaConsumer:
     )
 
 
-def _create_producer() -> KafkaProducer:
+def _create_producer(worker_index: int) -> KafkaProducer:
     return KafkaProducer(
         bootstrap_servers=_bootstrap_servers(),
         security_protocol=_kafka_security_protocol(),
-        client_id=os.getenv("KAFKA_PRODUCER_CLIENT_ID", "inference-worker"),
+        client_id=f"{os.getenv('KAFKA_PRODUCER_CLIENT_ID', 'inference-worker')}-{worker_index}",
         acks="all",
         enable_idempotence=True,
         retries=3,
@@ -367,6 +293,7 @@ def _build_failure_payload(
     failed_payload["last_error"] = error_message
     return failed_payload
 
+
 def _defer_retry_record(consumer: KafkaConsumer, record, next_attempt_at: int) -> bool:
     if record.topic != _retry_topic():
         return False
@@ -388,7 +315,14 @@ def _defer_retry_record(consumer: KafkaConsumer, record, next_attempt_at: int) -
     return True
 
 
-def _process_message(payload: dict[str, Any]) -> dict[str, Any]:
+def _create_predict_client() -> httpx.Client:
+    return httpx.Client(
+        timeout=_kserve_timeout_seconds(),
+        limits=httpx.Limits(max_connections=100, max_keepalive_connections=100),
+    )
+
+
+def _process_message(payload: dict[str, Any], predict_client: httpx.Client) -> dict[str, Any]:
     _validate_payload(payload)
     predictor_payload = {
         "request_id": payload.get("request_id", ""),
@@ -397,10 +331,9 @@ def _process_message(payload: dict[str, Any]) -> dict[str, Any]:
         "timestamp": payload.get("timestamp"),
         "inputs": payload.get("inputs", []),
     }
-    with httpx.Client(timeout=_kserve_timeout_seconds()) as client:
-        response = client.post(_predict_url(), json=predictor_payload)
-        response.raise_for_status()
-        result = response.json()
+    response = predict_client.post(_predict_url(), json=predictor_payload)
+    response.raise_for_status()
+    result = response.json()
 
     predictions = result.get("predictions")
     if not isinstance(predictions, list) or not predictions:
@@ -411,9 +344,10 @@ def _process_message(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def run() -> None:
+def _run_worker_loop(worker_index: int) -> None:
     logger.info(
-        "worker started bootstrap_servers=%s subscribed_topics=%s dlq_topic=%s consumer_group=%s results_table=%s retry_schedule_seconds=%s retry_jitter_seconds=%s",
+        "worker started worker_index=%s bootstrap_servers=%s subscribed_topics=%s dlq_topic=%s consumer_group=%s results_table=%s retry_schedule_seconds=%s retry_jitter_seconds=%s",
+        worker_index,
         _bootstrap_servers(),
         ",".join(_subscribed_topics()),
         _dlq_topic(),
@@ -422,10 +356,10 @@ def run() -> None:
         ",".join(str(value) for value in _retry_backoff_schedule_seconds()),
         _retry_jitter_seconds(),
     )
-    consumer = _create_consumer()
-    producer = _create_producer()
+    consumer = _create_consumer(worker_index)
+    producer = _create_producer(worker_index)
     results_table = _create_results_table()
-    alert_state_table = _create_alert_state_table()
+    predict_client = _create_predict_client()
 
     try:
         while True:
@@ -444,10 +378,9 @@ def run() -> None:
                             should_continue_polling = False
                             break
 
-                        result = _process_message(payload)
+                        result = _process_message(payload, predict_client)
                         prediction = result["predictions"][0]["class_name"]
 
-                        completed_at = _now_epoch() * 1000
                         try:
                             _save_result(
                                 results_table,
@@ -459,22 +392,6 @@ def run() -> None:
                             )
                         except (BotoCoreError, ClientError, NoCredentialsError) as exc:
                             raise RuntimeError(f"{_classify_boto_error(exc)}: {exc}") from exc
-
-                        try:
-                            _check_and_send_alert(
-                                alert_state_table,
-                                equipment_id=payload.get("equipment_id", ""),
-                                prediction=prediction,
-                                completed_at=completed_at,
-                            )
-                        except Exception as exc:  # noqa: BLE001
-                            logger.warning(
-                                "alert side effect failed error_type=%s request_id=%s equipment_id=%s error=%s",
-                                ErrorType.SES_SEND_ERROR,
-                                request_id,
-                                payload.get("equipment_id"),
-                                exc,
-                            )
 
                         consumer.commit()
                         logger.info(
@@ -601,8 +518,31 @@ def run() -> None:
                     break
     finally:
         consumer.close()
+        predict_client.close()
         producer.flush()
         producer.close()
+
+
+def run() -> None:
+    concurrency = _worker_concurrency()
+    logger.info("starting inference-worker concurrency=%s", concurrency)
+    if concurrency == 1:
+        _run_worker_loop(0)
+        return
+
+    threads = []
+    for worker_index in range(concurrency):
+        thread = threading.Thread(
+            target=_run_worker_loop,
+            args=(worker_index,),
+            name=f"inference-worker-{worker_index}",
+            daemon=False,
+        )
+        thread.start()
+        threads.append(thread)
+
+    for thread in threads:
+        thread.join()
 
 
 if __name__ == "__main__":

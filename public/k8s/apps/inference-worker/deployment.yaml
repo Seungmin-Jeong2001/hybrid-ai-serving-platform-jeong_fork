@@ -66,6 +66,8 @@ spec:
               value: inference-dlq
             - name: WORKER_CONSUMER_GROUP
               value: inference-worker-group
+            - name: WORKER_CONCURRENCY
+              value: "4"
             - name: DYNAMODB_TABLE_NAME
               valueFrom:
                 configMapKeyRef:
@@ -79,25 +81,10 @@ spec:
               value: "1"
             - name: PREDICTOR_ENDPOINT
               value: "/v1/models/pdm:predict"
-            - name: ALERT_STATE_TABLE_NAME
-              valueFrom:
-                configMapKeyRef:
-                  name: inference-config
-                  key: ALERT_STATE_TABLE_NAME
-            - name: SES_SENDER_EMAIL
-              valueFrom:
-                configMapKeyRef:
-                  name: inference-config
-                  key: SES_SENDER_EMAIL
-            - name: SES_RECIPIENT_EMAIL
-              valueFrom:
-                configMapKeyRef:
-                  name: inference-config
-                  key: SES_RECIPIENT_EMAIL
           resources:
             requests:
-              cpu: "200m"
-              memory: "256Mi"
-            limits:
-              cpu: "1"
+              cpu: "500m"
               memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "1Gi"
