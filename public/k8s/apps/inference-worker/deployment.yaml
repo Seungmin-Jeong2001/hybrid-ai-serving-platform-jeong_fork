@@ -68,6 +68,8 @@ spec:
               value: inference-worker-group
             - name: WORKER_CONCURRENCY
               value: "4"
+            - name: RESULT_WRITE_CONCURRENCY
+              value: "8"
             - name: DYNAMODB_TABLE_NAME
               valueFrom:
                 configMapKeyRef:
