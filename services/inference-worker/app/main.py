@@ -7,7 +7,6 @@ import os
 import random
 import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
 from enum import StrEnum
 from typing import Any
 
@@ -141,10 +140,6 @@ def _worker_concurrency() -> int:
     return max(1, int(os.getenv("WORKER_CONCURRENCY", "4")))
 
 
-def _result_write_concurrency() -> int:
-    return max(1, int(os.getenv("RESULT_WRITE_CONCURRENCY", "8")))
-
-
 def _create_results_table():
     return boto3.resource("dynamodb", region_name=os.getenv("AWS_REGION")).Table(
         _results_table_name()
@@ -262,27 +257,6 @@ def _save_result(
     )
 
 
-def _save_result_async(
-    executor: ThreadPoolExecutor,
-    results_table,
-    *,
-    request_id: str,
-    factory_id: str,
-    equipment_id: str,
-    prediction: str,
-    requested_at: int,
-) -> Future:
-    return executor.submit(
-        _save_result,
-        results_table,
-        request_id,
-        factory_id,
-        equipment_id,
-        prediction,
-        requested_at,
-    )
-
-
 def _publish(
     producer: KafkaProducer,
     topic: str,
@@ -369,22 +343,6 @@ def _process_message(payload: dict[str, Any], predict_client: httpx.Client) -> d
     return result
 
 
-def _drain_completed_result_writes(pending_writes: set[Future]) -> None:
-    completed_writes = {future for future in pending_writes if future.done()}
-    for future in completed_writes:
-        pending_writes.remove(future)
-        try:
-            future.result()
-        except (BotoCoreError, ClientError, NoCredentialsError) as exc:
-            logger.warning(
-                "async result write failed error_type=%s error=%s",
-                _classify_boto_error(exc),
-                exc,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("async result write failed error=%s", exc)
-
-
 def _run_worker_loop(worker_index: int) -> None:
     logger.info(
         "worker started worker_index=%s bootstrap_servers=%s subscribed_topics=%s dlq_topic=%s consumer_group=%s results_table=%s retry_schedule_seconds=%s retry_jitter_seconds=%s",
@@ -401,15 +359,9 @@ def _run_worker_loop(worker_index: int) -> None:
     producer = _create_producer(worker_index)
     results_table = _create_results_table()
     predict_client = _create_predict_client()
-    result_write_executor = ThreadPoolExecutor(
-        max_workers=_result_write_concurrency(),
-        thread_name_prefix=f"result-write-{worker_index}",
-    )
-    pending_result_writes: set[Future] = set()
 
     try:
         while True:
-            _drain_completed_result_writes(pending_result_writes)
             records_map = consumer.poll(timeout_ms=1000, max_records=10)
             should_continue_polling = True
             for _, records in records_map.items():
@@ -428,16 +380,13 @@ def _run_worker_loop(worker_index: int) -> None:
                         result = _process_message(payload, predict_client)
                         prediction = result["predictions"][0]["class_name"]
 
-                        pending_result_writes.add(
-                            _save_result_async(
-                                result_write_executor,
-                                results_table,
-                                request_id=request_id,
-                                factory_id=payload.get("factory_id", ""),
-                                equipment_id=payload.get("equipment_id", ""),
-                                prediction=prediction,
-                                requested_at=payload.get("timestamp", 0),
-                            )
+                        _save_result(
+                            results_table,
+                            request_id=request_id,
+                            factory_id=payload.get("factory_id", ""),
+                            equipment_id=payload.get("equipment_id", ""),
+                            prediction=prediction,
+                            requested_at=payload.get("timestamp", 0),
                         )
 
                         consumer.commit()

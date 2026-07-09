@@ -118,6 +118,13 @@ async def main():
 
             # 모든 장비 요청을 병렬로 전송
             for equipment_id in equipment_ids:
+                while len(in_flight_tasks) >= MAX_CONCURRENCY:
+                    done, _ = await asyncio.wait(
+                        in_flight_tasks,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    in_flight_tasks.difference_update(done)
+
                 now = time.perf_counter()
                 sleep_time = next_send_at - now
                 if sleep_time > 0:
@@ -129,7 +136,6 @@ async def main():
                     send_request_async(client, semaphore, equipment_id, payload)
                 )
                 in_flight_tasks.add(task)
-                task.add_done_callback(in_flight_tasks.discard)
                 sent_since_log += 1
 
                 offsets[equipment_id] += WINDOW_SIZE
