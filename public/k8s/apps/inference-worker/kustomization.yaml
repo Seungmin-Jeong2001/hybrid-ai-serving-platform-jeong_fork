@@ -4,6 +4,7 @@ kind: Kustomization
 resources:
   - deployment.yaml
   - pdb.yaml
+  - podmonitor.yaml
   - scaledobject.yaml
   - serviceaccount.yaml
   - trigger-auth.yaml
