@@ -1,53 +1,54 @@
-# Private Cloud Foundation 인계 문서
+# Private Cloud Handoff
 
-이 디렉터리는 Private Cloud Foundation 프로비저닝 이후 다른 역할에 넘겨야 하는 값을
-정리하는 공간입니다.
+이 디렉터리는 Private Cloud Foundation에서 다음 담당자에게 넘길 운영 기준을 정리합니다.
 
-실제 내부 IP, kubeconfig 본문, access key, password, token, private endpoint는 이
-repository에 기록하지 않습니다.
+## 문서
 
-## 인계 대상
+| 항목 | 전달 대상 |
+| --- | --- |
+| `github-actions-env.md` | GitHub Actions controller, reusable executor, 변수와 secret 기준 |
+| `private-network-access.md` | FIP 제거 후 내부망, DNS, VM/K8s 통신 기준 |
+| `model-build-delivery.md` | GitLab Runner, Argo model build/package, Harbor, ECR 전달 흐름 |
+| `troubleshooting-summary.md` | private cloud 재 apply, GPU, GitLab/Harbor, 모델 빌드 트러블슈팅 정리 |
 
-| 항목 | 출처 | 전달 대상 |
-| --- | --- | --- |
-| Private network ID | Terraform output `private_network_id` | Kubernetes bootstrap, hybrid routing |
-| Private subnet ID | Terraform output `private_subnet_id` | Kubernetes bootstrap, storage |
-| Security group ID | Terraform output `security_group_id` | Kubernetes bootstrap, 운영 담당 |
-| Control-plane node inventory | Terraform output `control_plane_nodes` | Kubernetes bootstrap |
-| Build-worker node inventory | Terraform output `build_worker_nodes` | Model packaging, worker runtime |
-| GPU-worker node inventory | Terraform output `gpu_worker_nodes` | Model serving, GPU 검증 |
-| Namespace 기준 | `kubernetes/` manifest | Model, worker, monitoring |
-| Storage 기준 | `storage/` manifest | Model build, artifact 관리 |
-| GPU 검증 기준 | `.github/workflows/private-cloud-gpu-validate.yml`, `gpu-worker/` manifest | Model serving, reliability |
+## 현재 인프라 기준
 
-## 담당 범위
+| 영역 | 기준 |
+| --- | --- |
+| OpenStack | `control-plane`, `build-worker`, `gpu-worker`, `gitlab`, `harbor` VM 1대씩 |
+| Kubernetes | `private-infra`, `private-storage`, `model-build`, `gpu-workload`, `argo` namespace |
+| Storage | NFS RWX StorageClass `private-nfs-rwx`, MinIO tenant, `model-build-cache`, `model-artifacts` PVC |
+| GitLab | 코드 저장소와 CI/CD 제어면. Runner token은 GitLab VM bootstrap이 생성 |
+| Harbor | private registry. `infra`, `models` project와 Kaniko robot account를 bootstrap |
+| Argo Workflows | `model-build-job`, `model-package-job` WorkflowTemplate 기준 |
+| Public cloud | ECR repository는 `public/terraform`의 `ecr_repositories` 기준으로 생성 |
 
-Private Cloud Foundation에서 담당하는 것:
+## Codex 작업 규칙
 
-- OpenStack network, subnet, router attachment, security group, key pair, VM group
-- Kubernetes namespace, quota, RBAC, network policy 기준
-- private build cache와 model artifact용 StorageClass/PVC 예시
-- 격리된 임시 OpenStack 리소스를 사용하는 GPU passthrough 검증 workflow
-- GPU RuntimeClass와 Kubernetes GPU 검증 Job 골격
+Codex가 이 private cloud 작업을 이어서 할 때는 커밋 메시지를 `git.intp.me` 가이드라인에 맞춰 작성해야 합니다.
 
-Private Cloud Foundation에서 담당하지 않는 것:
+```text
+Type: English title
 
-- application source code
-- model image build pipeline
-- public cloud ingress와 ALB 구성
-- Kafka topic contract
-- monitoring dashboard와 alert rule
+- 한국어 본문 항목
+- 한국어 본문 항목
+```
 
-## 전달 방식
+- Type은 `Feat`, `Fix`, `Refactor`, `Perf`, `Docs`, `Style`, `Test`, `Build`, `CI`, `Chore`, `Revert`, `Rename`, `Remove`, `Security` 중 하나를 사용합니다.
+- 제목은 영어로 작성하고 첫 단어를 대문자로 시작하며, 마침표 없이 25~30자 내외로 작성합니다.
+- 본문은 한국어 `- ` bullet로 작성하고, 무엇을 왜 바꿨는지 설명합니다.
+- 본문 항목은 `추가`, `수정`, `제거`, `제한`, `적용` 같은 명사형으로 끝내고, `~함`, `~됨`, `~했습니다` 같은 서술형 종결을 사용하지 않습니다.
+- 규칙을 확인할 수 없으면 포맷을 추측해서 커밋하지 말고 사용자에게 확인받은 뒤 커밋합니다.
 
-프로비저닝 완료 후 아래 값은 별도 보안 채널로 전달합니다.
+## 관리자 진입점
 
-- Cluster API endpoint
-- 자동화에 사용할 read-only 또는 scoped kubeconfig
-- private IP를 포함한 node role inventory
-- StorageClass 이름: `private-nfs-rwx`
-- model build PVC 이름: `model-build-cache`
-- model artifact PVC 이름: `model-artifacts`
-- GPU RuntimeClass 이름: `nvidia`
-- OpenStack GPU passthrough 검증 결과: `Private Cloud GPU Validate` workflow summary
-- Kubernetes GPU 검증 Job 이름: `gpu-validation`
+관리자 UI는 reverse proxy/DNS를 통해 노출합니다. 주소와 credential은 공개 handoff 문서에 직접 쓰지 않습니다.
+
+| 대상 | 역할 |
+| --- | --- |
+| OpenStack Horizon | VM, network, image, flavor 관리 |
+| GitLab | 코드 저장소, pipeline, runner 관리 |
+| Harbor | private image registry, robot account, image retention 관리 |
+| Argo Workflows | model build/package workflow 조회와 재실행 |
+| Grafana | monitoring UI |
+| Kubernetes UI | cluster 상태 확인 |

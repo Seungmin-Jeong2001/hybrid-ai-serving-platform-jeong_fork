@@ -1,0 +1,43 @@
+# alert-relay SNAT DaemonSet
+# 문제: Calico 파드풀(192.168.0.0/16)이 bastion(192.168.0.30)을 포함 → Calico가 파드→bastion을
+#       in-pool로 보고 SNAT 안 함 → 파드 소스가 파드CIDR로 남아 bastion이 응답 못 돌림(타임아웃).
+# 해결: 각 노드에서 "파드→bastion:8081"을 노드IP로 MASQUERADE → bastion은 노드(10.42)로 응답=라우팅됨.
+#       수동 iptables는 재부팅/Calico flush 시 사라지므로 DaemonSet으로 주기 재적용(영속).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: alert-relay-snat
+  namespace: kube-system
+  labels:
+    app: alert-relay-snat
+spec:
+  selector:
+    matchLabels:
+      app: alert-relay-snat
+  template:
+    metadata:
+      labels:
+        app: alert-relay-snat
+    spec:
+      hostNetwork: true
+      tolerations:
+        - operator: Exists        # control-plane / gpu taint 포함 전 노드
+      containers:
+        - name: snat
+          image: alpine:3.20
+          securityContext:
+            privileged: true
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              apk add --no-cache iptables >/dev/null 2>&1 || true
+              RULE="-d 192.168.0.30/32 -p tcp --dport 8081 -j MASQUERADE"
+              while true; do
+                iptables -t nat -C POSTROUTING $RULE 2>/dev/null \
+                  || iptables -t nat -A POSTROUTING $RULE
+                sleep 30
+              done
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 50m, memory: 48Mi}
+      terminationGracePeriodSeconds: 5

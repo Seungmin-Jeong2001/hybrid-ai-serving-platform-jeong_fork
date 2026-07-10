@@ -4,7 +4,7 @@ metadata:
   name: inference-worker
   namespace: inference
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: inference-worker
@@ -12,6 +12,10 @@ spec:
     metadata:
       labels:
         app: inference-worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "9090"
     spec:
       serviceAccountName: inference-worker
       securityContext:
@@ -22,6 +26,19 @@ spec:
       priorityClassName: inference-high
       nodeSelector:
         workload: inference
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: inference-worker
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: inference-worker
       containers:
         - name: inference-worker
           image: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/inference-worker:latest
@@ -40,6 +57,11 @@ spec:
                 configMapKeyRef:
                   name: inference-config
                   key: BOOTSTRAP_SERVERS
+            - name: KAFKA_SECURITY_PROTOCOL
+              valueFrom:
+                configMapKeyRef:
+                  name: inference-config
+                  key: KAFKA_SECURITY_PROTOCOL
             - name: REQUEST_TOPIC
               value: inference-request
             - name: RETRY_TOPIC
@@ -48,18 +70,30 @@ spec:
               value: inference-dlq
             - name: WORKER_CONSUMER_GROUP
               value: inference-worker-group
+            - name: WORKER_CONCURRENCY
+              value: "4"
+            - name: METRICS_PORT
+              value: "9090"
             - name: DYNAMODB_TABLE_NAME
-              value: sgs-hasp-inference-results
+              valueFrom:
+                configMapKeyRef:
+                  name: inference-config
+                  key: DYNAMODB_TABLE_NAME
             - name: MAX_RETRY_COUNT
               value: "3"
             - name: RETRY_JITTER_SECONDS
               value: "5"
             - name: RETRY_POLL_DELAY_SECONDS
               value: "1"
+            - name: PREDICTOR_ENDPOINT
+              value: "/v1/models/pdm:predict"
+          ports:
+            - name: metrics
+              containerPort: 9090
           resources:
             requests:
-              cpu: "200m"
-              memory: "256Mi"
-            limits:
-              cpu: "1"
+              cpu: "500m"
               memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "1Gi"

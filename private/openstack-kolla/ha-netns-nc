@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# ha-netns-nc — neutron qdhcp netns 안에서 tenant VM:port로 stdio를 중계 (nc 대체, python3).
+# SSH ProxyCommand 전용. 임의 명령 실행 불가(보안) → 좁은 NOPASSWD sudoers와 함께 사용.
+#
+# 설치:
+#   sudo install -m 0755 private/openstack-kolla/ha-netns-nc /usr/local/sbin/ha-netns-nc
+#   echo 'kt ALL=(root) NOPASSWD: /usr/local/sbin/ha-netns-nc' | sudo tee /etc/sudoers.d/kt-netns-nc
+#   sudo chmod 440 /etc/sudoers.d/kt-netns-nc && sudo visudo -c
+#
+# 사용: sudo /usr/local/sbin/ha-netns-nc <host> <port>
+set -euo pipefail
+host="${1:?host required}"
+port="${2:?port required}"
+# tenant 대역(10.42.0.0/24) + 숫자 포트만 허용 → 래퍼로 임의 대상 접근 차단
+[[ "$host" =~ ^10\.42\.0\.[0-9]{1,3}$ ]] || { echo "host not allowed: $host" >&2; exit 1; }
+[[ "$port" =~ ^[0-9]{1,5}$ ]] || { echo "bad port: $port" >&2; exit 1; }
+netns="$(ip netns list 2>/dev/null | grep -oE 'qdhcp-[0-9a-f-]+' | head -1)"
+[[ -n "$netns" ]] || { echo "no qdhcp netns found" >&2; exit 1; }
+# netns 안에서 python3로 stdio<->TCP 중계.
+# 주의: 'python3 -c'로 코드 전달 — heredoc(python3 -)을 쓰면 ssh의 stdin을 코드가 먹어버려 끊김.
+exec ip netns exec "$netns" python3 -c '
+import os, socket, sys, threading
+host, port = sys.argv[1], int(sys.argv[2])
+s = socket.create_connection((host, port))
+def upstream():
+    while True:
+        d = os.read(0, 65536)
+        if not d:
+            try: s.shutdown(socket.SHUT_WR)
+            except OSError: pass
+            return
+        s.sendall(d)
+threading.Thread(target=upstream, daemon=True).start()
+while True:
+    d = s.recv(65536)
+    if not d:
+        os._exit(0)
+    os.write(1, d)
+' "$host" "$port"

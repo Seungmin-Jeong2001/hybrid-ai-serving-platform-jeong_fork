@@ -1,4 +1,5 @@
 #cloud-config
+%{ if install_node_dependencies == "true" ~}
 package_update: true
 package_upgrade: false
 
@@ -27,12 +28,17 @@ packages:
   - multipath-tools
   - net-tools
   - nfs-common
+%{ if node_role == "control-plane" ~}
+  - nfs-kernel-server
+%{ endif ~}
   - nftables
   - numactl
   - nvme-cli
+  - openssh-server
   - open-iscsi
   - pciutils
   - python3
+  - python3-dev
   - python3-pip
   - python3-venv
   - qemu-guest-agent
@@ -44,6 +50,11 @@ packages:
   - xfsprogs
   - xz-utils
   - zip
+%{ else ~}
+package_update: false
+package_upgrade: false
+packages: []
+%{ endif ~}
 
 write_files:
   - path: /etc/hybrid-ai-node-role
@@ -55,8 +66,80 @@ write_files:
     content: |
       node_role=${node_role}
       install_node_dependencies=${install_node_dependencies}
+      gitlab_container_image=${gitlab_container_image}
       enable_gpu_bootstrap=${enable_gpu_bootstrap}
       gpu_driver_autoinstall=${gpu_driver_autoinstall}
+      gpu_driver_package=${gpu_driver_package}
+      enable_gpu_cuda_bootstrap=${enable_gpu_cuda_bootstrap}
+      gpu_cuda_toolkit_package=${gpu_cuda_toolkit_package}
+      gpu_cudnn_package=${gpu_cudnn_package}
+      enable_gpu_training_bootstrap=${enable_gpu_training_bootstrap}
+      gpu_training_venv_path=${gpu_training_venv_path}
+      gpu_training_pytorch_cuda_index=${gpu_training_pytorch_cuda_index}
+      gpu_training_pip_cache_dir=${gpu_training_pip_cache_dir}
+  - path: /opt/hybrid-ai/training-requirements.txt
+    permissions: "0644"
+    content: |
+%{ for package in gpu_training_python_packages ~}
+      ${package}
+%{ endfor ~}
+  - path: /usr/local/lib/hybrid-ai-bootstrap-common.sh
+    permissions: "0644"
+    content: |
+      wait_for_apt_locks() {
+        local deadline=$((SECONDS + 900))
+        local locks=(
+          /var/lib/dpkg/lock
+          /var/lib/dpkg/lock-frontend
+          /var/lib/apt/lists/lock
+          /var/cache/apt/archives/lock
+        )
+
+        while true; do
+          local busy=0
+          if command -v fuser >/dev/null 2>&1; then
+            for lock in "$${locks[@]}"; do
+              if fuser "$lock" >/dev/null 2>&1; then
+                busy=1
+                break
+              fi
+            done
+          elif pgrep -x apt >/dev/null 2>&1 || pgrep -x apt-get >/dev/null 2>&1 || pgrep -x dpkg >/dev/null 2>&1 || pgrep -x unattended-upgrade >/dev/null 2>&1; then
+            busy=1
+          fi
+
+          [[ "$busy" -eq 0 ]] && return 0
+          if (( SECONDS >= deadline )); then
+            printf 'Timed out waiting for apt/dpkg locks\n' >&2
+            return 1
+          fi
+          sleep 5
+        done
+      }
+
+      apt_get() {
+        local attempt
+        local apt_opts=(-o Acquire::ForceIPv4=true -o Acquire::Retries=5 -o Dpkg::Lock::Timeout=900)
+
+        for attempt in {1..12}; do
+          if ! wait_for_apt_locks; then
+            if (( attempt == 12 )); then
+              return 1
+            fi
+            printf 'apt/dpkg lock wait failed; retrying (%s/12)\n' "$attempt" >&2
+            sleep 10
+            continue
+          fi
+          if apt-get "$${apt_opts[@]}" "$@"; then
+            return 0
+          fi
+          if (( attempt == 12 )); then
+            return 1
+          fi
+          printf 'apt-get %s failed; retrying after apt/dpkg lock check (%s/12)\n' "$*" "$attempt" >&2
+          sleep 10
+        done
+      }
   - path: /etc/modules-load.d/hybrid-ai-kubernetes.conf
     permissions: "0644"
     content: |
@@ -86,7 +169,10 @@ write_files:
 
       role="$(cat /etc/hybrid-ai-node-role 2>/dev/null || printf unknown)"
       install_node_dependencies="${install_node_dependencies}"
+      gitlab_container_image="${gitlab_container_image}"
       enable_gpu_bootstrap="${enable_gpu_bootstrap}"
+      gpu_driver_package="${gpu_driver_package}"
+      enable_gpu_training_bootstrap="${enable_gpu_training_bootstrap}"
 
       printf 'hybrid-ai node bootstrap start role=%s\n' "$role"
 
@@ -103,7 +189,7 @@ write_files:
       done
 
       if ! modprobe nvme_tcp; then
-        printf 'warn: nvme_tcp is unavailable in the current kernel; bake linux-modules-extra-$(uname -r) into the image when NVMe/TCP storage is required\n'
+        printf 'warn: nvme_tcp is unavailable in the current kernel; bake linux-modules-extra-%s into the image when NVMe/TCP storage is required\n' "$(uname -r)"
       fi
 
       sysctl --system || true
@@ -124,8 +210,119 @@ write_files:
         systemctl enable --now hybrid-ai-gpu-pcie-tune.service || true
       fi
 
+      if [[ "$role" == "gpu-worker" && "$enable_gpu_training_bootstrap" == "true" ]]; then
+        /usr/local/sbin/hybrid-ai-gpu-training-bootstrap || true
+      fi
+
+      if [[ "$role" == "gitlab" ]]; then
+        GITLAB_CONTAINER_IMAGE="$gitlab_container_image" /usr/local/sbin/hybrid-ai-gitlab-prereq-bootstrap || true
+      fi
+
+      if [[ "$role" == "harbor" ]]; then
+        /usr/local/sbin/hybrid-ai-harbor-prereq-bootstrap || true
+      fi
+
       /usr/local/sbin/hybrid-ai-dependency-check
       printf 'hybrid-ai node bootstrap complete role=%s\n' "$role"
+  - path: /usr/local/sbin/hybrid-ai-gitlab-prereq-bootstrap
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      exec > >(tee -a /var/log/hybrid-ai-gitlab-prereq-bootstrap.log) 2>&1
+      # shellcheck source=/usr/local/lib/hybrid-ai-bootstrap-common.sh disable=SC1091
+      . /usr/local/lib/hybrid-ai-bootstrap-common.sh
+
+      image="$${GITLAB_CONTAINER_IMAGE:-gitlab/gitlab-ce:18.11.4-ce.0}"
+      archive="$${GITLAB_CONTAINER_IMAGE_ARCHIVE:-/var/cache/hybrid-ai/container-images/gitlab-image.tar}"
+
+      load_image_archive() {
+        local output=""
+        local loaded_ref=""
+        local loaded_id=""
+
+        [[ -n "$archive" && -s "$archive" ]] || return 1
+        printf 'loading GitLab image archive: %s\n' "$archive"
+        if ! output="$(docker load -i "$archive" 2>&1)"; then
+          printf '%s\n' "$output" >&2
+          return 1
+        fi
+        printf '%s\n' "$output"
+        if docker image inspect "$image" >/dev/null 2>&1; then
+          return 0
+        fi
+        loaded_ref="$(printf '%s\n' "$output" | sed -n 's/^Loaded image: //p' | tail -n 1)"
+        loaded_id="$(printf '%s\n' "$output" | sed -n 's/^Loaded image ID: //p' | tail -n 1)"
+        if [[ -n "$loaded_ref" ]]; then
+          docker tag "$loaded_ref" "$image" >/dev/null 2>&1 || true
+        fi
+        if ! docker image inspect "$image" >/dev/null 2>&1 && [[ -n "$loaded_id" ]]; then
+          docker tag "$loaded_id" "$image" >/dev/null 2>&1 || true
+        fi
+        docker image inspect "$image" >/dev/null 2>&1
+      }
+
+      printf 'hybrid-ai GitLab prereq bootstrap start image=%s\n' "$image"
+      export DEBIAN_FRONTEND=noninteractive
+      export NEEDRESTART_MODE=a
+      cat >/etc/apt/apt.conf.d/99hybrid-ai-force-ipv4 <<'EOF'
+      Acquire::ForceIPv4 "true";
+      Acquire::Retries "5";
+      Dpkg::Lock::Timeout "900";
+      EOF
+      apt_get update -qq
+      apt_get install -y -qq ca-certificates curl docker.io openssh-server python3 tzdata
+      systemctl enable --now docker
+      if [[ -n "$image" ]]; then
+        if ! load_image_archive; then
+          docker pull "$image"
+        fi
+      fi
+      printf 'hybrid-ai GitLab prereq bootstrap complete\n'
+  - path: /usr/local/sbin/hybrid-ai-harbor-prereq-bootstrap
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      exec > >(tee -a /var/log/hybrid-ai-harbor-prereq-bootstrap.log) 2>&1
+      # shellcheck source=/usr/local/lib/hybrid-ai-bootstrap-common.sh disable=SC1091
+      . /usr/local/lib/hybrid-ai-bootstrap-common.sh
+
+      printf 'hybrid-ai Harbor prereq bootstrap start\n'
+      export DEBIAN_FRONTEND=noninteractive
+      export NEEDRESTART_MODE=a
+      cat >/etc/apt/apt.conf.d/99hybrid-ai-force-ipv4 <<'EOF'
+      Acquire::ForceIPv4 "true";
+      Acquire::Retries "5";
+      Dpkg::Lock::Timeout "900";
+      EOF
+
+      apt_get update -qq
+      apt_get install -y -qq ca-certificates curl docker.io openssh-server openssl python3 tzdata
+
+      if apt-cache show docker-compose-plugin >/dev/null 2>&1; then
+        apt_get install -y -qq docker-compose-plugin
+      elif apt-cache show docker-compose-v2 >/dev/null 2>&1; then
+        apt_get install -y -qq docker-compose-v2
+      elif apt-cache show docker-compose >/dev/null 2>&1; then
+        apt_get install -y -qq docker-compose
+      else
+        printf 'warn: no docker compose package is available from configured apt repositories\n'
+      fi
+
+      systemctl enable --now docker
+      install -d -m 0755 /opt/harbor /data/harbor /var/log/harbor
+      cat >/opt/hybrid-ai/harbor.env <<'EOF'
+      role=harbor
+      registry_data_dir=/data/harbor
+      installer_dir=/opt/harbor
+      EOF
+
+      docker --version || true
+      docker compose version || docker-compose --version || true
+      printf 'hybrid-ai Harbor prereq bootstrap complete\n'
   - path: /usr/local/sbin/hybrid-ai-gpu-bootstrap
     permissions: "0755"
     content: |
@@ -133,14 +330,24 @@ write_files:
       set -euo pipefail
 
       exec > >(tee -a /var/log/hybrid-ai-gpu-bootstrap.log) 2>&1
+      # shellcheck source=/usr/local/lib/hybrid-ai-bootstrap-common.sh disable=SC1091
+      . /usr/local/lib/hybrid-ai-bootstrap-common.sh
 
       gpu_driver_autoinstall="${gpu_driver_autoinstall}"
+      gpu_driver_package="${gpu_driver_package}"
+      enable_gpu_cuda_bootstrap="${enable_gpu_cuda_bootstrap}"
 
       printf 'hybrid-ai gpu bootstrap start\n'
 
       export DEBIAN_FRONTEND=noninteractive
-      apt-get update
-      apt-get install -y ubuntu-drivers-common pciutils
+      export NEEDRESTART_MODE=a
+      export NEEDRESTART_SUSPEND=1
+      apt_get update
+      apt_get install -y ubuntu-drivers-common pciutils
+
+      nvidia_smi_ready() {
+        command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1
+      }
 
       if ! dpkg-query -W nvidia-container-toolkit >/dev/null 2>&1; then
         install -d -m 0755 /usr/share/keyrings
@@ -149,16 +356,54 @@ write_files:
         curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
           | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
           > /etc/apt/sources.list.d/nvidia-container-toolkit.list
-        apt-get update
-        apt-get install -y nvidia-container-toolkit
+        apt_get update
+        apt_get install -y nvidia-container-toolkit
+      fi
+      if command -v nvidia-ctk >/dev/null 2>&1; then
+        nvidia-ctk runtime configure --runtime=containerd || true
+      fi
+      if command -v nvidia-container-runtime >/dev/null 2>&1; then
+        install -d -m 0755 /etc/containerd/conf.d
+        if [[ -f /etc/containerd/config.toml ]] && grep -q 'io.containerd.cri.v1.runtime' /etc/containerd/config.toml; then
+          cat >/etc/containerd/conf.d/99-nvidia.toml <<'EOF'
+      version = 3
+
+      [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.nvidia]
+        runtime_type = "io.containerd.runc.v2"
+        privileged_without_host_devices = false
+
+        [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.nvidia.options]
+          BinaryName = "/usr/bin/nvidia-container-runtime"
+          SystemdCgroup = true
+      EOF
+        else
+          cat >/etc/containerd/conf.d/99-nvidia.toml <<'EOF'
+      version = 2
+
+      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.nvidia]
+        runtime_type = "io.containerd.runc.v2"
+        privileged_without_host_devices = false
+
+        [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.nvidia.options]
+          BinaryName = "/usr/bin/nvidia-container-runtime"
+          SystemdCgroup = true
+      EOF
+        fi
+        systemctl restart containerd || true
       fi
 
       if lspci -nn | grep -qi nvidia; then
-        if [[ "$gpu_driver_autoinstall" == "true" ]] && ! command -v nvidia-smi >/dev/null 2>&1; then
+        if [[ -n "$gpu_driver_package" ]] && ! nvidia_smi_ready; then
+          driver_suffix="$${gpu_driver_package#nvidia-driver-}"
+          module_package="linux-modules-nvidia-$${driver_suffix}-generic"
+          apt_get install -y "$gpu_driver_package" "$module_package" || apt_get install -y "$gpu_driver_package" || true
+        fi
+
+        if [[ "$gpu_driver_autoinstall" == "true" ]] && ! nvidia_smi_ready; then
           ubuntu-drivers autoinstall || true
         fi
 
-        if command -v nvidia-smi >/dev/null 2>&1; then
+        if nvidia_smi_ready; then
           systemctl enable --now nvidia-persistenced || true
           nvidia-smi -pm 1 || true
         else
@@ -168,8 +413,311 @@ write_files:
         printf 'warn: no NVIDIA PCI device detected on this GPU worker image\n'
       fi
 
+      if [[ "$enable_gpu_cuda_bootstrap" == "true" ]]; then
+        /usr/local/sbin/hybrid-ai-gpu-cuda-bootstrap || true
+      fi
+
       /usr/local/sbin/hybrid-ai-gpu-pcie-tune || true
       printf 'hybrid-ai gpu bootstrap complete\n'
+  - path: /usr/local/sbin/hybrid-ai-gpu-cuda-bootstrap
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      exec > >(tee -a /var/log/hybrid-ai-gpu-cuda-bootstrap.log) 2>&1
+      # shellcheck source=/usr/local/lib/hybrid-ai-bootstrap-common.sh disable=SC1091
+      . /usr/local/lib/hybrid-ai-bootstrap-common.sh
+
+      cuda_toolkit_package="${gpu_cuda_toolkit_package}"
+      cudnn_package="${gpu_cudnn_package}"
+
+      printf 'hybrid-ai gpu CUDA bootstrap start\n'
+      printf 'cuda_toolkit_package=%s\n' "$cuda_toolkit_package"
+      printf 'cudnn_package=%s\n' "$cudnn_package"
+
+      if [[ -z "$cuda_toolkit_package" && -z "$cudnn_package" ]]; then
+        printf 'CUDA/cuDNN package bootstrap disabled by empty package names\n'
+        exit 0
+      fi
+
+      export DEBIAN_FRONTEND=noninteractive
+      export NEEDRESTART_MODE=a
+      export NEEDRESTART_SUSPEND=1
+      apt_get update
+      apt_get install -y ca-certificates curl gnupg lsb-release
+
+      # shellcheck source=/etc/os-release disable=SC1091
+      . /etc/os-release
+      case "$${ID:-}:$${VERSION_ID:-}" in
+        ubuntu:22.04)
+          cuda_distro="ubuntu2204"
+          ;;
+        ubuntu:24.04)
+          cuda_distro="ubuntu2404"
+          ;;
+        *)
+          printf 'warn: unsupported CUDA apt distro mapping: ID=%s VERSION_ID=%s\n' "$${ID:-unknown}" "$${VERSION_ID:-unknown}"
+          exit 0
+          ;;
+      esac
+
+      case "$(dpkg --print-architecture)" in
+        amd64)
+          cuda_arch="x86_64"
+          ;;
+        arm64)
+          cuda_arch="arm64"
+          ;;
+        *)
+          printf 'warn: unsupported CUDA apt architecture: %s\n' "$(dpkg --print-architecture)"
+          exit 0
+          ;;
+      esac
+
+      if ! dpkg-query -W cuda-keyring >/dev/null 2>&1; then
+        keyring_deb="/tmp/cuda-keyring_1.1-1_all.deb"
+        curl -fsSL \
+          "https://developer.download.nvidia.com/compute/cuda/repos/$${cuda_distro}/$${cuda_arch}/cuda-keyring_1.1-1_all.deb" \
+          -o "$keyring_deb"
+        wait_for_apt_locks
+        dpkg -i "$keyring_deb"
+      fi
+
+      apt_get update
+      packages=()
+      if [[ -n "$cuda_toolkit_package" ]]; then
+        packages+=("$cuda_toolkit_package")
+      fi
+      if [[ -n "$cudnn_package" ]]; then
+        packages+=("$cudnn_package")
+      fi
+      apt_get install -y "$${packages[@]}"
+
+      for cuda_dir in /usr/local/cuda /usr/local/cuda-*; do
+        [[ -x "$cuda_dir/bin/nvcc" ]] || continue
+        ln -sfn "$cuda_dir/bin/nvcc" /usr/local/bin/nvcc
+        {
+          printf 'export CUDA_HOME=%q\n' "$cuda_dir"
+          printf "export PATH=%q:\$PATH\n" "$cuda_dir/bin"
+          printf "export LD_LIBRARY_PATH=%q:$${LD_LIBRARY_PATH:-}\n" "$cuda_dir/lib64"
+        } >/etc/profile.d/hybrid-ai-cuda.sh
+        break
+      done
+
+      if command -v nvcc >/dev/null 2>&1; then
+        nvcc --version || true
+      fi
+      ldconfig -p | grep -i cudnn || true
+      printf 'hybrid-ai gpu CUDA bootstrap complete\n'
+  - path: /usr/local/sbin/hybrid-ai-gpu-training-bootstrap
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      exec > >(tee -a /var/log/hybrid-ai-gpu-training-bootstrap.log) 2>&1
+      # shellcheck source=/usr/local/lib/hybrid-ai-bootstrap-common.sh disable=SC1091
+      . /usr/local/lib/hybrid-ai-bootstrap-common.sh
+
+      venv_path="${gpu_training_venv_path}"
+      pytorch_cuda_index="${gpu_training_pytorch_cuda_index}"
+      requirements="/opt/hybrid-ai/training-requirements.txt"
+
+      printf 'hybrid-ai gpu training bootstrap start\n'
+      printf 'venv_path=%s\n' "$venv_path"
+      printf 'pytorch_cuda_index=%s\n' "$pytorch_cuda_index"
+
+      if [[ ! -s "$requirements" ]]; then
+        printf 'missing training requirements file: %s\n' "$requirements" >&2
+        exit 1
+      fi
+
+      export DEBIAN_FRONTEND=noninteractive
+      export NEEDRESTART_MODE=a
+      export NEEDRESTART_SUSPEND=1
+      apt_get update
+      apt_get install -y build-essential python3 python3-dev python3-pip python3-venv
+
+      install -d -m 0755 "$(dirname "$venv_path")"
+      python3 -m venv "$venv_path"
+      "$venv_path/bin/python" -m pip install --upgrade pip setuptools wheel
+      "$venv_path/bin/python" -m pip install --extra-index-url "$pytorch_cuda_index" -r "$requirements"
+
+      ln -sfn "$venv_path/bin/python" /usr/local/bin/hybrid-ai-training-python
+      ln -sfn "$venv_path/bin/pip" /usr/local/bin/hybrid-ai-training-pip
+      if [[ -x "$venv_path/bin/jupyter" ]]; then
+        ln -sfn "$venv_path/bin/jupyter" /usr/local/bin/hybrid-ai-training-jupyter
+      fi
+      if [[ -x "$venv_path/bin/jupyter-notebook" ]]; then
+        ln -sfn "$venv_path/bin/jupyter-notebook" /usr/local/bin/hybrid-ai-training-notebook
+      fi
+
+      /usr/local/sbin/hybrid-ai-gpu-training-check
+      printf 'hybrid-ai gpu training bootstrap complete\n'
+  - path: /usr/local/sbin/hybrid-ai-gpu-training-check
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      venv_path="${gpu_training_venv_path}"
+      python_bin="$venv_path/bin/python"
+
+      if [[ ! -x "$python_bin" ]]; then
+        printf 'missing GPU training Python venv: %s\n' "$python_bin" >&2
+        exit 1
+      fi
+
+      "$python_bin" - <<'PY'
+      import importlib
+      import sys
+
+      required_modules = [
+          "torch",
+          "numpy",
+          "pandas",
+          "scipy",
+          "sklearn",
+          "matplotlib",
+          "seaborn",
+          "minio",
+      ]
+
+      missing = []
+      for module in required_modules:
+          try:
+              importlib.import_module(module)
+          except Exception as exc:
+              missing.append(f"{module}: {type(exc).__name__}: {exc}")
+
+      if missing:
+          print("missing GPU training Python modules:", file=sys.stderr)
+          for item in missing:
+              print(f"  - {item}", file=sys.stderr)
+          sys.exit(1)
+
+      import torch
+
+      print(f"torch_version={torch.__version__}")
+      print(f"torch_cuda_version={torch.version.cuda}")
+      print(f"torch_cuda_available={torch.cuda.is_available()}")
+      if not torch.cuda.is_available():
+          print("PyTorch CUDA is not available on gpu-worker", file=sys.stderr)
+          sys.exit(1)
+
+      device_count = torch.cuda.device_count()
+      print(f"torch_cuda_device_count={device_count}")
+      if device_count < 1:
+          print("PyTorch did not detect a CUDA device", file=sys.stderr)
+          sys.exit(1)
+
+      tensor = torch.randn(8, 8, device="cuda")
+      result = torch.mm(tensor, tensor).sum().item()
+      print(f"torch_cuda_smoke_result={result:.6f}")
+      print("ok: GPU training Python dependency check passed")
+      PY
+  - path: /usr/local/bin/hybrid-ai-training-run
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      usage() {
+        cat <<'EOF'
+      Usage:
+        hybrid-ai-training-run [--requirements PATH] [--venv PATH] -- COMMAND [ARG...]
+
+      Environment:
+        HYBRID_AI_TRAINING_REQUIREMENTS   Default requirements path. Default: requirements.txt
+        HYBRID_AI_TRAINING_VENV           Python venv path. Default: $CI_PROJECT_DIR/.venv or $PWD/.venv
+        HYBRID_AI_PYTORCH_CUDA_INDEX_URL  PyTorch CUDA wheel index.
+        PIP_CACHE_DIR                     Pip cache path. Default: /mnt/nfs/hybrid-ai/pip-cache
+        HYBRID_AI_CHECKPOINT_DIR          Training checkpoint path.
+        HYBRID_AI_ARTIFACT_DIR            Training artifact path.
+      EOF
+      }
+
+      requirements="$${HYBRID_AI_TRAINING_REQUIREMENTS:-requirements.txt}"
+      venv_path="$${HYBRID_AI_TRAINING_VENV:-}"
+      pytorch_cuda_index="$${HYBRID_AI_PYTORCH_CUDA_INDEX_URL:-${gpu_training_pytorch_cuda_index}}"
+      pip_cache_dir="$${PIP_CACHE_DIR:-${gpu_training_pip_cache_dir}}"
+      project_dir="$${CI_PROJECT_DIR:-$PWD}"
+
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --requirements)
+            requirements="$2"
+            shift 2
+            ;;
+          --venv)
+            venv_path="$2"
+            shift 2
+            ;;
+          --help|-h)
+            usage
+            exit 0
+            ;;
+          --)
+            shift
+            break
+            ;;
+          *)
+            break
+            ;;
+        esac
+      done
+
+      if [[ $# -eq 0 ]]; then
+        usage >&2
+        exit 64
+      fi
+
+      cd "$project_dir"
+
+      if [[ -z "$venv_path" ]]; then
+        venv_path="$project_dir/.venv"
+      fi
+
+      run_id="$${CI_COMMIT_SHA:-manual}"
+      project_slug="$${CI_PROJECT_PATH_SLUG:-local-project}"
+      checkpoint_dir="$${HYBRID_AI_CHECKPOINT_DIR:-/mnt/nfs/hybrid-ai/checkpoints/$${project_slug}/$${run_id}}"
+      artifact_dir="$${HYBRID_AI_ARTIFACT_DIR:-/mnt/nfs/hybrid-ai/artifacts/$${project_slug}/$${run_id}}"
+
+      if ! mkdir -p "$pip_cache_dir" "$checkpoint_dir" "$artifact_dir" 2>/dev/null; then
+        fallback_dir="$project_dir/.hybrid-ai"
+        pip_cache_dir="$fallback_dir/pip-cache"
+        checkpoint_dir="$fallback_dir/checkpoints/$run_id"
+        artifact_dir="$fallback_dir/artifacts/$run_id"
+        mkdir -p "$pip_cache_dir" "$checkpoint_dir" "$artifact_dir"
+      fi
+
+      export PIP_CACHE_DIR="$pip_cache_dir"
+      export HYBRID_AI_CHECKPOINT_DIR="$checkpoint_dir"
+      export HYBRID_AI_ARTIFACT_DIR="$artifact_dir"
+
+      printf 'hybrid-ai training run start\n'
+      printf 'project_dir=%s\n' "$project_dir"
+      printf 'requirements=%s\n' "$requirements"
+      printf 'venv_path=%s\n' "$venv_path"
+      printf 'pip_cache_dir=%s\n' "$pip_cache_dir"
+      printf 'checkpoint_dir=%s\n' "$checkpoint_dir"
+      printf 'artifact_dir=%s\n' "$artifact_dir"
+
+      if command -v nvidia-smi >/dev/null 2>&1; then
+        nvidia-smi || true
+      fi
+
+      python3 -m venv "$venv_path"
+      "$venv_path/bin/python" -m pip install --upgrade pip setuptools wheel
+      if [[ -n "$requirements" && -f "$requirements" ]]; then
+        "$venv_path/bin/python" -m pip install --extra-index-url "$pytorch_cuda_index" -r "$requirements"
+      else
+        printf 'training requirements file not found; skipping dependency install: %s\n' "$requirements"
+      fi
+
+      export PATH="$venv_path/bin:$PATH"
+      "$@"
   - path: /usr/local/sbin/hybrid-ai-gpu-pcie-tune
     permissions: "0755"
     content: |
@@ -204,6 +752,11 @@ write_files:
       set -euo pipefail
 
       role="$(cat /etc/hybrid-ai-node-role 2>/dev/null || printf unknown)"
+      enable_gpu_cuda_bootstrap="${enable_gpu_cuda_bootstrap}"
+      enable_gpu_training_bootstrap="${enable_gpu_training_bootstrap}"
+      gpu_driver_package="${gpu_driver_package}"
+      gpu_cuda_toolkit_package="${gpu_cuda_toolkit_package}"
+      gpu_cudnn_package="${gpu_cudnn_package}"
       missing=0
 
       need_cmd() {
@@ -255,6 +808,10 @@ write_files:
 
       if [[ "$role" == "gpu-worker" ]]; then
         need_pkg nvidia-container-toolkit
+        need_cmd hybrid-ai-training-run
+        if [[ -n "$gpu_driver_package" ]]; then
+          need_pkg "$gpu_driver_package"
+        fi
 
         if ! lspci -nn | grep -qi nvidia; then
           printf 'missing NVIDIA PCI device on gpu-worker\n' >&2
@@ -262,10 +819,38 @@ write_files:
         fi
 
         if command -v nvidia-smi >/dev/null 2>&1; then
-          nvidia-smi --query-gpu=index,name,pci.bus_id,pcie.link.gen.current,pcie.link.width.current --format=csv || missing=1
+          if ! nvidia-smi --query-gpu=index,name,pci.bus_id,pcie.link.gen.current,pcie.link.width.current --format=csv; then
+            if [[ -f /var/run/reboot-required ]]; then
+              printf 'warn: nvidia-smi is installed but driver is not active before required reboot\n' >&2
+            else
+              missing=1
+            fi
+          fi
         else
           printf 'missing command: nvidia-smi\n' >&2
           missing=1
+        fi
+
+        if [[ "$enable_gpu_cuda_bootstrap" == "true" ]]; then
+          if [[ -n "$gpu_cuda_toolkit_package" ]]; then
+            need_pkg "$gpu_cuda_toolkit_package"
+            need_cmd nvcc
+          fi
+          if [[ -n "$gpu_cudnn_package" ]]; then
+            need_pkg "$gpu_cudnn_package"
+            if ! ldconfig -p | grep -qi cudnn; then
+              printf 'missing cuDNN shared library in ldconfig cache\n' >&2
+              missing=1
+            fi
+          fi
+        fi
+
+        if [[ "$enable_gpu_training_bootstrap" == "true" ]]; then
+          need_cmd hybrid-ai-training-python
+          need_cmd hybrid-ai-training-pip
+          if ! /usr/local/sbin/hybrid-ai-gpu-training-check; then
+            missing=1
+          fi
         fi
       fi
 
@@ -290,4 +875,10 @@ write_files:
       WantedBy=multi-user.target
 
 runcmd:
+  - |
+    host="$(hostname)"
+    short="$(hostname -s)"
+    if ! grep -Eq "(^|[[:space:]])$${short}([[:space:]]|$)" /etc/hosts; then
+      printf '127.0.1.1 %s %s\n' "$${host}" "$${short}" >>/etc/hosts
+    fi
   - /usr/local/sbin/hybrid-ai-node-bootstrap

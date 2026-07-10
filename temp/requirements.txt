@@ -1,0 +1,7 @@
+numpy
+pandas
+scikit-learn
+joblib
+fastapi
+prometheus-fastapi-instrumentator
+uvicorn

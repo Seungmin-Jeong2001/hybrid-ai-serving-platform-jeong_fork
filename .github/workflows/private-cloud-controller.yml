@@ -32,7 +32,7 @@ permissions:
 # a DAG plus script-level phase locks so independent VM work can run in parallel
 # without another apply/destroy run touching the same host state.
 concurrency:
-  group: private-cloud-foundation
+  group: private-cloud-foundation-v2
   cancel-in-progress: false
 
 jobs:
@@ -142,7 +142,7 @@ jobs:
   apply-k8s:
     name: Kubernetes
     if: ${{ inputs.operation == 'apply' }}
-    needs: [vm-control-plane, vm-build-worker, vm-gpu-worker]
+    needs: [vm-control-plane, vm-build-worker, vm-gpu-worker, vm-harbor]
     uses: ./.github/workflows/private-cloud-remote.yml
     with:
       command: apply

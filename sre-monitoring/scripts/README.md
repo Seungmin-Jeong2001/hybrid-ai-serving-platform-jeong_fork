@@ -24,5 +24,5 @@ chmod +x install.sh
 ## 주의사항
 
 - 단계 1 실행 전 `grafana-sre-dashboards` ConfigMap이 먼저 생성됨 (Grafana 시작 실패 방지)
-- Ansible 배포(`public/ansible`)와 병행 사용 가능하나 중복 설치 주의
+- Public monitoring stack의 기본 배포 경로는 ArgoCD(`public/k8s/argocd/apps`)이며, `public/ansible`은 legacy/manual 경로이므로 중복 설치를 피해야 함
 - sh 파일은 `.gitattributes`에 의해 LF 줄끝으로 강제 고정 (Windows 환경에서도 안전)

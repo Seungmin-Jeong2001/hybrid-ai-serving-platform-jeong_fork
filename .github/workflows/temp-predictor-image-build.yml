@@ -1,0 +1,64 @@
+name: Temp Predictor Image Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Optional image tag override
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REGISTRY: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com
+  IMAGE_NAME: predictive-model
+
+concurrency:
+  group: temp-predictor-image-dispatch-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Resolve image tag
+        id: vars
+        shell: bash
+        run: |
+          IMAGE_TAG="${{ github.event.inputs.image_tag }}"
+          if [[ -z "${IMAGE_TAG}" ]]; then
+            IMAGE_TAG="${GITHUB_SHA}"
+          fi
+          echo "image_tag=${IMAGE_TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build and push predictor image
+        shell: bash
+        run: |
+          IMAGE_URI="${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.image_tag }}"
+          IMAGE_LATEST="${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+
+          docker build \
+            -f temp/Dockerfile.predictor \
+            -t "${IMAGE_URI}" \
+            temp
+
+          docker push "${IMAGE_URI}"
+
+          docker tag "${IMAGE_URI}" "${IMAGE_LATEST}"
+          docker push "${IMAGE_LATEST}"

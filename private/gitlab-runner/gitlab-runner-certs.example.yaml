@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gitlab-runner-certs
+  namespace: model-build
+type: Opaque
+data:
+  gitlab.intp.me.crt: base64-placeholder

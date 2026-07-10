@@ -1,104 +1,42 @@
-# OpenStack 프로비저닝
+# OpenStack Foundation
 
-이 디렉터리는 Private Cloud Foundation의 OpenStack 자원을 Terraform으로
-프로비저닝하기 위한 작업 영역입니다. 현재 단계에서는 실제 운영값을 넣지 않고,
-GitHub Actions에서 plan/apply까지 연결할 수 있는 기본 골격을 관리합니다.
+이 디렉터리는 Private Cloud Foundation의 OpenStack 리소스 기준을 관리합니다.
 
-## 작업 범위
+상세 구현 설명은 [IMPLEMENTATION.md](./IMPLEMENTATION.md)를 참고합니다.
 
-- private network와 subnet을 생성합니다.
-- external network ID가 주어지면 router gateway까지 연결합니다.
-- floating IP pool이 주어지면 node bootstrap용 floating IP를 할당합니다.
-- SSH 접근과 내부 east-west 통신을 위한 기본 security group을 생성합니다.
-- control-plane, build-worker, GPU-worker VM 그룹을 역할별로 나눠 생성합니다.
-- Kubernetes bootstrap에서 사용할 node inventory를 output으로 남깁니다.
-- cloud-init으로 Kubernetes, storage, diagnostics, GPU worker host dependency를 설치합니다.
-- GPU worker는 NVIDIA Container Toolkit, driver autoinstall, PCIe performance policy, link/throughput 진단 스크립트를 준비합니다.
+## 담당 범위
 
-## 입력값 관리
+- Private network/subnet/router 기준
+- Security group 기준
+- Key pair 기준
+- Control-plane VM 기준
+- Build-worker VM 기준
+- GPU-worker VM 기준
+- GitLab VM 기준
+- Harbor registry VM 기준
+- Role별 cloud-init 기준
+- Role별 cache image 기준
 
-OpenStack 인증 정보는 표준 `OS_*` 환경 변수나 GitHub Actions Secret으로만
-주입합니다. `clouds.yaml`, `openrc`, kubeconfig, token, password, 내부 endpoint는
-repository에 커밋하지 않습니다.
+## 기본 VM 계획
 
-로컬 검증에서는 먼저 `ha up openstack-local --auto-approve`로 DevStack을 올립니다.
-그 다음 생성된 `.ha/openstack-local/openrc.sh`를 source 하면 Terraform이 사용할
-`OS_AUTH_URL`, project, user credential이 현재 shell로 전달됩니다.
-
-외부/운영 OpenStack을 사용할 때의 `OS_AUTH_URL`은 이 repository가 생성하는 값이 아니라,
-이미 존재하는 Keystone/Identity endpoint입니다.
-
-최소 필요 값:
-
-- `OS_AUTH_URL`
-- `OS_USERNAME`
-- `OS_PASSWORD`
-- `OS_PROJECT_NAME`
-- `OS_USER_DOMAIN_NAME`
-- `OS_PROJECT_DOMAIN_NAME`
-- `TF_VAR_ssh_public_key`
-
-## 로컬 점검
-
-```sh
-ha test
-ha test --integration
+```text
+control-plane: 1
+build-worker: 1
+gpu-worker: 1
+gitlab: 1
+harbor: 1
 ```
 
-실제 OpenStack 리소스를 올릴 때는 repository root에서 실행합니다.
+Harbor VM은 초기 PoC에서 최소 registry profile을 목표로 하며, scanner/replication/proxy cache/signing 계층은 기본 비활성으로 계획합니다.
 
-```sh
-ha up openstack --auto-approve
+## Cache Image 계획
+
+```text
+hybrid-ai-cache-control-plane-<manifest-hash>
+hybrid-ai-cache-build-worker-<manifest-hash>
+hybrid-ai-cache-gpu-worker-<manifest-hash>
+hybrid-ai-cache-gitlab-<manifest-hash>
+hybrid-ai-cache-harbor-<manifest-hash>
 ```
 
-로컬 DevStack smoke apply는 `cirros` 이미지와 작은 flavor로 실행합니다. 이 검증은
-network/subnet/router/security group/key pair/VM 생성 확인용입니다. Kubernetes node로
-쓸 production 검증은 Ubuntu 계열 cloud image와 충분한 flavor를 사용해야 합니다.
-
-OpenStack VM을 Kubernetes node로 bootstrap하려면 Ubuntu 계열 image와 floating IP 또는
-private network SSH 경로를 준비한 뒤 실행합니다.
-
-```sh
-ha up openstack-kubernetes --auto-approve
-```
-
-로컬에서 확인할 때만 `terraform.tfvars.example`을 `terraform.tfvars`로 복사해서
-사용합니다. 값이 채워진 `terraform.tfvars`, Terraform state, backend 설정 파일은 커밋하지 않습니다.
-
-## OpenStack provider v3 migration
-
-OpenStack provider v3에서는 Nova compute floating IP association resource가 제거되었습니다.
-이 구성은 Neutron `openstack_networking_floatingip_v2`의 `port_id`로 floating IP를 연결합니다.
-
-기존 state가 `openstack_compute_floatingip_associate_v2`를 이미 추적하고 있으면 provider v3가
-해당 schema를 읽을 수 없어 plan이 실패합니다. state를 백업한 뒤, 실제 floating IP는 유지하고
-Terraform 추적 항목만 제거합니다.
-
-```sh
-ha tf state list | rg openstack_compute_floatingip_associate_v2
-ha tf state rm 'openstack_compute_floatingip_associate_v2.control_plane[0]'
-```
-
-build-worker 또는 GPU-worker association이 state에 있으면 같은 방식으로 해당 주소를 제거한 뒤
-다시 plan을 확인합니다.
-
-## Node dependency bootstrap
-
-Terraform으로 생성되는 VM은 cloud-init 단계에서 아래 host dependency를 자동 설치합니다.
-
-- Kubernetes host prereq: `overlay`, `br_netfilter`, bridge sysctl, IP forwarding
-- Storage prereq: `nfs-common`, `open-iscsi`, `multipath-tools`, `nvme-cli`, `xfsprogs`
-- Diagnostics/build tools: `build-essential`, `git`, `jq`, `pciutils`, `lshw`, `hwloc`, `numactl`, `fio`, `sysstat`
-- Guest integration: `qemu-guest-agent`
-- GPU worker prereq: NVIDIA Container Toolkit repo/package, `ubuntu-drivers autoinstall`, `nvidia-persistenced`
-- GPU PCIe tuning: PCIe ASPM `performance` policy, CPU governor `performance`, `nvidia-smi` PCIe link/counter report
-
-GPU PCIe lane width/generation 자체는 BIOS, hypervisor, physical slot, passthrough/vGPU 설정의 영향을 받습니다.
-VM 안에서는 가능한 guest-side performance policy와 진단까지만 자동화합니다.
-
-노드 내부 검증:
-
-```sh
-sudo /usr/local/sbin/hybrid-ai-dependency-check
-sudo /usr/local/sbin/hybrid-ai-gpu-pcie-tune
-```
+Cache image는 dependency manifest hash 기반으로 관리합니다.

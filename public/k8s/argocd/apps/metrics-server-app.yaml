@@ -14,6 +14,8 @@ spec:
     helm:
       releaseName: metrics-server
       valuesObject:
+        nodeSelector:
+          workload: general
         args:
           - --kubelet-preferred-address-types=InternalIP,Hostname,ExternalIP
           - --kubelet-insecure-tls

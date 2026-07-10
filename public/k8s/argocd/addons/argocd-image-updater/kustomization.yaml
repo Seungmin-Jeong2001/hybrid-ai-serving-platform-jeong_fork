@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: argocd
+
+resources:
+  - install-v1.2.1.yaml
+  - pdm-serving-image-updater.yaml
+
+patches:
+  - path: serviceaccount-irsa-patch.yaml
+    target:
+      kind: ServiceAccount
+      name: argocd-image-updater-controller
+  - path: configmap-patch.yaml
+    target:
+      kind: ConfigMap
+      name: argocd-image-updater-config
+  - path: deployment-ecr-auth-patch.yaml
+    target:
+      kind: Deployment
+      name: argocd-image-updater-controller

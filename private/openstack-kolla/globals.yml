@@ -1,0 +1,43 @@
+---
+# Kolla-Ansible globals — hybrid-ai private cloud (Phase A)
+# DevStack(local.conf) 설정과 동기화. 값 출처: private/ci/private-cloud-apply.sh
+# FILL 표시 값은 "우리 서버" 실제 값으로 교체 필요.
+# network_interface / GPU product_id 는 autodetect.sh 가 배포 시 자동 채움.
+
+#####################
+# Base
+#####################
+kolla_base_distro: "ubuntu"
+openstack_release: "2025.1" # kolla-ansible 20.4.0 (2026.1 이미지 미공개로 정렬)
+
+#####################
+# Networking
+#####################
+# 관리/API NIC (서버 1차 인터페이스) — autodetect 대상
+network_interface: "<FILL: e.g. eno1>"
+# Neutron provider/external NIC — IP 없는 물리 인터페이스, autodetect 후보 제시
+neutron_external_interface: "<FILL: e.g. eno2>"
+# 내부 API VIP — mgmt(eno1=192.168.0.40/24) 서브넷 미사용 IP (192.168.0.250 점유 확인)
+kolla_internal_vip_address: "192.168.0.250"
+
+neutron_plugin_agent: "openvswitch"
+
+#####################
+# 활성/비활성 서비스 (DevStack: swift/cinder/tempest 비활성)
+#####################
+enable_cinder: "no"
+enable_swift: "no"
+enable_heat: "no"
+enable_horizon: "yes"
+enable_neutron_provider_networks: "yes"
+
+#####################
+# Nova / libvirt
+#####################
+# DevStack LIBVIRT_TYPE=auto 대응 — KVM 가용 시 kvm
+nova_compute_virt_type: "kvm"
+
+#####################
+# 자격증명 도메인/리전 (DevStack 동일)
+#####################
+# admin/RegionOne/Default — Kolla 기본값 일치, 비밀번호는 kolla-genpwd 생성

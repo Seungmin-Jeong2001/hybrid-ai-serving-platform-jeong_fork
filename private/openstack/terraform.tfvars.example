@@ -11,22 +11,72 @@ external_network_id = ""
 floating_ip_pool    = ""
 assign_floating_ips = false
 
+# GitHub Actions private-cloud apply defaults to true for backwards compatibility.
+# Set repository variable PRIVATE_CLOUD_ASSIGN_FLOATING_IPS=false after Tailscale
+# subnet routing and internal DNS are verified.
+
 key_pair_name  = "hybrid-ai-private-admin"
 ssh_public_key = "ssh-ed25519 REPLACE_WITH_PUBLIC_KEY_ONLY"
 
 control_plane_count       = 1
 control_plane_image_name  = "ubuntu-22.04"
-control_plane_flavor_name = "m1.medium"
+control_plane_flavor_name = "m1.large"
+# Optional. Set to keep private IPs stable across destroy/recreate.
+# control_plane_private_ips = ["10.42.0.10"]
 
 build_worker_count       = 1
 build_worker_image_name  = "ubuntu-22.04"
 build_worker_flavor_name = "m1.large"
+# build_worker_private_ips = ["10.42.0.20"]
 
 gpu_worker_count       = 1
-gpu_worker_image_name  = "ubuntu-22.04-gpu"
+gpu_worker_image_name  = "ubuntu-22.04"
 gpu_worker_flavor_name = "g1.large"
+# gpu_worker_private_ips = ["10.42.0.30"]
+
+gitlab_count       = 1
+gitlab_image_name  = "ubuntu-22.04"
+gitlab_flavor_name = "m1.large"
+# gitlab_private_ips = ["10.42.0.40"]
+
+harbor_count       = 1
+harbor_image_name  = "ubuntu-22.04"
+harbor_flavor_name = "m1.large"
+# harbor_private_ips = ["10.42.0.50"]
+
+# Cloud-init pre-pulls this image on GitLab VMs before the Actions bootstrap injects secrets.
+gitlab_container_image = "gitlab/gitlab-ce:18.11.4-ce.0"
+
+# Keep empty unless a host reverse proxy must reach the GitLab VM directly over HTTP.
+gitlab_http_allowed_cidrs = []
+
+# Keep empty unless a reverse proxy intentionally exposes MinIO API/console.
+# minio_nodeport_allowed_cidrs = ["172.24.4.0/24"]
 
 # Cloud-init installs common Kubernetes, storage, diagnostics, and GPU host dependencies.
 install_node_dependencies = true
 enable_gpu_bootstrap      = true
 gpu_driver_autoinstall    = true
+enable_gpu_cuda_bootstrap = true
+gpu_cuda_toolkit_package  = "cuda-toolkit-12-8"
+gpu_cudnn_package         = "cudnn9-cuda-12"
+
+# GPU workers also prepare a Python environment for the feature/model training code.
+enable_gpu_training_bootstrap        = true
+gpu_training_venv_path               = "/opt/hybrid-ai/training-venv"
+gpu_training_pytorch_cuda_index_url  = "https://download.pytorch.org/whl/cu128"
+gpu_training_pip_cache_dir           = "/mnt/nfs/hybrid-ai/pip-cache"
+gpu_training_python_packages = [
+  "torch==2.7.0+cu128",
+  "torchvision==0.22.0+cu128",
+  "torchaudio==2.7.0+cu128",
+  "numpy==1.26.4",
+  "pandas==2.2.2",
+  "scipy==1.11.4",
+  "scikit-learn==1.4.2",
+  "matplotlib==3.8.4",
+  "seaborn==0.13.2",
+  "notebook==7.2.2",
+  "ipykernel==6.29.5",
+  "minio==7.2.8",
+]

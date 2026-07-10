@@ -1,0 +1,19 @@
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: pdm-predictor-allow-inference-namespace
+  namespace: inference
+spec:
+  selector:
+    matchLabels:
+      app: isvc.pdm-predictor
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            namespaces:
+              - inference
+    - from:
+        - source:
+            namespaces:
+              - monitoring

@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gpu-image-prepuller
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: gpu-image-prepuller
+    app.kubernetes.io/part-of: hybrid-ai-serving-platform
+    app.kubernetes.io/component: image-cache
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gpu-image-prepuller
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gpu-image-prepuller
+        app.kubernetes.io/part-of: hybrid-ai-serving-platform
+        app.kubernetes.io/component: image-cache
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        hybrid-ai.io/node-role: gpu-worker
+        hybrid-ai.io/accelerator: nvidia
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      initContainers:
+        - name: cache-cuda-validation
+          image: nvidia/cuda:12.2.0-base-ubuntu22.04
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - "true"
+        - name: cache-pytorch-training
+          image: pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - "true"
+      containers:
+        - name: hold-cache
+          image: registry.k8s.io/pause:3.10
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 20m
+              memory: 32Mi

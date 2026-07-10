@@ -2,6 +2,11 @@ name: Setup Argo CD
 
 on:
   workflow_dispatch:
+    inputs:
+      rotate_github_app_secret:
+        description: "Overwrite GitHub App parameters in SSM Parameter Store"
+        required: false
+        default: "false"
 
 permissions:
   contents: read
@@ -15,8 +20,8 @@ env:
   ARGOCD_TARGET_REVISION: ${{ github.ref_name }}
   SSM_BOOTSTRAP_TAG_KEY: Name
   SSM_BOOTSTRAP_TAG_VALUE: sgs-hasp-general
-  SSM_WAIT_ATTEMPTS: 60
-  SSM_WAIT_INTERVAL_SECONDS: 10
+  SSM_WAIT_ATTEMPTS: 180
+  SSM_WAIT_INTERVAL_SECONDS: 15
 
 concurrency:
   group: argocd-root-app-${{ github.ref }}
@@ -35,11 +40,60 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
 
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform init for output rendering
+        working-directory: public/terraform
+        run: terraform init -input=false
+
       - name: Resolve bootstrap admin role ARN
         id: bootstrap_role
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           echo "value=arn:aws:iam::${ACCOUNT_ID}:role/sgs-hasp-eks-bootstrap-admin" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure GitHub App parameters in SSM Parameter Store
+        env:
+          GH_APP_ID: ${{ secrets.GH_APP_ID }}
+          GH_APP_INSTALLATION_ID: ${{ secrets.GH_APP_INSTALLATION_ID }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          ROTATE_GITHUB_APP_SECRET: ${{ github.event.inputs.rotate_github_app_secret || 'false' }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GH_APP_ID}" ] || [ -z "${GH_APP_INSTALLATION_ID}" ] || [ -z "${GH_APP_PRIVATE_KEY}" ]; then
+            echo "Required GitHub App secrets are missing. Check GH_APP_ID, GH_APP_INSTALLATION_ID, and GH_APP_PRIVATE_KEY."
+            exit 1
+          fi
+
+          ensure_secure_parameter() {
+            local name="$1"
+            local value="$2"
+
+            if aws ssm get-parameter --name "$name" --with-decryption >/dev/null 2>&1; then
+              if [ "${ROTATE_GITHUB_APP_SECRET}" = "true" ]; then
+                aws ssm put-parameter \
+                  --name "$name" \
+                  --type "SecureString" \
+                  --value "$value" \
+                  --overwrite >/dev/null
+                echo "Parameter updated: $name"
+              else
+                echo "Parameter already exists. Skip update: $name"
+              fi
+            else
+              aws ssm put-parameter \
+                --name "$name" \
+                --type "SecureString" \
+                --value "$value" >/dev/null
+              echo "Parameter created: $name"
+            fi
+          }
+
+          ensure_secure_parameter "/hasp/argocd/image-updater/github-app/id" "${GH_APP_ID}"
+          ensure_secure_parameter "/hasp/argocd/image-updater/github-app/installation-id" "${GH_APP_INSTALLATION_ID}"
+          ensure_secure_parameter "/hasp/argocd/image-updater/github-app/private-key" "${GH_APP_PRIVATE_KEY}"
 
       - name: Build root application manifest
         run: |
@@ -65,6 +119,29 @@ jobs:
                 prune: true
                 selfHeal: true
           EOF
+
+      - name: Build kafka-exporter application manifest
+        working-directory: public/terraform
+        run: |
+          MSK_BOOTSTRAP_BROKERS="$(terraform output -raw msk_bootstrap_brokers)"
+          export MSK_BOOTSTRAP_BROKERS
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          brokers_raw = os.environ["MSK_BOOTSTRAP_BROKERS"].strip()
+          brokers = [value.strip() for value in brokers_raw.split(",") if value.strip()]
+          if not brokers:
+              raise SystemExit("No brokers found in terraform output msk_bootstrap_brokers")
+
+          template_path = Path.cwd().parent.parent / "public" / "k8s" / "argocd" / "apps" / "kafka-exporter-app.template.yaml"
+          output_path = Path.cwd().parent.parent / "kafka-exporter-app.yaml"
+          template = template_path.read_text(encoding="utf-8")
+          broker_lines = "\n".join(f"          - {broker}" for broker in brokers)
+          rendered = template.replace("{{KAFKA_BROKER_LINES}}", broker_lines)
+          output_path.write_text(rendered, encoding="utf-8")
+          print(f"rendered {output_path}")
+          PY
 
       - name: Resolve SSM bootstrap instance
         id: resolve_instance
@@ -111,12 +188,17 @@ jobs:
           BOOTSTRAP_ROLE_ARN: ${{ steps.bootstrap_role.outputs.value }}
         run: |
           ROOT_APP_YAML_B64=$(base64 -w 0 argocd-root-app.yaml)
+          KAFKA_EXPORTER_APP_YAML_B64=$(base64 -w 0 kafka-exporter-app.yaml)
           export ROOT_APP_YAML_B64
+          export KAFKA_EXPORTER_APP_YAML_B64
           python - <<'PY'
           import json
           import os
 
           repo_secret_name = f"repo-{os.environ['GITHUB_REPOSITORY'].replace('/', '-')}"
+          github_app_id_parameter = "/hasp/argocd/image-updater/github-app/id"
+          github_app_installation_parameter = "/hasp/argocd/image-updater/github-app/installation-id"
+          github_app_private_key_parameter = "/hasp/argocd/image-updater/github-app/private-key"
           commands = [
               "set -euo pipefail",
               "if ! command -v kubectl >/dev/null 2>&1; then curl -fsSLo /tmp/kubectl https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl && chmod +x /tmp/kubectl && sudo mv /tmp/kubectl /usr/local/bin/kubectl; fi",
@@ -136,8 +218,31 @@ jobs:
                   f"kubectl -n {os.environ['ARGOCD_NAMESPACE']} label secret {repo_secret_name} "
                   f"argocd.argoproj.io/secret-type=repository --overwrite; fi"
               ),
+              (
+                  f"GITHUB_APP_ID=$(aws ssm get-parameter --name \"{github_app_id_parameter}\" "
+                  "--with-decryption --query Parameter.Value --output text)"
+              ),
+              (
+                  f"GITHUB_APP_INSTALLATION_ID=$(aws ssm get-parameter --name \"{github_app_installation_parameter}\" "
+                  "--with-decryption --query Parameter.Value --output text)"
+              ),
+              (
+                  f"GITHUB_APP_PRIVATE_KEY=$(aws ssm get-parameter --name \"{github_app_private_key_parameter}\" "
+                  "--with-decryption --query Parameter.Value --output text)"
+              ),
+              (
+                  f"kubectl -n {os.environ['ARGOCD_NAMESPACE']} create secret generic "
+                  "argocd-image-updater-github-app-creds "
+                  "--from-literal=githubAppID=\"$GITHUB_APP_ID\" "
+                  "--from-literal=githubAppInstallationID=\"$GITHUB_APP_INSTALLATION_ID\" "
+                  "--from-literal=githubAppPrivateKey=\"$GITHUB_APP_PRIVATE_KEY\" "
+                  "--dry-run=client -o yaml | kubectl apply -f -"
+              ),
+              "unset GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY",
               f"echo {os.environ['ROOT_APP_YAML_B64']} | base64 -d | kubectl apply -f -",
+              f"echo {os.environ['KAFKA_EXPORTER_APP_YAML_B64']} | base64 -d | kubectl apply -f -",
               f"kubectl get application platform-addons -n {os.environ['ARGOCD_NAMESPACE']} -o yaml",
+              f"kubectl get application kafka-exporter -n {os.environ['ARGOCD_NAMESPACE']} -o yaml",
           ]
 
           with open("commands.json", "w", encoding="utf-8") as fp:
@@ -217,3 +322,131 @@ jobs:
             --instance-id "${TARGET_INSTANCE_ID}" \
             --query 'StandardOutputContent' \
             --output text || true
+
+      - name: Terraform init for Route53 outputs
+        working-directory: public/terraform
+        run: terraform init
+
+      - name: Resolve internal ALB hostname through SSM
+        id: resolve_internal_alb
+        env:
+          TARGET_INSTANCE_ID: ${{ steps.resolve_instance.outputs.value }}
+          BOOTSTRAP_ROLE_ARN: ${{ steps.bootstrap_role.outputs.value }}
+        working-directory: public/terraform
+        run: |
+          ALB_CERTIFICATE_ARN="$(terraform output -raw alb_certificate_arn)"
+          export ALB_CERTIFICATE_ARN
+          export RESOLVE_INTERNAL_ALB_SCRIPT_B64="$(base64 -w 0 scripts/resolve-internal-alb.sh)"
+
+          python - <<'PY'
+          import json
+          import os
+
+          commands = [
+              "set -euo pipefail",
+              f"echo '{os.environ['RESOLVE_INTERNAL_ALB_SCRIPT_B64']}' | base64 -d > /tmp/resolve-internal-alb.sh",
+              "chmod +x /tmp/resolve-internal-alb.sh",
+              f"export AWS_REGION='{os.environ['AWS_REGION']}'",
+              f"export EKS_CLUSTER_NAME='{os.environ['EKS_CLUSTER_NAME']}'",
+              f"export BOOTSTRAP_ROLE_ARN='{os.environ['BOOTSTRAP_ROLE_ARN']}'",
+              f"export ALB_CERTIFICATE_ARN='{os.environ['ALB_CERTIFICATE_ARN']}'",
+              "/bin/sh /tmp/resolve-internal-alb.sh",
+          ]
+
+          with open("route53-commands.json", "w", encoding="utf-8") as fp:
+              json.dump({"commands": commands}, fp)
+          PY
+
+          COMMAND_ID=$(aws ssm send-command \
+            --region "${AWS_REGION}" \
+            --instance-ids "${TARGET_INSTANCE_ID}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Resolve internal ALB hostname on ${EKS_CLUSTER_NAME}" \
+            --parameters file://route53-commands.json \
+            --query 'Command.CommandId' \
+            --output text)
+
+          for ((i=1; i<=SSM_WAIT_ATTEMPTS; i++)); do
+            STATUS=$(aws ssm get-command-invocation \
+              --region "${AWS_REGION}" \
+              --command-id "${COMMAND_ID}" \
+              --instance-id "${TARGET_INSTANCE_ID}" \
+              --query 'Status' \
+              --output text)
+
+            echo "Internal ALB resolve status (${i}/${SSM_WAIT_ATTEMPTS}): ${STATUS}"
+
+            if [[ "${STATUS}" == "Success" ]]; then
+              break
+            fi
+
+            if [[ "${STATUS}" == "Failed" || "${STATUS}" == "Cancelled" || "${STATUS}" == "TimedOut" || "${STATUS}" == "Undeliverable" || "${STATUS}" == "Terminated" ]]; then
+              echo "Internal ALB resolve failed with status: ${STATUS}"
+              aws ssm get-command-invocation \
+                --region "${AWS_REGION}" \
+                --command-id "${COMMAND_ID}" \
+                --instance-id "${TARGET_INSTANCE_ID}" \
+                --query 'StandardOutputContent' \
+                --output text || true
+              aws ssm get-command-invocation \
+                --region "${AWS_REGION}" \
+                --command-id "${COMMAND_ID}" \
+                --instance-id "${TARGET_INSTANCE_ID}" \
+                --query 'StandardErrorContent' \
+                --output text || true
+              exit 1
+            fi
+
+            sleep "${SSM_WAIT_INTERVAL_SECONDS}"
+          done
+
+          OUTPUT=$(aws ssm get-command-invocation \
+            --region "${AWS_REGION}" \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${TARGET_INSTANCE_ID}" \
+            --query 'StandardOutputContent' \
+            --output text)
+
+          echo "${OUTPUT}"
+
+          ALB_DNS=$(printf '%s\n' "${OUTPUT}" | sed -n 's/^ALB_DNS=//p' | tail -1)
+
+          if [[ -z "${ALB_DNS}" || "${ALB_DNS}" == "None" ]]; then
+            echo "Failed to parse internal ALB hostname from SSM output."
+            exit 1
+          fi
+
+          echo "alb_dns=${ALB_DNS}" >> "$GITHUB_OUTPUT"
+
+      - name: Update Route53 records for Internal ALB
+        if: ${{ steps.resolve_internal_alb.outputs.alb_dns != '' }}
+        env:
+          ALB_DNS: ${{ steps.resolve_internal_alb.outputs.alb_dns }}
+        working-directory: public/terraform
+        run: |
+          HOSTED_ZONE_ID="$(terraform output -raw public_hosted_zone_id)"
+          PRIVATE_HOSTED_ZONE_ID="$(terraform output -raw private_hosted_zone_id)"
+
+          ALB_HOSTED_ZONE_ID=$(aws elbv2 describe-load-balancers \
+            --region "${AWS_REGION}" \
+            --query "LoadBalancers[?DNSName=='${ALB_DNS}'].CanonicalHostedZoneId" \
+            --output text)
+
+          echo "ALB DNS: ${ALB_DNS}"
+          echo "ALB Hosted Zone ID: ${ALB_HOSTED_ZONE_ID}"
+
+          for DOMAIN in "dashboard.sgs-hasp.click" "api.sgs-hasp.click"; do
+            aws route53 change-resource-record-sets \
+              --hosted-zone-id "${HOSTED_ZONE_ID}" \
+              --change-batch "{\"Changes\":[{\"Action\":\"UPSERT\",\"ResourceRecordSet\":{\"Name\":\"${DOMAIN}\",\"Type\":\"A\",\"AliasTarget\":{\"HostedZoneId\":\"${ALB_HOSTED_ZONE_ID}\",\"DNSName\":\"${ALB_DNS}\",\"EvaluateTargetHealth\":true}}}]}"
+            echo "Public Route53 updated: ${DOMAIN} -> ${ALB_DNS}"
+          done
+
+          if [[ -n "${PRIVATE_HOSTED_ZONE_ID}" && "${PRIVATE_HOSTED_ZONE_ID}" != "None" ]]; then
+            for DOMAIN in "dashboard.sgs-hasp.click" "api.sgs-hasp.click"; do
+              aws route53 change-resource-record-sets \
+                --hosted-zone-id "${PRIVATE_HOSTED_ZONE_ID}" \
+                --change-batch "{\"Changes\":[{\"Action\":\"UPSERT\",\"ResourceRecordSet\":{\"Name\":\"${DOMAIN}\",\"Type\":\"CNAME\",\"TTL\":60,\"ResourceRecords\":[{\"Value\":\"${ALB_DNS}\"}]}}]}"
+              echo "Private Route53 updated: ${DOMAIN} -> ${ALB_DNS}"
+            done
+          fi

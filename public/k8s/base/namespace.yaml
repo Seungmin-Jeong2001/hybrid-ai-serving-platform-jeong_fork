@@ -1,4 +1,21 @@
+# Argo CD가 앱 배포 전에 먼저 sync하는 공통 base 리소스
+# inference/app namespace의 공통 라벨과 선행 설정을 Git 기준으로 관리
+
 apiVersion: v1
 kind: Namespace
 metadata:
   name: inference
+  labels:
+    istio.io/dataplane-mode: ambient
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    istio.io/dataplane-mode: ambient

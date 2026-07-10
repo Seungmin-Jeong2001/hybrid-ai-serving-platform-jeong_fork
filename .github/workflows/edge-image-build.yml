@@ -5,9 +5,9 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 env:
-  DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE || 'kimsewon' }}
   DEFAULT_IMAGE_NAME: edge-simulator
 
 concurrency:
@@ -21,22 +21,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Login to Docker Hub
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push image
         env:
           IMAGE_TAG: ${{ github.sha }}
-          IMAGE_REPO: ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.DEFAULT_IMAGE_NAME }}
         run: |
+          GHCR_OWNER_LOWER=$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_REPO="ghcr.io/${GHCR_OWNER_LOWER}/${{ env.DEFAULT_IMAGE_NAME }}"
           docker build \
             -t "${IMAGE_REPO}:${IMAGE_TAG}" \
             edge
           docker push "${IMAGE_REPO}:${IMAGE_TAG}"
-          docker tag \
-            "${IMAGE_REPO}:${IMAGE_TAG}" \
-            "${IMAGE_REPO}:latest"
-          docker push "${IMAGE_REPO}:latest"

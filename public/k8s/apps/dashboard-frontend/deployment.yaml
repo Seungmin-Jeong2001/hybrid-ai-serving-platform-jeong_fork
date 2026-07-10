@@ -4,7 +4,7 @@ metadata:
   name: dashboard-frontend
   namespace: app
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: dashboard-frontend
@@ -16,6 +16,19 @@ spec:
       priorityClassName: app-high
       nodeSelector:
         workload: general
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: dashboard-frontend
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: dashboard-frontend
       containers:
         - name: dashboard-frontend
           image: 808379768010.dkr.ecr.ap-northeast-2.amazonaws.com/dashboard-frontend:latest

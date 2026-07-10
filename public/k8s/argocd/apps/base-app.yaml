@@ -1,0 +1,24 @@
+# 앱 배포 전에 namespace 같은 공통 base 리소스를 먼저 sync하는 Argo CD 애플리케이션
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-base
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/SGS-Strategy/hybrid-ai-serving-platform.git
+    targetRevision: main
+    path: public/k8s/base
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: inference
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

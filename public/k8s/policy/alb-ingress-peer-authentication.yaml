@@ -1,0 +1,23 @@
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: inference-api-alb-permissive
+  namespace: inference
+spec:
+  selector:
+    matchLabels:
+      app: inference-api
+  mtls:
+    mode: PERMISSIVE
+---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: inference-api-alb-permissive
+  namespace: inference
+spec:
+  selector:
+    matchLabels:
+      app: inference-api
+  mtls:
+    mode: PERMISSIVE

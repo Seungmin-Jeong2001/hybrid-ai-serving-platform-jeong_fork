@@ -1,0 +1,573 @@
+name: Private Cloud Remote Executor
+
+on:
+  workflow_call:
+    inputs:
+      command:
+        description: ha command to run on the private cloud host
+        required: true
+        type: string
+      run_mode:
+        description: apply or reinstall
+        required: false
+        type: string
+        default: apply
+      validate_gpu:
+        description: Run GPU validation after apply
+        required: false
+        type: boolean
+        default: false
+      cleanup_devstack:
+        description: Remove the local DevStack container after destroy
+        required: false
+        type: boolean
+        default: false
+      phases:
+        description: Which apply phase group to run (tools|devstack|proxy|images|terraform|control-plane|build-worker|gpu-worker|k8s|storage|model-build|gitlab|harbor|registry|finalize|provision|platform|all)
+        required: false
+        type: string
+        default: all
+      do_checkout:
+        description: Fetch and checkout the target commit on the host (entry job only)
+        required: false
+        type: boolean
+        default: true
+      do_cleanup:
+        description: Restore the original git ref and remove env files after run (final job only)
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  remote:
+    name: ${{ inputs.phases }} (${{ inputs.command }})
+    runs-on: ${{ fromJSON(vars.PRIVATE_CLOUD_REMOTE_RUNNER_LABELS || '["ubuntu-latest"]') }}
+    timeout-minutes: 360
+    env:
+      REMOTE_HOST: ${{ vars.PRIVATE_CLOUD_TAILSCALE_IP }}
+      REMOTE_USER: ${{ vars.PRIVATE_CLOUD_HOST_USER }}
+      REMOTE_PORT: ${{ vars.PRIVATE_CLOUD_HOST_PORT || '22' }}
+      REMOTE_REPO: ${{ vars.PRIVATE_CLOUD_REMOTE_REPO || '' }}
+      PRIVATE_CLOUD_USE_TAILSCALE: ${{ vars.PRIVATE_CLOUD_USE_TAILSCALE || 'true' }}
+      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+      TAILSCALE_OAUTH_TAGS: ${{ vars.TAILSCALE_OAUTH_TAGS || vars.TAILSCALE_TAGS || 'tag:github-actions' }}
+    steps:
+      - name: Validate remote executor inputs
+        run: |
+          set -euo pipefail
+          case "${{ inputs.command }}" in
+            ci|apply|destroy) ;;
+            *)
+              echo "::error::command must be one of: ci, apply, destroy"
+              exit 1
+              ;;
+          esac
+          case "${{ inputs.run_mode }}" in
+            apply|reinstall) ;;
+            *)
+              echo "::error::run_mode must be one of: apply, reinstall"
+              exit 1
+              ;;
+          esac
+          case "${{ inputs.phases }}" in
+            tools|devstack|proxy|images|terraform|control-plane|build-worker|gpu-worker|k8s|storage|model-build|gitlab|harbor|registry|finalize|provision|platform|all) ;;
+            *)
+              echo "::error::phases must be one of: tools, devstack, proxy, images, terraform, control-plane, build-worker, gpu-worker, k8s, storage, model-build, gitlab, harbor, registry, finalize, provision, platform, all"
+              exit 1
+              ;;
+          esac
+          missing=0
+          for name in REMOTE_HOST REMOTE_USER; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required repository variable: ${name}"
+              missing=1
+            fi
+          done
+          for name in PRIVATE_CLOUD_HOST_SSH_PRIVATE_KEY; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required repository secret: ${name}"
+              missing=1
+            fi
+          done
+          if [[ "${PRIVATE_CLOUD_USE_TAILSCALE}" == "true" ]]; then
+            if [[ -z "${TS_OAUTH_CLIENT_ID:-}" || -z "${TS_OAUTH_SECRET:-}" ]]; then
+              if [[ -z "${TAILSCALE_AUTHKEY:-}" ]]; then
+                echo "::error::Missing Tailscale credentials: set TS_OAUTH_CLIENT_ID/TS_OAUTH_SECRET or TAILSCALE_AUTHKEY"
+                missing=1
+              fi
+            fi
+          fi
+          exit "$missing"
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+          PRIVATE_CLOUD_HOST_SSH_PRIVATE_KEY: ${{ secrets.PRIVATE_CLOUD_HOST_SSH_PRIVATE_KEY }}
+
+      - name: Connect Tailscale with OAuth
+        if: ${{ env.PRIVATE_CLOUD_USE_TAILSCALE == 'true' && env.TS_OAUTH_CLIENT_ID != '' && env.TS_OAUTH_SECRET != '' }}
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ env.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ env.TS_OAUTH_SECRET }}
+          tags: ${{ env.TAILSCALE_OAUTH_TAGS }}
+          ping: ${{ env.REMOTE_HOST }}
+
+      - name: Connect Tailscale with auth key
+        if: ${{ env.PRIVATE_CLOUD_USE_TAILSCALE == 'true' && (env.TS_OAUTH_CLIENT_ID == '' || env.TS_OAUTH_SECRET == '') }}
+        run: |
+          set -euo pipefail
+          curl -fsSL https://tailscale.com/install.sh | sh
+          hostname="gha-${GITHUB_RUN_ID}-${GITHUB_JOB}"
+          hostname="${hostname//[^[:alnum:]-]/-}"
+          timeout 90s sudo tailscale up \
+            --auth-key="$TAILSCALE_AUTHKEY" \
+            --hostname="${hostname:0:63}" \
+            --accept-routes \
+            --reset
+          for _ in {1..30}; do
+            if tailscale ping --timeout=5s "$REMOTE_HOST"; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Tailscale could not reach ${REMOTE_HOST}"
+          exit 1
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Setup SSH
+        run: |
+          set -euo pipefail
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "$PRIVATE_CLOUD_HOST_SSH_PRIVATE_KEY" > ~/.ssh/private-cloud-host
+          chmod 600 ~/.ssh/private-cloud-host
+          ssh-keyscan -p "$REMOTE_PORT" "$REMOTE_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+        env:
+          PRIVATE_CLOUD_HOST_SSH_PRIVATE_KEY: ${{ secrets.PRIVATE_CLOUD_HOST_SSH_PRIVATE_KEY }}
+
+      - name: Write remote environment
+        id: envfile
+        run: |
+          set -euo pipefail
+          env_file="${RUNNER_TEMP}/private-cloud-env"
+          : > "$env_file"
+
+          write_env() {
+            local name="$1"
+            local value="${2-}"
+            printf '%s=%q\n' "$name" "$value" >> "$env_file"
+          }
+
+          write_env GITHUB_ACTIONS "true"
+          write_env GITHUB_RUN_ID "$GITHUB_RUN_ID"
+          write_env GITHUB_RUN_ATTEMPT "$GITHUB_RUN_ATTEMPT"
+          write_env GITHUB_SHA "$GITHUB_SHA"
+          write_env GITHUB_REF "$GITHUB_REF"
+          write_env GITHUB_REF_NAME "$GITHUB_REF_NAME"
+          write_env HA_CI_COMMAND "${{ inputs.command }}"
+          write_env HA_PRIVATE_CLOUD_RUN_MODE "${{ inputs.run_mode }}"
+          write_env HA_PRIVATE_CLOUD_VALIDATE_GPU "${{ inputs.validate_gpu && 'true' || 'false' }}"
+          write_env HA_PRIVATE_CLOUD_CLEANUP_DEVSTACK "${{ inputs.cleanup_devstack && 'true' || 'false' }}"
+          write_env HA_PRIVATE_CLOUD_SYNC_OPENSTACK_USER "true"
+          write_env HA_DEVSTACK_LXD_STORAGE_POOL "$DEVSTACK_LXD_STORAGE_POOL"
+          write_env HA_DEVSTACK_CONTAINER_CACHE_ENABLED "$DEVSTACK_CONTAINER_CACHE_ENABLED"
+          write_env HA_DEVSTACK_CONTAINER_CACHE_RESTORE "$DEVSTACK_CONTAINER_CACHE_RESTORE"
+          write_env HA_DEVSTACK_CONTAINER_CACHE_REFRESH "$DEVSTACK_CONTAINER_CACHE_REFRESH"
+          write_env HA_DEVSTACK_CONTAINER_CACHE_NAME "$DEVSTACK_CONTAINER_CACHE_NAME"
+          write_env TF_IN_AUTOMATION "true"
+          write_env TF_INPUT "false"
+
+          write_env OS_AUTH_URL "$OS_AUTH_URL"
+          write_env OS_USERNAME "$OS_USERNAME"
+          write_env OS_PASSWORD "$OS_PASSWORD"
+          write_env OS_PROJECT_NAME "$OS_PROJECT_NAME"
+          write_env OS_USER_DOMAIN_NAME "$OS_USER_DOMAIN_NAME"
+          write_env OS_PROJECT_DOMAIN_NAME "$OS_PROJECT_DOMAIN_NAME"
+          write_env OS_REGION_NAME "$OS_REGION_NAME"
+          write_env OS_IDENTITY_API_VERSION "3"
+          write_env HA_DEVSTACK_PASSWORD "$OS_PASSWORD"
+
+          write_env CLOUDFLARE_API_TOKEN "$CLOUDFLARE_API_TOKEN"
+          write_env CLOUDFLARE_ZONE_ID "$CLOUDFLARE_ZONE_ID"
+          write_env PRIVATE_CLOUD_BASE_DOMAIN "$PRIVATE_CLOUD_BASE_DOMAIN"
+          write_env PRIVATE_CLOUD_TAILSCALE_IP "$PRIVATE_CLOUD_TAILSCALE_IP"
+          write_env PRIVATE_CLOUD_DNS_TTL "$PRIVATE_CLOUD_DNS_TTL"
+          dns_services="$PRIVATE_CLOUD_DNS_SERVICES"
+          for required_dns_service in harbor minio minio-console; do
+            if [[ ",${dns_services}," != *,"${required_dns_service}",* ]]; then
+              dns_services="${dns_services},${required_dns_service}"
+            fi
+          done
+          write_env PRIVATE_CLOUD_DNS_SERVICES "$dns_services"
+          write_env PRIVATE_CLOUD_DNS_SSH_ALIASES "$PRIVATE_CLOUD_DNS_SSH_ALIASES"
+          write_env PRIVATE_CLOUD_ASSIGN_FLOATING_IPS "$PRIVATE_CLOUD_ASSIGN_FLOATING_IPS"
+          write_env PRIVATE_CLOUD_INTERNAL_DNS_ENABLED "$PRIVATE_CLOUD_INTERNAL_DNS_ENABLED"
+          write_env PRIVATE_CLOUD_INTERNAL_DNS_ZONE "$PRIVATE_CLOUD_INTERNAL_DNS_ZONE"
+          write_env PRIVATE_CLOUD_INTERNAL_DNS_RECORDS "$PRIVATE_CLOUD_INTERNAL_DNS_RECORDS"
+          write_env PRIVATE_CLOUD_PROXY_ENABLED "$PRIVATE_CLOUD_PROXY_ENABLED"
+          write_env PRIVATE_CLOUD_PROXY_TLS_MODE "$PRIVATE_CLOUD_PROXY_TLS_MODE"
+          write_env PRIVATE_CLOUD_SSH_TUNNELS_ENABLED "$PRIVATE_CLOUD_SSH_TUNNELS_ENABLED"
+          write_env PRIVATE_CLOUD_SSH_TUNNEL_LISTEN_ADDRESS "$PRIVATE_CLOUD_SSH_TUNNEL_LISTEN_ADDRESS"
+          write_env PRIVATE_CLOUD_SSH_CONTROL_PORT "$PRIVATE_CLOUD_SSH_CONTROL_PORT"
+          write_env PRIVATE_CLOUD_SSH_BUILD_PORT "$PRIVATE_CLOUD_SSH_BUILD_PORT"
+          write_env PRIVATE_CLOUD_SSH_GPU_PORT "$PRIVATE_CLOUD_SSH_GPU_PORT"
+          write_env PRIVATE_CLOUD_SSH_GITLAB_PORT "$PRIVATE_CLOUD_SSH_GITLAB_PORT"
+          write_env PRIVATE_CLOUD_SSH_HARBOR_PORT "$PRIVATE_CLOUD_SSH_HARBOR_PORT"
+
+          write_env TF_BACKEND_CONFIG "$TF_BACKEND_CONFIG"
+          write_env TF_BACKEND_TYPE "$TF_BACKEND_TYPE"
+          write_env PRIVATE_CLOUD_TFVARS "$PRIVATE_CLOUD_TFVARS"
+          write_env PRIVATE_CLOUD_SSH_PUBLIC_KEY "$PRIVATE_CLOUD_SSH_PUBLIC_KEY"
+          write_env PRIVATE_CLOUD_SSH_PRIVATE_KEY "$PRIVATE_CLOUD_SSH_PRIVATE_KEY"
+          write_env PRIVATE_CLOUD_SSH_USER "$PRIVATE_CLOUD_SSH_USER"
+          write_env PRIVATE_CLOUD_KUBECONFIG_B64 "$PRIVATE_CLOUD_KUBECONFIG_B64"
+          write_env GITLAB_ROOT_PASSWORD "$GITLAB_ROOT_PASSWORD"
+          write_env GITLAB_ADMIN_USERNAME "$GITLAB_ADMIN_USERNAME"
+          write_env GITLAB_LOGS_TMPFS "$GITLAB_LOGS_TMPFS"
+          write_env GITLAB_LOGS_TMPFS_SIZE "$GITLAB_LOGS_TMPFS_SIZE"
+          write_env GITLAB_TMPFS_SIZE "$GITLAB_TMPFS_SIZE"
+          write_env GITLAB_RAILS_TMPFS_ENABLED "$GITLAB_RAILS_TMPFS_ENABLED"
+          write_env GITLAB_RAILS_TMPFS_SIZE "$GITLAB_RAILS_TMPFS_SIZE"
+          write_env GITLAB_DOCKER_BLKIO_WEIGHT "$GITLAB_DOCKER_BLKIO_WEIGHT"
+          write_env GITLAB_RECREATE_FOR_IO_PROFILE "$GITLAB_RECREATE_FOR_IO_PROFILE"
+          write_env GITLAB_DOCKER_LOG_MAX_SIZE "$GITLAB_DOCKER_LOG_MAX_SIZE"
+          write_env GITLAB_DOCKER_LOG_MAX_FILE "$GITLAB_DOCKER_LOG_MAX_FILE"
+          write_env HARBOR_ADMIN_USERNAME "$HARBOR_ADMIN_USERNAME"
+          write_env HARBOR_ADMIN_PASSWORD "$HARBOR_ADMIN_PASSWORD"
+          write_env HARBOR_CA_CERT "$HARBOR_CA_CERT"
+          write_env GITLAB_PIPELINE_TRIGGER_TOKEN "$GITLAB_PIPELINE_TRIGGER_TOKEN"
+          write_env MINIO_ROOT_USER "$MINIO_ROOT_USER"
+          write_env MINIO_ROOT_PASSWORD "$MINIO_ROOT_PASSWORD"
+          write_env MINIO_CONSOLE_USER "$MINIO_CONSOLE_USER"
+          write_env MINIO_CONSOLE_PASSWORD "$MINIO_CONSOLE_PASSWORD"
+          write_env MINIO_DOMAIN "$MINIO_DOMAIN"
+          write_env MINIO_CONSOLE_DOMAIN "$MINIO_CONSOLE_DOMAIN"
+          write_env MINIO_API_NODEPORT "$MINIO_API_NODEPORT"
+          write_env MINIO_CONSOLE_NODEPORT "$MINIO_CONSOLE_NODEPORT"
+          write_env MINIO_API_UPSTREAM_PORT "$MINIO_API_UPSTREAM_PORT"
+          write_env MINIO_CONSOLE_UPSTREAM_PORT "$MINIO_CONSOLE_UPSTREAM_PORT"
+          write_env MINIO_PROXY_ENABLED "$MINIO_PROXY_ENABLED"
+
+          write_env TF_VAR_ssh_public_key "$PRIVATE_CLOUD_SSH_PUBLIC_KEY"
+          write_env TF_VAR_control_plane_image_name "$CONTROL_PLANE_IMAGE_NAME"
+          write_env TF_VAR_control_plane_flavor_name "$CONTROL_PLANE_FLAVOR_NAME"
+          write_env TF_VAR_build_worker_count "$BUILD_WORKER_COUNT"
+          write_env TF_VAR_build_worker_image_name "$BUILD_WORKER_IMAGE_NAME"
+          write_env TF_VAR_build_worker_flavor_name "$BUILD_WORKER_FLAVOR_NAME"
+          write_env TF_VAR_gpu_worker_count "$GPU_WORKER_COUNT"
+          write_env TF_VAR_gpu_worker_image_name "$GPU_WORKER_IMAGE_NAME"
+          write_env TF_VAR_gpu_worker_flavor_name "$GPU_WORKER_FLAVOR_NAME"
+          write_env TF_VAR_gpu_driver_package "$GPU_DRIVER_PACKAGE"
+          write_env TF_VAR_gpu_cuda_toolkit_package "$GPU_CUDA_TOOLKIT_PACKAGE"
+          write_env TF_VAR_gpu_cudnn_package "$GPU_CUDNN_PACKAGE"
+          write_env TF_VAR_gpu_training_pytorch_cuda_index_url "$GPU_TRAINING_PYTORCH_CUDA_INDEX_URL"
+          write_env TF_VAR_gpu_training_python_packages "$GPU_TRAINING_PYTHON_PACKAGES_JSON"
+          write_env TF_VAR_gpu_nvidia_toolkit_base_url "$GPU_NVIDIA_TOOLKIT_BASE_URL"
+          write_env TF_VAR_gpu_cuda_repo_base_url "$GPU_CUDA_REPO_BASE_URL"
+          write_env TF_VAR_gitlab_count "$GITLAB_COUNT"
+          write_env TF_VAR_gitlab_image_name "$GITLAB_IMAGE_NAME"
+          write_env TF_VAR_gitlab_flavor_name "$GITLAB_FLAVOR_NAME"
+          write_env TF_VAR_gitlab_container_image "$GITLAB_IMAGE"
+          write_env TF_VAR_harbor_count "$HARBOR_COUNT"
+          write_env TF_VAR_harbor_image_name "$HARBOR_IMAGE_NAME"
+          write_env TF_VAR_harbor_flavor_name "$HARBOR_FLAVOR_NAME"
+          write_env TF_VAR_compute_instance_create_timeout "$COMPUTE_INSTANCE_CREATE_TIMEOUT"
+          write_env TF_VAR_compute_instance_update_timeout "$COMPUTE_INSTANCE_UPDATE_TIMEOUT"
+          write_env TF_VAR_compute_instance_delete_timeout "$COMPUTE_INSTANCE_DELETE_TIMEOUT"
+          write_env HA_TERRAFORM_APPLY_PARALLELISM "$TERRAFORM_APPLY_PARALLELISM"
+
+          write_env HA_OPENSTACK_GPU_PCI_ALIAS "$OPENSTACK_GPU_PCI_ALIAS"
+          write_env HA_OPENSTACK_GPU_PCI_VENDOR_ID "$OPENSTACK_GPU_PCI_VENDOR_ID"
+          write_env HA_OPENSTACK_GPU_PCI_PRODUCT_ID "$OPENSTACK_GPU_PCI_PRODUCT_ID"
+          write_env HA_OPENSTACK_GPU_PCI_DEVICE_TYPE "$OPENSTACK_GPU_PCI_DEVICE_TYPE"
+          write_env HA_OPENSTACK_GPU_PCI_NUMA_POLICY "$OPENSTACK_GPU_PCI_NUMA_POLICY"
+          write_env HA_OPENSTACK_GPU_BIND_IOMMU_GROUP "$OPENSTACK_GPU_BIND_IOMMU_GROUP"
+          write_env HA_OPENSTACK_GPU_FLAVOR_NAME "$OPENSTACK_GPU_FLAVOR_NAME"
+          write_env HA_OPENSTACK_GPU_FLAVOR_RAM "$OPENSTACK_GPU_FLAVOR_RAM"
+          write_env HA_OPENSTACK_GPU_FLAVOR_VCPUS "$OPENSTACK_GPU_FLAVOR_VCPUS"
+          write_env HA_OPENSTACK_GPU_FLAVOR_DISK "$OPENSTACK_GPU_FLAVOR_DISK"
+          write_env HA_OPENSTACK_IMAGE_CACHE_ENABLED "$OPENSTACK_IMAGE_CACHE_ENABLED"
+          write_env HA_OPENSTACK_IMAGE_CACHE_PREFIX "$OPENSTACK_IMAGE_CACHE_PREFIX"
+          write_env HA_OPENSTACK_IMAGE_CACHE_DRIVER_PACKAGE "$OPENSTACK_IMAGE_CACHE_DRIVER_PACKAGE"
+
+          # ECR-over-VPN 자동 배선: public tf output에서 resolver inbound IP 추출 → finalize의 wire_ecr_vpn가 CoreDNS 포워딩에 사용.
+          ecr_vpn_resolver_ips=""
+          if [ -n "${PUBLIC_TF_OUTPUT_JSON:-}" ]; then
+            ecr_vpn_resolver_ips="$(printf '%s' "$PUBLIC_TF_OUTPUT_JSON" \
+              | python3 -c 'import sys,json;d=json.load(sys.stdin);print(" ".join(d.get("resolver_inbound_ips",{}).get("value",[])))' 2>/dev/null || true)"
+          fi
+          write_env HA_ECR_VPN_RESOLVER_IPS "$ecr_vpn_resolver_ips"
+          write_env HA_ECR_VPN_VPC_CIDR "${HA_ECR_VPN_VPC_CIDR:-}"
+          write_env HA_ECR_VPN_BASTION_IP "${HA_ECR_VPN_BASTION_IP:-}"
+
+
+          write_env ECR_ENDPOINT "$ECR_ENDPOINT"
+          write_env GITLAB_ECR_PROMOTION_ROLE_ARN "$GITLAB_ECR_PROMOTION_ROLE_ARN"
+          write_env HARBOR_USER "$HARBOR_USER_GITLAB"
+          write_env HARBOR_PASSWORD "$HARBOR_PASSWORD_GITLAB"
+
+
+          chmod 600 "$env_file"
+          echo "path=$env_file" >> "$GITHUB_OUTPUT"
+        env:
+          PUBLIC_TF_OUTPUT_JSON: ${{ secrets.PUBLIC_TF_OUTPUT_JSON }}
+          HA_ECR_VPN_VPC_CIDR: ${{ vars.HA_ECR_VPN_VPC_CIDR || '' }}
+          HA_ECR_VPN_BASTION_IP: ${{ vars.HA_ECR_VPN_BASTION_IP || '' }}
+          OS_AUTH_URL: ${{ vars.OPENSTACK_AUTH_URL }}
+          OS_USERNAME: ${{ vars.OPENSTACK_USERNAME }}
+          OS_PASSWORD: ${{ secrets.OPENSTACK_PASSWORD }}
+          OS_PROJECT_NAME: ${{ vars.OPENSTACK_PROJECT_NAME }}
+          OS_USER_DOMAIN_NAME: ${{ vars.OPENSTACK_USER_DOMAIN_NAME }}
+          OS_PROJECT_DOMAIN_NAME: ${{ vars.OPENSTACK_PROJECT_DOMAIN_NAME }}
+          OS_REGION_NAME: ${{ vars.OPENSTACK_REGION }}
+          DEVSTACK_LXD_STORAGE_POOL: ${{ vars.DEVSTACK_LXD_STORAGE_POOL || '' }}
+          DEVSTACK_CONTAINER_CACHE_ENABLED: ${{ vars.DEVSTACK_CONTAINER_CACHE_ENABLED || 'true' }}
+          DEVSTACK_CONTAINER_CACHE_RESTORE: ${{ vars.DEVSTACK_CONTAINER_CACHE_RESTORE || 'true' }}
+          DEVSTACK_CONTAINER_CACHE_REFRESH: ${{ vars.DEVSTACK_CONTAINER_CACHE_REFRESH || 'true' }}
+          DEVSTACK_CONTAINER_CACHE_NAME: ${{ vars.DEVSTACK_CONTAINER_CACHE_NAME || 'ha-openstack-devstack-cache' }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
+          PRIVATE_CLOUD_BASE_DOMAIN: ${{ vars.PRIVATE_CLOUD_BASE_DOMAIN }}
+          PRIVATE_CLOUD_TAILSCALE_IP: ${{ vars.PRIVATE_CLOUD_TAILSCALE_IP }}
+          PRIVATE_CLOUD_DNS_TTL: ${{ vars.PRIVATE_CLOUD_DNS_TTL || '120' }}
+          PRIVATE_CLOUD_DNS_SERVICES: ${{ vars.PRIVATE_CLOUD_DNS_SERVICES || 'openstack,k8s,grafana,argocd,gitlab,harbor,minio,minio-console' }}
+          PRIVATE_CLOUD_DNS_SSH_ALIASES: ${{ vars.PRIVATE_CLOUD_DNS_SSH_ALIASES || 'control-ssh,build-ssh,gpu-ssh,gitlab-ssh,harbor-ssh' }}
+          PRIVATE_CLOUD_ASSIGN_FLOATING_IPS: ${{ vars.PRIVATE_CLOUD_ASSIGN_FLOATING_IPS || 'true' }}
+          PRIVATE_CLOUD_INTERNAL_DNS_ENABLED: ${{ vars.PRIVATE_CLOUD_INTERNAL_DNS_ENABLED || 'false' }}
+          PRIVATE_CLOUD_INTERNAL_DNS_ZONE: ${{ vars.PRIVATE_CLOUD_INTERNAL_DNS_ZONE || '' }}
+          PRIVATE_CLOUD_INTERNAL_DNS_RECORDS: ${{ vars.PRIVATE_CLOUD_INTERNAL_DNS_RECORDS || '' }}
+          PRIVATE_CLOUD_PROXY_ENABLED: ${{ vars.PRIVATE_CLOUD_PROXY_ENABLED || 'true' }}
+          PRIVATE_CLOUD_PROXY_TLS_MODE: ${{ vars.PRIVATE_CLOUD_PROXY_TLS_MODE || 'auto' }}
+          PRIVATE_CLOUD_SSH_TUNNELS_ENABLED: ${{ vars.PRIVATE_CLOUD_SSH_TUNNELS_ENABLED || 'true' }}
+          PRIVATE_CLOUD_SSH_TUNNEL_LISTEN_ADDRESS: ${{ vars.PRIVATE_CLOUD_SSH_TUNNEL_LISTEN_ADDRESS || 'auto' }}
+          PRIVATE_CLOUD_SSH_CONTROL_PORT: ${{ vars.PRIVATE_CLOUD_SSH_CONTROL_PORT || '2201' }}
+          PRIVATE_CLOUD_SSH_BUILD_PORT: ${{ vars.PRIVATE_CLOUD_SSH_BUILD_PORT || '2202' }}
+          PRIVATE_CLOUD_SSH_GPU_PORT: ${{ vars.PRIVATE_CLOUD_SSH_GPU_PORT || '2203' }}
+          PRIVATE_CLOUD_SSH_GITLAB_PORT: ${{ vars.PRIVATE_CLOUD_SSH_GITLAB_PORT || '2204' }}
+          PRIVATE_CLOUD_SSH_HARBOR_PORT: ${{ vars.PRIVATE_CLOUD_SSH_HARBOR_PORT || '2205' }}
+          TF_BACKEND_CONFIG: ${{ secrets.TF_BACKEND_CONFIG }}
+          TF_BACKEND_TYPE: ${{ vars.TF_BACKEND_TYPE || 'local' }}
+          PRIVATE_CLOUD_TFVARS: ${{ secrets.PRIVATE_CLOUD_TFVARS }}
+          PRIVATE_CLOUD_SSH_PUBLIC_KEY: ${{ secrets.PRIVATE_CLOUD_SSH_PUBLIC_KEY }}
+          PRIVATE_CLOUD_SSH_PRIVATE_KEY: ${{ secrets.PRIVATE_CLOUD_SSH_PRIVATE_KEY }}
+          PRIVATE_CLOUD_SSH_USER: ${{ vars.PRIVATE_CLOUD_SSH_USER || 'ubuntu' }}
+          PRIVATE_CLOUD_KUBECONFIG_B64: ${{ secrets.PRIVATE_CLOUD_KUBECONFIG_B64 }}
+          GITLAB_ROOT_PASSWORD: ${{ secrets.GITLAB_ROOT_PASSWORD }}
+          GITLAB_ADMIN_USERNAME: ${{ vars.GITLAB_ADMIN_USERNAME || 'root' }}
+          GITLAB_LOGS_TMPFS: ${{ vars.GITLAB_LOGS_TMPFS || 'true' }}
+          GITLAB_LOGS_TMPFS_SIZE: ${{ vars.GITLAB_LOGS_TMPFS_SIZE || '512m' }}
+          GITLAB_TMPFS_SIZE: ${{ vars.GITLAB_TMPFS_SIZE || '1g' }}
+          GITLAB_RAILS_TMPFS_ENABLED: ${{ vars.GITLAB_RAILS_TMPFS_ENABLED || 'false' }}
+          GITLAB_RAILS_TMPFS_SIZE: ${{ vars.GITLAB_RAILS_TMPFS_SIZE || '512m' }}
+          GITLAB_DOCKER_BLKIO_WEIGHT: ${{ vars.GITLAB_DOCKER_BLKIO_WEIGHT || '300' }}
+          GITLAB_RECREATE_FOR_IO_PROFILE: ${{ vars.GITLAB_RECREATE_FOR_IO_PROFILE || 'true' }}
+          GITLAB_DOCKER_LOG_MAX_SIZE: ${{ vars.GITLAB_DOCKER_LOG_MAX_SIZE || '10m' }}
+          GITLAB_DOCKER_LOG_MAX_FILE: ${{ vars.GITLAB_DOCKER_LOG_MAX_FILE || '3' }}
+          HARBOR_ADMIN_USERNAME: ${{ vars.HARBOR_ADMIN_USERNAME || 'admin' }}
+          HARBOR_ADMIN_PASSWORD: ${{ secrets.HARBOR_ADMIN_PASSWORD }}
+          HARBOR_CA_CERT: ${{ secrets.HARBOR_CA_CERT }}
+          GITLAB_PIPELINE_TRIGGER_TOKEN: ${{ secrets.GITLAB_PIPELINE_TRIGGER_TOKEN }}
+          MINIO_ROOT_USER: ${{ vars.MINIO_ROOT_USER || '3stacks' }}
+          MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
+          MINIO_CONSOLE_USER: ${{ vars.MINIO_CONSOLE_USER || 'model-admin' }}
+          MINIO_CONSOLE_PASSWORD: ${{ secrets.MINIO_CONSOLE_PASSWORD }}
+          MINIO_DOMAIN: ${{ vars.MINIO_DOMAIN || '' }}
+          MINIO_CONSOLE_DOMAIN: ${{ vars.MINIO_CONSOLE_DOMAIN || '' }}
+          MINIO_API_NODEPORT: ${{ vars.MINIO_API_NODEPORT || '30900' }}
+          MINIO_CONSOLE_NODEPORT: ${{ vars.MINIO_CONSOLE_NODEPORT || '30990' }}
+          MINIO_API_UPSTREAM_PORT: ${{ vars.MINIO_API_UPSTREAM_PORT || '19000' }}
+          MINIO_CONSOLE_UPSTREAM_PORT: ${{ vars.MINIO_CONSOLE_UPSTREAM_PORT || '19090' }}
+          MINIO_PROXY_ENABLED: ${{ vars.MINIO_PROXY_ENABLED || 'true' }}
+          CONTROL_PLANE_IMAGE_NAME: ${{ vars.CONTROL_PLANE_IMAGE_NAME || 'ubuntu-22.04' }}
+          CONTROL_PLANE_FLAVOR_NAME: ${{ vars.CONTROL_PLANE_FLAVOR_NAME || 'ha.m1.control' }}
+          BUILD_WORKER_COUNT: ${{ vars.BUILD_WORKER_COUNT || '1' }}
+          BUILD_WORKER_IMAGE_NAME: ${{ vars.BUILD_WORKER_IMAGE_NAME || 'ubuntu-22.04' }}
+          BUILD_WORKER_FLAVOR_NAME: ${{ vars.BUILD_WORKER_FLAVOR_NAME || 'ha.m1.build' }}
+          GPU_WORKER_COUNT: ${{ vars.GPU_WORKER_COUNT || '1' }}
+          GPU_WORKER_IMAGE_NAME: ${{ vars.GPU_WORKER_IMAGE_NAME || 'ubuntu-22.04' }}
+          GPU_WORKER_FLAVOR_NAME: ${{ vars.GPU_WORKER_FLAVOR_NAME || 'g1.large' }}
+          GPU_DRIVER_PACKAGE: ${{ vars.GPU_DRIVER_PACKAGE || vars.OPENSTACK_IMAGE_CACHE_DRIVER_PACKAGE || 'nvidia-driver-595-open' }}
+          GPU_CUDA_TOOLKIT_PACKAGE: ${{ vars.GPU_CUDA_TOOLKIT_PACKAGE || 'cuda-toolkit-12-8' }}
+          GPU_CUDNN_PACKAGE: ${{ vars.GPU_CUDNN_PACKAGE || 'cudnn9-cuda-12' }}
+          GPU_TRAINING_PYTORCH_CUDA_INDEX_URL: ${{ vars.GPU_TRAINING_PYTORCH_CUDA_INDEX_URL || 'https://download.pytorch.org/whl/cu128' }}
+          GPU_TRAINING_PYTHON_PACKAGES_JSON: ${{ vars.GPU_TRAINING_PYTHON_PACKAGES_JSON || '["torch==2.7.0+cu128","torchvision==0.22.0+cu128","torchaudio==2.7.0+cu128","numpy==1.26.4","pandas==2.2.2","scipy==1.11.4","scikit-learn==1.4.2","matplotlib==3.8.4","seaborn==0.13.2","notebook==7.2.2","ipykernel==6.29.5","minio==7.2.8"]' }}
+          # Air-gap: set these vars to the Bastion mirror to keep GPU toolkit fetch off the public internet. Empty = upstream origin.
+          GPU_NVIDIA_TOOLKIT_BASE_URL: ${{ vars.GPU_NVIDIA_TOOLKIT_BASE_URL }}
+          GPU_CUDA_REPO_BASE_URL: ${{ vars.GPU_CUDA_REPO_BASE_URL }}
+          GITLAB_COUNT: ${{ vars.GITLAB_COUNT || '1' }}
+          GITLAB_IMAGE_NAME: ${{ vars.GITLAB_IMAGE_NAME || 'ubuntu-22.04' }}
+          GITLAB_FLAVOR_NAME: ${{ vars.GITLAB_FLAVOR_NAME || 'ha.m1.gitlab' }}
+          GITLAB_IMAGE: ${{ vars.GITLAB_IMAGE || 'gitlab/gitlab-ce:18.11.4-ce.0' }}
+          HARBOR_COUNT: ${{ vars.HARBOR_COUNT || '1' }}
+          HARBOR_IMAGE_NAME: ${{ vars.HARBOR_IMAGE_NAME || 'ubuntu-22.04' }}
+          HARBOR_FLAVOR_NAME: ${{ vars.HARBOR_FLAVOR_NAME || 'ha.m1.harbor' }}
+          COMPUTE_INSTANCE_CREATE_TIMEOUT: ${{ vars.COMPUTE_INSTANCE_CREATE_TIMEOUT || '120m' }}
+          COMPUTE_INSTANCE_UPDATE_TIMEOUT: ${{ vars.COMPUTE_INSTANCE_UPDATE_TIMEOUT || '30m' }}
+          COMPUTE_INSTANCE_DELETE_TIMEOUT: ${{ vars.COMPUTE_INSTANCE_DELETE_TIMEOUT || '60m' }}
+          TERRAFORM_APPLY_PARALLELISM: ${{ vars.TERRAFORM_APPLY_PARALLELISM || '2' }}
+          OPENSTACK_GPU_PCI_ALIAS: ${{ vars.OPENSTACK_GPU_PCI_ALIAS || 'nvidia-gpu' }}
+          OPENSTACK_GPU_PCI_VENDOR_ID: ${{ vars.OPENSTACK_GPU_PCI_VENDOR_ID || '10de' }}
+          OPENSTACK_GPU_PCI_PRODUCT_ID: ${{ vars.OPENSTACK_GPU_PCI_PRODUCT_ID || 'auto' }}
+          OPENSTACK_GPU_PCI_DEVICE_TYPE: ${{ vars.OPENSTACK_GPU_PCI_DEVICE_TYPE || 'type-PF' }}
+          OPENSTACK_GPU_PCI_NUMA_POLICY: ${{ vars.OPENSTACK_GPU_PCI_NUMA_POLICY || 'preferred' }}
+          OPENSTACK_GPU_BIND_IOMMU_GROUP: ${{ vars.OPENSTACK_GPU_BIND_IOMMU_GROUP || 'true' }}
+          OPENSTACK_GPU_FLAVOR_NAME: ${{ vars.OPENSTACK_GPU_FLAVOR_NAME || 'g1.large' }}
+          OPENSTACK_GPU_FLAVOR_RAM: ${{ vars.OPENSTACK_GPU_FLAVOR_RAM || '8192' }}
+          OPENSTACK_GPU_FLAVOR_VCPUS: ${{ vars.OPENSTACK_GPU_FLAVOR_VCPUS || '4' }}
+          OPENSTACK_GPU_FLAVOR_DISK: ${{ vars.OPENSTACK_GPU_FLAVOR_DISK || '80' }}
+          OPENSTACK_IMAGE_CACHE_ENABLED: ${{ vars.OPENSTACK_IMAGE_CACHE_ENABLED || 'true' }}
+          OPENSTACK_IMAGE_CACHE_PREFIX: ${{ vars.OPENSTACK_IMAGE_CACHE_PREFIX || 'hybrid-ai-cache' }}
+          OPENSTACK_IMAGE_CACHE_DRIVER_PACKAGE: ${{ vars.GPU_DRIVER_PACKAGE || vars.OPENSTACK_IMAGE_CACHE_DRIVER_PACKAGE || 'nvidia-driver-595-open' }}
+          ECR_ENDPOINT: ${{ secrets.ECR_ENDPOINT }}
+          GITLAB_ECR_PROMOTION_ROLE_ARN: ${{ vars.GITLAB_ECR_PROMOTION_ROLE_ARN || vars.AWS_ROLE_ARN_GITLAB || '' }}
+          HARBOR_USER: ${{ secrets.HARBOR_USER_GITLAB }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD_GITLAB }}
+
+      - name: Run remote ha command
+        run: |
+          set -euo pipefail
+          remote_repo="$REMOTE_REPO"
+          if [[ -z "$remote_repo" ]]; then
+            remote_repo="/home/${REMOTE_USER}/project/hybrid-ai-serving-platform"
+          fi
+          run_id="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          remote_env="${remote_repo}/.ha/ci/github-actions-${run_id}-${{ inputs.phases }}.env"
+
+          ssh_base=(
+            ssh
+            -i "$HOME/.ssh/private-cloud-host"
+            -p "$REMOTE_PORT"
+            -o BatchMode=yes
+            -o ConnectTimeout=30
+            -o ServerAliveInterval=30
+            -o ServerAliveCountMax=20
+            -o StrictHostKeyChecking=accept-new
+            "${REMOTE_USER}@${REMOTE_HOST}"
+          )
+          scp_base=(
+            scp
+            -i "$HOME/.ssh/private-cloud-host"
+            -P "$REMOTE_PORT"
+            -o BatchMode=yes
+            -o ConnectTimeout=30
+            -o StrictHostKeyChecking=accept-new
+          )
+
+          "${ssh_base[@]}" "mkdir -p '${remote_repo}/.ha/ci'"
+          "${scp_base[@]}" "${{ steps.envfile.outputs.path }}" "${REMOTE_USER}@${REMOTE_HOST}:${remote_env}"
+
+          "${ssh_base[@]}" bash -s -- \
+            "$remote_repo" \
+            "$remote_env" \
+            "$GITHUB_SHA" \
+            "$GITHUB_REF" \
+            "${{ inputs.command }}" \
+            "${{ inputs.run_mode }}" \
+            "${{ inputs.validate_gpu && 'true' || 'false' }}" \
+            "${{ inputs.cleanup_devstack && 'true' || 'false' }}" \
+            "${{ inputs.phases }}" \
+            "${{ inputs.do_checkout && 'true' || 'false' }}" \
+            "${{ inputs.do_cleanup && 'true' || 'false' }}" \
+            "$run_id" <<'REMOTE'
+          set -euo pipefail
+
+          repo="$1"
+          env_file="$2"
+          sha="$3"
+          ref="$4"
+          command="$5"
+          run_mode="$6"
+          validate_gpu="$7"
+          cleanup_devstack="$8"
+          phases="$9"
+          do_checkout="${10}"
+          do_cleanup="${11}"
+          run_id="${12}"
+
+          cd "$repo"
+          ref_file="${repo}/.ha/ci/${run_id}.original-ref"
+
+          cleanup() {
+            rm -f "$env_file"
+            if [[ "$do_cleanup" == "true" ]]; then
+              local target=""
+              [[ -f "$ref_file" ]] && target="$(cat "$ref_file" 2>/dev/null || true)"
+              if [[ -n "$target" ]]; then
+                git checkout -q "$target" >/dev/null 2>&1 || true
+              fi
+              rm -f "$ref_file"
+              rm -f "${repo}/.ha/ci/github-actions-${run_id}-"*.env 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
+          if [[ "$do_checkout" == "true" ]]; then
+            # Entry job: pin the host working tree to the target commit and record
+            # the original ref so the final job can restore it.
+            if ! git diff --quiet || ! git diff --cached --quiet; then
+              git status --short
+              echo "tracked working tree is dirty on the private cloud host; commit or stash before running Actions" >&2
+              exit 1
+            fi
+            mkdir -p "${repo}/.ha/ci"
+            if [[ ! -f "$ref_file" ]]; then
+              original_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+              if [[ -n "$original_branch" ]]; then
+                printf '%s\n' "$original_branch" > "$ref_file"
+              else
+                git rev-parse HEAD > "$ref_file"
+              fi
+            fi
+            git fetch --prune origin "$ref" || git fetch --prune origin "$sha"
+            git checkout -q --detach "$sha"
+          elif [[ "$do_cleanup" == "true" ]]; then
+            # Final job: its purpose is cleanup (runs even if earlier jobs failed),
+            # so do not move or verify the commit — just proceed and clean up on exit.
+            :
+          else
+            # Dependent job: the entry job already pinned the commit. Verify, do not move.
+            current="$(git rev-parse HEAD 2>/dev/null || true)"
+            if [[ "$current" != "$sha" ]]; then
+              echo "host is not on expected commit $sha (HEAD=$current); the provision job must run first" >&2
+              exit 1
+            fi
+          fi
+
+          set -a
+          # shellcheck source=/dev/null
+          . "$env_file"
+          set +a
+
+          export RUN_ID="${run_id}-${phases}-${command}"
+
+          case "$command" in
+            ci)
+              ./ha ci
+              ;;
+            apply)
+              args=(apply --run-mode "$run_mode" --phases "$phases" --require-backend-config)
+              if [[ "$validate_gpu" == "true" ]]; then
+                args+=(--validate-gpu)
+              fi
+              ./ha "${args[@]}"
+              ;;
+            destroy)
+              args=(destroy --require-backend-config)
+              if [[ "$cleanup_devstack" == "true" ]]; then
+                args+=(--cleanup-devstack)
+              fi
+              ./ha "${args[@]}"
+              ;;
+            *)
+              echo "unknown command: $command" >&2
+              exit 64
+              ;;
+          esac
+          REMOTE
+
+      - name: Disconnect Tailscale auth key session
+        if: ${{ always() && env.PRIVATE_CLOUD_USE_TAILSCALE == 'true' && (env.TS_OAUTH_CLIENT_ID == '' || env.TS_OAUTH_SECRET == '') }}
+        run: timeout 20s sudo tailscale logout || true

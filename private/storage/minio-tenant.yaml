@@ -25,12 +25,24 @@ spec:
             - ReadWriteOnce
           resources:
             requests:
-              storage: 100Gi
+              storage: 10Gi
   configuration:
     name: minio-configuration
   requestAutoCert: false
   features:
     bucketDNS: false
+  buckets:
+    - name: models
+      objectLock: false
+      region: us-east-1
+    - name: datasets
+      objectLock: false
+      region: us-east-1
+    - name: artifacts
+      objectLock: false
+      region: us-east-1
+  users:
+    - name: model-admin
 ---
 apiVersion: v1
 kind: Service
@@ -38,11 +50,11 @@ metadata:
   name: minio-console
   namespace: minio-tenant
 spec:
-  type: LoadBalancer
-  publishNotReadyAddresses: true
+  type: NodePort
   ports:
     - port: 9090
       targetPort: 9090
+      nodePort: 30990
       protocol: TCP
       name: console
   selector:
@@ -54,11 +66,11 @@ metadata:
   name: minio-api
   namespace: minio-tenant
 spec:
-  type: LoadBalancer
-  publishNotReadyAddresses: true
+  type: NodePort
   ports:
     - port: 9000
       targetPort: 9000
+      nodePort: 30900
       protocol: TCP
       name: s3
   selector:

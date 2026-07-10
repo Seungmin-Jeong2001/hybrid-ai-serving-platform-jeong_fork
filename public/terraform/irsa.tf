@@ -77,3 +77,84 @@ resource "aws_iam_role_policy_attachment" "inference_worker_dynamodb" {
   role       = aws_iam_role.inference_worker.name
   policy_arn = aws_iam_policy.inference_worker_dynamodb.arn
 }
+
+# 장비 상태 테이블 권한
+data "aws_iam_policy_document" "inference_worker_alert_state" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:UpdateItem",
+    ]
+    resources = [aws_dynamodb_table.equipment_alert_state.arn]
+  }
+}
+
+resource "aws_iam_policy" "inference_worker_alert_state" {
+  name   = "${var.project_name}-inference-worker-alert-state"
+  policy = data.aws_iam_policy_document.inference_worker_alert_state.json
+
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy_attachment" "inference_worker_alert_state" {
+  role       = aws_iam_role.inference_worker.name
+  policy_arn = aws_iam_policy.inference_worker_alert_state.arn
+}
+
+# === IRSA: dashboard-backend 파드가 DynamoDB 추론 결과 조회하기 위한 IAM 구성 ===
+data "aws_iam_policy_document" "dashboard_backend_assume" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.eks.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${local.eks_oidc_provider}:sub"
+      values   = ["system:serviceaccount:app:dashboard-backend"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${local.eks_oidc_provider}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "dashboard_backend" {
+  name               = "${var.project_name}-dashboard-backend"
+  assume_role_policy = data.aws_iam_policy_document.dashboard_backend_assume.json
+
+  tags = local.common_tags
+}
+
+data "aws_iam_policy_document" "dashboard_backend_dynamodb" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:Scan",
+      "dynamodb:Query",
+    ]
+    resources = [aws_dynamodb_table.inference_results.arn]
+  }
+}
+
+resource "aws_iam_policy" "dashboard_backend_dynamodb" {
+  name   = "${var.project_name}-dashboard-backend-dynamodb"
+  policy = data.aws_iam_policy_document.dashboard_backend_dynamodb.json
+
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy_attachment" "dashboard_backend_dynamodb" {
+  role       = aws_iam_role.dashboard_backend.name
+  policy_arn = aws_iam_policy.dashboard_backend_dynamodb.arn
+}

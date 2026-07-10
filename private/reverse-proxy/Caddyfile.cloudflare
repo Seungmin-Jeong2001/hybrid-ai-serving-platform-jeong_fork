@@ -35,3 +35,51 @@
 	encode zstd gzip
 	reverse_proxy {$HA_ARGOCD_UPSTREAM:127.0.0.1:8080}
 }
+
+{$HA_GIT_DOMAIN:gitlab.intp.me} {
+	import cloudflare_tls
+	encode zstd gzip
+	reverse_proxy {$HA_GITLAB_UPSTREAM:127.0.0.1:18083} {
+		header_up Host {host}
+		header_up X-Forwarded-Host {host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Ssl on
+		header_up X-Forwarded-Port 443
+	}
+}
+
+{$HA_HARBOR_DOMAIN:harbor.intp.me} {
+	import cloudflare_tls
+	encode zstd gzip
+	reverse_proxy {$HA_HARBOR_UPSTREAM:127.0.0.1:18084} {
+		header_up Host {host}
+		header_up X-Forwarded-Host {host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Ssl on
+		header_up X-Forwarded-Port 443
+	}
+}
+
+{$HA_MINIO_DOMAIN:minio.intp.me} {
+	import cloudflare_tls
+	encode zstd gzip
+	reverse_proxy {$HA_MINIO_API_UPSTREAM:127.0.0.1:19000} {
+		header_up Host {host}
+		header_up X-Forwarded-Host {host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Ssl on
+		header_up X-Forwarded-Port 443
+	}
+}
+
+{$HA_MINIO_CONSOLE_DOMAIN:minio-console.intp.me} {
+	import cloudflare_tls
+	encode zstd gzip
+	reverse_proxy {$HA_MINIO_CONSOLE_UPSTREAM:127.0.0.1:19090} {
+		header_up Host {host}
+		header_up X-Forwarded-Host {host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Ssl on
+		header_up X-Forwarded-Port 443
+	}
+}

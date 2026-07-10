@@ -1,0 +1,106 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: model-build-workflow
+  namespace: model-build
+  labels:
+    app.kubernetes.io/name: model-build-workflow
+    app.kubernetes.io/part-of: hybrid-ai-serving-platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: model-build-workflow
+  namespace: model-build
+  labels:
+    app.kubernetes.io/name: model-build-workflow
+    app.kubernetes.io/part-of: hybrid-ai-serving-platform
+rules:
+  - apiGroups: [""]
+    resources:
+      - configmaps
+      - pods
+      - pods/log
+      - persistentvolumeclaims
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+
+  - apiGroups: ["argoproj.io"]
+    resources:
+      - workflowtaskresults
+    verbs:
+      - create
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: model-build-workflow
+  namespace: model-build
+  labels:
+    app.kubernetes.io/name: model-build-workflow
+    app.kubernetes.io/part-of: hybrid-ai-serving-platform
+subjects:
+  - kind: ServiceAccount
+    name: model-build-workflow
+    namespace: model-build
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: model-build-workflow
+
+---
+# Argo Events Sensor가 model-build namespace에 Workflow를 생성하기 위한 권한
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: argo-events-workflow-submit
+  namespace: model-build
+  labels:
+    app.kubernetes.io/name: argo-events-workflow-submit
+    app.kubernetes.io/part-of: hybrid-ai-serving-platform
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources:
+      - workflows
+      - workflowtemplates
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - patch
+      - update
+
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: argo-events-workflow-submit
+  namespace: model-build
+  labels:
+    app.kubernetes.io/name: argo-events-workflow-submit
+    app.kubernetes.io/part-of: hybrid-ai-serving-platform
+subjects:
+  - kind: ServiceAccount
+    name: argo-events-sa
+    namespace: argo-events
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: argo-events-workflow-submit

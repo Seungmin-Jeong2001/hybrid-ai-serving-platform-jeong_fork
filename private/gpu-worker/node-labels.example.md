@@ -1,8 +1,11 @@
-# GPU Node Labels
+# GPU Node Label Plan
 
-Apply labels and taints after GPU nodes join the cluster.
+GPU node에는 accelerator와 node role을 식별할 수 있는 label/taint 기준을 둡니다.
 
-```sh
-kubectl label node <gpu-node-name> accelerator=nvidia node-role.kubernetes.io/gpu-worker=true
-kubectl taint node <gpu-node-name> nvidia.com/gpu=true:NoSchedule
+## 기준
+
+```text
+accelerator: nvidia
+node role: gpu-worker
+taint: GPU workload 전용 스케줄링
 ```

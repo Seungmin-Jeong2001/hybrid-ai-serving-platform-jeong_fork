@@ -8,6 +8,7 @@ This directory contains Kubernetes manifests for application workloads deployed 
 - `apps/inference-api`: API server manifests
 - `apps/inference-worker`: worker manifests
 - `apps/kserve-predictor`: predictor manifests
+- `serving/predictive-model`: production predictor manifests
 - `apps/inference-api/ingress.yaml`: creates an internal ALB for the inference API through AWS Load Balancer Controller
 
 ## Apply example

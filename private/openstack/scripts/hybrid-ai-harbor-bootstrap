@@ -1,0 +1,768 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+state_dir=/var/lib/hybrid-ai/harbor-bootstrap
+status_file="${state_dir}/status.env"
+admin_password_file="${state_dir}/admin-password"
+database_password_file="${state_dir}/database-password"
+robot_credentials_file="${state_dir}/kaniko-robot.json"
+web_ready=false
+projects_ready=false
+robot_ready=false
+
+save_status() {
+  local phase="$1"
+  local message="$2"
+  local compose_status=""
+
+  mkdir -p "$state_dir"
+  if [[ -x /usr/local/sbin/hybrid-ai-harbor-compose && -f /opt/harbor/current/docker-compose.yml ]]; then
+    compose_status="$(/usr/local/sbin/hybrid-ai-harbor-compose -f /opt/harbor/current/docker-compose.yml ps --format json 2>/dev/null || true)"
+  fi
+
+  {
+    printf 'updated_at=%q\n' "$(date -Iseconds)"
+    printf 'phase=%q\n' "$phase"
+    printf 'message=%q\n' "$message"
+    printf 'harbor_version=%q\n' "${HARBOR_VERSION:-}"
+    printf 'harbor_domain=%q\n' "${HARBOR_DOMAIN:-}"
+    printf 'harbor_external_url=%q\n' "${HARBOR_EXTERNAL_URL:-}"
+    printf 'web_ready=%q\n' "$web_ready"
+    printf 'projects_ready=%q\n' "$projects_ready"
+    printf 'robot_ready=%q\n' "$robot_ready"
+    printf 'compose_status=%q\n' "$compose_status"
+  } > "${status_file}.tmp"
+  chmod 0644 "${status_file}.tmp"
+  mv "${status_file}.tmp" "$status_file"
+}
+
+fail_status() {
+  local status=$?
+  if [[ "$status" -ne 0 ]]; then
+    save_status failed "exit_${status}"
+  fi
+  exit "$status"
+}
+trap fail_status EXIT
+
+stop_periodic_apt() {
+  # Ubuntu's apt-daily / apt-daily-upgrade / unattended-upgrades hold the dpkg
+  # lock right after boot; stop them so this bootstrap's apt calls are not blocked.
+  systemctl disable --now apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
+  systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades.service >/dev/null 2>&1 || true
+}
+
+wait_for_apt_locks() {
+  stop_periodic_apt
+  local deadline=$((SECONDS + 900))
+  local locks=(
+    /var/lib/dpkg/lock
+    /var/lib/dpkg/lock-frontend
+    /var/lib/apt/lists/lock
+    /var/cache/apt/archives/lock
+  )
+
+  while true; do
+    local busy=0
+    if command -v fuser >/dev/null 2>&1; then
+      for lock in "${locks[@]}"; do
+        if fuser "$lock" >/dev/null 2>&1; then
+          busy=1
+          break
+        fi
+      done
+    elif pgrep -x apt >/dev/null 2>&1 || pgrep -x apt-get >/dev/null 2>&1 || pgrep -x dpkg >/dev/null 2>&1 || pgrep -x unattended-upgrade >/dev/null 2>&1; then
+      busy=1
+    fi
+
+    [[ "$busy" -eq 0 ]] && return 0
+    if (( SECONDS >= deadline )); then
+      echo "Timed out waiting for apt/dpkg locks" >&2
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+apt_get() {
+  local attempt
+  local apt_opts=(
+    -o Acquire::ForceIPv4=true
+    -o Acquire::Retries=5
+    -o Acquire::http::Timeout=30
+    -o Acquire::https::Timeout=30
+    -o Dpkg::Lock::Timeout=900
+  )
+
+  for attempt in {1..12}; do
+    # Best-effort lock wait; apt-get itself waits up to Dpkg::Lock::Timeout.
+    wait_for_apt_locks || true
+    if apt-get "${apt_opts[@]}" "$@"; then
+      return 0
+    fi
+    if (( attempt == 12 )); then
+      return 1
+    fi
+    echo "apt-get $* failed; retrying after apt/dpkg lock check (${attempt}/12)" >&2
+    sleep 10
+  done
+}
+
+wait_for_install_egress() {
+  local deadline=$((SECONDS + 900))
+
+  while true; do
+    if getent ahostsv4 archive.ubuntu.com >/dev/null 2>&1 \
+      && curl -4 -fsSI --max-time 15 http://archive.ubuntu.com/ubuntu/ >/dev/null 2>&1 \
+      && curl -4 -fsSI --max-time 15 https://github.com/ >/dev/null 2>&1; then
+      return 0
+    fi
+    if (( SECONDS >= deadline )); then
+      echo "Timed out waiting for apt/GitHub egress" >&2
+      return 1
+    fi
+    sleep 10
+  done
+}
+
+random_secret() {
+  python3 - <<'PY'
+import secrets
+
+print(secrets.token_urlsafe(36))
+PY
+}
+
+yaml_quote() {
+  python3 - "$1" <<'PY'
+import sys
+
+value = sys.argv[1]
+print("'" + value.replace("'", "''") + "'")
+PY
+}
+
+ensure_secret_file() {
+  local target_file="$1"
+  local source_file="$2"
+
+  install -d -m 0700 "$state_dir"
+  if [[ -n "$source_file" && -s "$source_file" ]]; then
+    install -m 0600 -o root -g root "$source_file" "$target_file"
+    return 0
+  fi
+  if [[ ! -s "$target_file" ]]; then
+    umask 077
+    random_secret > "$target_file"
+  fi
+  chmod 0600 "$target_file"
+}
+
+ensure_apt_config() {
+  cat >/etc/apt/apt.conf.d/99hybrid-ai-force-ipv4 <<'EOF'
+Acquire::ForceIPv4 "true";
+Acquire::Retries "5";
+Acquire::http::Timeout "30";
+Acquire::https::Timeout "30";
+Dpkg::Lock::Timeout "900";
+EOF
+}
+
+has_required_packages() {
+  local package
+  for package in ca-certificates curl docker.io openssh-server openssl python3 tar tzdata; do
+    dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | grep -qx 'ii ' || return 1
+  done
+  docker compose version >/dev/null 2>&1 || command -v docker-compose >/dev/null 2>&1 || return 1
+}
+
+install_local_debs() {
+  local archive_dir="${HYBRID_AI_APT_ARCHIVE_DIR:-}"
+  local debs=()
+
+  [[ -n "$archive_dir" && -d "$archive_dir" ]] || return 1
+  shopt -s nullglob
+  debs=("$archive_dir"/*.deb)
+  shopt -u nullglob
+  ((${#debs[@]} > 0)) || return 1
+
+  echo "Installing Harbor bootstrap packages from ${archive_dir}"
+  wait_for_apt_locks || true
+  if ! dpkg -i "${debs[@]}"; then
+    apt-get \
+      -o Dir::Cache::archives="$archive_dir" \
+      -o Acquire::Retries=0 \
+      -o Dpkg::Lock::Timeout=900 \
+      -f install -y -qq --no-download
+  fi
+  has_required_packages
+}
+
+ensure_packages() {
+  export DEBIAN_FRONTEND=noninteractive
+  export NEEDRESTART_MODE=a
+  export NEEDRESTART_SUSPEND=1
+
+  if ! has_required_packages; then
+    if ! install_local_debs; then
+      wait_for_install_egress
+      apt_get update -qq
+      apt_get install -y -qq ca-certificates curl docker.io openssh-server openssl python3 tar tzdata
+      if apt-cache show docker-compose-plugin >/dev/null 2>&1; then
+        apt_get install -y -qq docker-compose-plugin
+      elif apt-cache show docker-compose-v2 >/dev/null 2>&1; then
+        apt_get install -y -qq docker-compose-v2
+      elif apt-cache show docker-compose >/dev/null 2>&1; then
+        apt_get install -y -qq docker-compose
+      fi
+    fi
+  fi
+
+  systemctl enable --now docker
+  if ! command -v docker-compose >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    cat >/usr/local/bin/docker-compose <<'EOF'
+#!/usr/bin/env bash
+exec docker compose "$@"
+EOF
+    chmod 0755 /usr/local/bin/docker-compose
+  fi
+  cat >/usr/local/sbin/hybrid-ai-harbor-compose <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+# Unset custom HARBOR_* vars so Docker Compose v2 does not substitute them
+# into harbor's generated docker-compose.yml (e.g. HARBOR_ROBOT_NAME=kaniko
+# ending up as a port value via ${VAR} interpolation).
+unset HARBOR_ROBOT_NAME HARBOR_PROJECTS HARBOR_DOMAIN HARBOR_EXTERNAL_URL \
+      HARBOR_VERSION HARBOR_BOOTSTRAP_WAIT_SECONDS HARBOR_ADMIN_PASSWORD_FILE \
+      HARBOR_INSTALLER_URL HARBOR_DATA_VOLUME 2>/dev/null || true
+if docker compose version >/dev/null 2>&1; then
+  exec docker compose "$@"
+fi
+if command -v docker-compose >/dev/null 2>&1; then
+  exec docker-compose "$@"
+fi
+echo "Neither docker compose nor docker-compose is available" >&2
+exit 127
+EOF
+  chmod 0755 /usr/local/sbin/hybrid-ai-harbor-compose
+}
+
+normalize_version() {
+  local version="${HARBOR_VERSION:-v2.14.4}"
+  version="${version#v}"
+  if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "HARBOR_VERSION must look like v2.14.4 or 2.14.4" >&2
+    return 1
+  fi
+  printf 'v%s\n' "$version"
+}
+
+ensure_installer() {
+  local release_tag="$1"
+  local version="${release_tag#v}"
+  local archive_dir=/var/cache/hybrid-ai/harbor
+  local release_dir="/opt/harbor/releases/${release_tag}"
+  local archive="${archive_dir}/harbor-online-installer-${release_tag}.tgz"
+  local url="${HARBOR_INSTALLER_URL:-https://github.com/goharbor/harbor/releases/download/${release_tag}/harbor-online-installer-${release_tag}.tgz}"
+
+  install -d -m 0755 "$archive_dir" /opt/harbor/releases "$release_dir" /data/harbor /var/log/harbor
+  if [[ ! -s "$archive" ]]; then
+    curl -fL --retry 3 --retry-delay 5 -o "${archive}.tmp" "$url"
+    mv "${archive}.tmp" "$archive"
+  fi
+  if [[ ! -x "${release_dir}/install.sh" ]]; then
+    rm -rf "${release_dir:?}"/*
+    tar -xzf "$archive" -C "$release_dir" --strip-components=1
+  fi
+  ln -sfn "$release_dir" /opt/harbor/current
+  printf '%s\n' "$version" > "${release_dir}/.hybrid-ai-version"
+}
+
+write_harbor_config() {
+  local install_dir=/opt/harbor/current
+  local release_tag="$1"
+  local version="${release_tag#v}"
+  local admin_password
+  local database_password
+  local external_url="${HARBOR_EXTERNAL_URL:-https://${HARBOR_DOMAIN:-harbor.intp.me}}"
+  local http_port="${HARBOR_HTTP_PORT:-80}"
+  local data_volume="${HARBOR_DATA_VOLUME:-/data/harbor}"
+
+  if [[ ! "$http_port" =~ ^[0-9]+$ ]]; then
+    save_status failed "HARBOR_HTTP_PORT must be numeric, got: ${http_port}"
+    printf 'HARBOR_HTTP_PORT must be numeric, got: %s\n' "$http_port" >&2
+    return 64
+  fi
+
+  admin_password="$(cat "$admin_password_file")"
+  database_password="$(cat "$database_password_file")"
+  install -d -m 0755 "$data_volume" /var/log/harbor
+
+  cat > "${install_dir}/harbor.yml" <<EOF
+_version: ${version}
+hostname: ${HARBOR_DOMAIN:-harbor.intp.me}
+http:
+  port: ${http_port}
+external_url: $(yaml_quote "$external_url")
+harbor_admin_password: $(yaml_quote "$admin_password")
+database:
+  password: $(yaml_quote "$database_password")
+  max_idle_conns: 10
+  max_open_conns: 20
+data_volume: ${data_volume}
+trivy:
+  ignore_unfixed: false
+  skip_update: true
+  offline_scan: true
+jobservice:
+  max_job_workers: 1
+  max_job_duration_hours: 24
+  job_loggers:
+    - STD_OUTPUT
+  logger_sweeper_duration: 1
+notification:
+  webhook_job_max_retry: 3
+  webhook_job_http_client_timeout: 3
+chart:
+  absolute_url: disabled
+log:
+  level: info
+  local:
+    rotate_count: 5
+    rotate_size: 50M
+    location: /var/log/harbor
+upload_purging:
+  enabled: true
+  age: 168h
+  interval: 24h
+  dryrun: false
+EOF
+}
+
+install_harbor() {
+  local install_dir=/opt/harbor/current
+  local checksum_file="${state_dir}/harbor-yml.sha256"
+  local current_checksum=""
+  local previous_checksum=""
+
+  current_checksum="$(sha256sum "${install_dir}/harbor.yml" | awk '{print $1}')"
+  if [[ -s "$checksum_file" ]]; then
+    previous_checksum="$(cat "$checksum_file")"
+  fi
+
+  if [[ "$current_checksum" != "$previous_checksum" || ! -f "${install_dir}/docker-compose.yml" ]]; then
+    (
+      cd "$install_dir"
+      # Unset custom vars to prevent Docker Compose v2 variable substitution
+      # in harbor's generated docker-compose.yml (e.g. HARBOR_ROBOT_NAME=kaniko
+      # being substituted into a ports field, causing "invalid hostPort: kaniko").
+      unset HARBOR_ROBOT_NAME HARBOR_PROJECTS HARBOR_DOMAIN HARBOR_EXTERNAL_URL \
+            HARBOR_VERSION HARBOR_BOOTSTRAP_WAIT_SECONDS HARBOR_ADMIN_PASSWORD_FILE \
+            HARBOR_INSTALLER_URL HARBOR_DATA_VOLUME 2>/dev/null || true
+      ./install.sh
+    )
+    printf '%s\n' "$current_checksum" > "$checksum_file"
+  else
+    /usr/local/sbin/hybrid-ai-harbor-compose -f "${install_dir}/docker-compose.yml" up -d
+  fi
+
+  cat >/etc/systemd/system/hybrid-ai-harbor.service <<'EOF'
+[Unit]
+Description=Hybrid AI Harbor registry
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/harbor/current
+ExecStart=/usr/local/sbin/hybrid-ai-harbor-compose -f /opt/harbor/current/docker-compose.yml up -d
+ExecStop=/usr/local/sbin/hybrid-ai-harbor-compose -f /opt/harbor/current/docker-compose.yml stop
+TimeoutStartSec=20min
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now hybrid-ai-harbor.service
+}
+
+wait_for_harbor() {
+  local wait_seconds="${HARBOR_BOOTSTRAP_WAIT_SECONDS:-1800}"
+  local deadline
+
+  if ! [[ "$wait_seconds" =~ ^[0-9]+$ ]] || (( wait_seconds < 60 )); then
+    wait_seconds=1800
+  fi
+  deadline=$((SECONDS + wait_seconds))
+  web_ready=false
+  while (( SECONDS < deadline )); do
+    if curl -fsS "http://127.0.0.1:${HARBOR_HTTP_PORT:-80}/api/v2.0/ping" >/dev/null 2>&1 \
+      || curl -fsS "http://127.0.0.1:${HARBOR_HTTP_PORT:-80}/api/v2.0/health" >/dev/null 2>&1; then
+      web_ready=true
+      save_status web_ready "harbor_api_ready"
+      return 0
+    fi
+    save_status booting "waiting_for_harbor_api"
+    sleep 10
+  done
+
+  /usr/local/sbin/hybrid-ai-harbor-compose -f /opt/harbor/current/docker-compose.yml ps || true
+  /usr/local/sbin/hybrid-ai-harbor-compose -f /opt/harbor/current/docker-compose.yml logs --tail=200 || true
+  save_status failed "harbor_api_timeout_after_${wait_seconds}s"
+  return 1
+}
+
+harbor_admin_auth_ok() {
+  local admin_password="$1"
+
+  HARBOR_ADMIN_PASSWORD="$admin_password" \
+  HARBOR_HTTP_PORT="${HARBOR_HTTP_PORT:-80}" \
+  python3 - <<'PY'
+import base64
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+base_url = f"http://127.0.0.1:{os.environ.get('HARBOR_HTTP_PORT', '80')}/api/v2.0"
+admin_password = os.environ["HARBOR_ADMIN_PASSWORD"]
+auth = base64.b64encode(f"admin:{admin_password}".encode("utf-8")).decode("ascii")
+
+for _ in range(12):
+    req = urllib.request.Request(
+        f"{base_url}/users/current",
+        headers={"Authorization": f"Basic {auth}", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            if response.status == 200:
+                raise SystemExit(0)
+    except urllib.error.HTTPError as error:
+        if error.code in (401, 403):
+            raise SystemExit(1)
+    except Exception:
+        pass
+    time.sleep(5)
+
+raise SystemExit(1)
+PY
+}
+
+reset_harbor_admin_password() {
+  local admin_password
+  admin_password="$(cat "$admin_password_file")"
+
+  HARBOR_ADMIN_PASSWORD="$admin_password" python3 - <<'PY' \
+    | docker exec -i harbor-db psql -U postgres -d registry -v ON_ERROR_STOP=1 >/dev/null
+import hashlib
+import os
+import secrets
+import string
+
+password = os.environ["HARBOR_ADMIN_PASSWORD"]
+alphabet = string.ascii_letters + string.digits
+salt = "".join(secrets.choice(alphabet) for _ in range(32))
+digest = hashlib.pbkdf2_hmac(
+    "sha256",
+    password.encode("utf-8"),
+    salt.encode("utf-8"),
+    4096,
+    dklen=16,
+).hex()
+print(
+    "UPDATE harbor_user "
+    f"SET password = '{digest}', salt = '{salt}', password_version = 'sha256', update_time = NOW() "
+    "WHERE username = 'admin';"
+)
+PY
+}
+
+ensure_harbor_admin_password() {
+  local admin_password
+  admin_password="$(cat "$admin_password_file")"
+
+  if harbor_admin_auth_ok "$admin_password"; then
+    return 0
+  fi
+
+  echo "Harbor admin API auth failed with configured password; resetting admin password in database" >&2
+  reset_harbor_admin_password
+  if harbor_admin_auth_ok "$admin_password"; then
+    return 0
+  fi
+
+  docker restart harbor-core >/dev/null 2>&1 || true
+  sleep 10
+  harbor_admin_auth_ok "$admin_password"
+}
+
+provision_api_resources() {
+  local admin_password
+  admin_password="$(cat "$admin_password_file")"
+
+  HARBOR_ADMIN_PASSWORD="$admin_password" \
+  HARBOR_ADMIN_USERNAME="${HARBOR_ADMIN_USERNAME:-admin}" \
+  HARBOR_PROJECTS="${HARBOR_PROJECTS:-infra models}" \
+  HARBOR_ROBOT_NAME="${HARBOR_ROBOT_NAME:-kaniko}" \
+  HARBOR_ROBOT_CREDENTIALS_FILE="$robot_credentials_file" \
+  python3 - <<'PY'
+import base64
+import hashlib
+import json
+import os
+import pathlib
+import secrets
+import string
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+base_url = f"http://127.0.0.1:{os.environ.get('HARBOR_HTTP_PORT', '80')}/api/v2.0"
+admin_password = os.environ["HARBOR_ADMIN_PASSWORD"]
+admin_username = os.environ.get("HARBOR_ADMIN_USERNAME", "admin").strip() or "admin"
+projects = [item for item in os.environ.get("HARBOR_PROJECTS", "infra models").replace(",", " ").split() if item]
+robot_name = os.environ.get("HARBOR_ROBOT_NAME", "kaniko")
+credentials_file = pathlib.Path(os.environ["HARBOR_ROBOT_CREDENTIALS_FILE"])
+
+auth = base64.b64encode(f"admin:{admin_password}".encode("utf-8")).decode("ascii")
+
+def request(method, path, payload=None, expected=(200,)):
+    body = None
+    headers = {
+        "Authorization": f"Basic {auth}",
+        "Accept": "application/json",
+    }
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(f"{base_url}{path}", data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            raw = response.read().decode("utf-8")
+            status = response.status
+    except urllib.error.HTTPError as error:
+        raw = error.read().decode("utf-8", errors="replace")
+        status = error.code
+    if status not in expected:
+        raise RuntimeError(f"{method} {path} returned HTTP {status}: {raw}")
+    return json.loads(raw) if raw else {}
+
+for _ in range(60):
+    try:
+        request("GET", "/ping", expected=(200,))
+        break
+    except Exception:
+        time.sleep(5)
+else:
+    request("GET", "/ping", expected=(200,))
+
+def find_user(username):
+    query = urllib.parse.urlencode({"username": username})
+    users = request("GET", f"/users/search?{query}", expected=(200,))
+    for user in users:
+        if user.get("username") == username:
+            return user
+    return None
+
+def sql_quote(value):
+    return "'" + value.replace("'", "''") + "'"
+
+def upsert_named_admin_user_db(username, password):
+    alphabet = string.ascii_letters + string.digits
+    salt = "".join(secrets.choice(alphabet) for _ in range(32))
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        4096,
+        dklen=16,
+    ).hex()
+    email = f"{username}@local.harbor"
+    sql = f"""
+INSERT INTO harbor_user (username, email, password, realname, comment, deleted, salt, sysadmin_flag, password_version)
+VALUES ({sql_quote(username)}, {sql_quote(email)}, {sql_quote(digest)}, {sql_quote(username)}, 'Hybrid AI admin', false, {sql_quote(salt)}, true, 'sha256')
+ON CONFLICT (username) DO UPDATE
+SET email = EXCLUDED.email,
+    password = EXCLUDED.password,
+    realname = EXCLUDED.realname,
+    comment = EXCLUDED.comment,
+    deleted = false,
+    salt = EXCLUDED.salt,
+    sysadmin_flag = true,
+    password_version = 'sha256',
+    update_time = NOW();
+"""
+    subprocess.run(
+        ["docker", "exec", "-i", "harbor-db", "psql", "-U", "postgres", "-d", "registry", "-v", "ON_ERROR_STOP=1"],
+        input=sql,
+        text=True,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+
+def ensure_named_admin_user():
+    if admin_username == "admin":
+        return
+
+    user = find_user(admin_username)
+    if not user:
+        payload = {
+            "username": admin_username,
+            "email": f"{admin_username}@local.harbor",
+            "realname": admin_username,
+            "password": admin_password,
+            "comment": "Hybrid AI admin user",
+        }
+        try:
+            request("POST", "/users", payload, expected=(201, 409))
+        except RuntimeError as error:
+            print(f"harbor_admin_user_create_warning={error}", file=sys.stderr)
+            upsert_named_admin_user_db(admin_username, admin_password)
+        user = find_user(admin_username)
+    if not user:
+        raise RuntimeError(f"Harbor user {admin_username} was not created")
+
+    user_id = user["user_id"]
+    try:
+        request("PUT", f"/users/{user_id}/password", {"new_password": admin_password}, expected=(200,))
+    except RuntimeError as error:
+        print(f"harbor_admin_user_password_warning={error}", file=sys.stderr)
+        upsert_named_admin_user_db(admin_username, admin_password)
+    if not user.get("sysadmin_flag"):
+        request("PUT", f"/users/{user_id}/sysadmin", {"sysadmin_flag": True}, expected=(200,))
+
+ensure_named_admin_user()
+
+for project in projects:
+    query = urllib.parse.urlencode({"name": project})
+    existing = request("GET", f"/projects?{query}", expected=(200,))
+    if existing:
+        continue
+    payload = {
+        "project_name": project,
+        "public": False,
+        "metadata": {
+            "public": "false",
+            "auto_scan": "false",
+            "enable_content_trust": "false",
+            "prevent_vul": "false",
+            "reuse_sys_cve_allowlist": "true",
+        },
+    }
+    request("POST", "/projects", payload, expected=(201, 409))
+
+access = [
+    {"resource": "repository", "action": "pull"},
+    {"resource": "repository", "action": "push"},
+    {"resource": "repository", "action": "list"},
+    {"resource": "artifact", "action": "read"},
+    {"resource": "artifact", "action": "list"},
+    {"resource": "tag", "action": "create"},
+    {"resource": "tag", "action": "list"},
+]
+permissions = [
+    {"kind": "project", "namespace": project, "access": access}
+    for project in projects
+]
+payload = {
+    "name": robot_name,
+    "description": "Hybrid AI Kaniko image build robot",
+    "level": "system",
+    "disable": False,
+    "duration": -1,
+    "permissions": permissions,
+}
+
+def find_robot():
+    robots = request("GET", "/robots?page=1&page_size=100", expected=(200,))
+    for robot in robots:
+        name = robot.get("name", "")
+        if name == robot_name or name.endswith(f"${robot_name}") or name.endswith(robot_name):
+            return robot
+    return None
+
+def refresh_robot_secret(robot_id):
+    manual_secret = secrets.token_urlsafe(40)
+    try:
+        refreshed = request("PATCH", f"/robots/{robot_id}", {"secret": manual_secret}, expected=(200,))
+    except RuntimeError:
+        refreshed = request("PATCH", f"/robots/{robot_id}", {}, expected=(200,))
+        manual_secret = ""
+    if manual_secret and not refreshed.get("secret"):
+        refreshed["secret"] = manual_secret
+    return refreshed
+
+robot = find_robot()
+if robot:
+    robot_id = robot["id"]
+    try:
+        request("PUT", f"/robots/{robot_id}", payload, expected=(200,))
+    except RuntimeError as error:
+        print(f"harbor_robot_update_warning={error}", file=sys.stderr)
+    if credentials_file.exists() and credentials_file.stat().st_size > 0:
+        print(f"harbor_robot_credentials_existing={credentials_file}")
+        raise SystemExit
+    created = refresh_robot_secret(robot_id)
+else:
+    try:
+        created = request("POST", "/robots", payload, expected=(201,))
+    except RuntimeError:
+        robot = find_robot()
+        if not robot:
+            raise
+        created = refresh_robot_secret(robot["id"])
+
+secret = created.get("secret")
+full_name = created.get("name", robot_name)
+if not secret:
+    raise RuntimeError(f"Harbor robot secret was not returned for {full_name}")
+
+credentials = {
+    "name": full_name,
+    "token": secret,
+    "projects": projects,
+}
+credentials_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+tmp = credentials_file.with_suffix(".tmp")
+tmp.write_text(json.dumps(credentials, indent=2) + "\n", encoding="utf-8")
+tmp.chmod(0o600)
+tmp.replace(credentials_file)
+print(f"harbor_robot_credentials_created={full_name}")
+PY
+
+  chmod 0600 "$robot_credentials_file"
+  projects_ready=true
+  robot_ready=true
+  save_status complete "harbor_projects_and_robot_ready"
+}
+
+main() {
+  local release_tag
+  local domain="${HARBOR_DOMAIN:-harbor.intp.me}"
+  local short="${domain%%.*}"
+
+  save_status starting "bootstrap_started"
+  cloud-init status --wait >/dev/null 2>&1 || true
+  hostnamectl set-hostname "$domain" || true
+  if ! grep -Eq "(^|[[:space:]])${short}([[:space:]]|$)" /etc/hosts; then
+    printf '127.0.1.1 %s %s\n' "$domain" "$short" >>/etc/hosts
+  fi
+  ensure_apt_config
+  ensure_packages
+  ensure_secret_file "$admin_password_file" "${HARBOR_ADMIN_PASSWORD_FILE:-}"
+  ensure_secret_file "$database_password_file" "${HARBOR_DATABASE_PASSWORD_FILE:-}"
+  release_tag="$(normalize_version)"
+  ensure_installer "$release_tag"
+  write_harbor_config "$release_tag"
+  install_harbor
+  wait_for_harbor
+  ensure_harbor_admin_password
+  provision_api_resources
+}
+
+main "$@"

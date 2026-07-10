@@ -1,0 +1,492 @@
+stages:
+  - build-base
+  - security-scan
+  - model-package
+  - notify
+
+variables:
+  # This pipeline sends CI events only to the internal Bastion Alert Relay.
+  # Runner nodes/pods must already resolve and route AWS ECR/STS through
+  # Site-to-Site VPN and ECR API/DKR VPC Endpoints.
+  # Slack alerts are not sent directly from GitLab CI.
+  # GitLab CI/CD Variables:
+  # - ALERT_RELAY_URL=http://<BASTION_PRIVATE_IP>:8080/ci-event
+  # - ALERT_RELAY_TOKEN=<relay-token>
+  # The Slack Webhook URL exists only in the Bastion alert-relay container.
+
+  HARBOR_REGISTRY: "harbor.intp.me"
+  # Internal Harbor endpoint for large in-cluster traffic such as Trivy scans/Kaniko pushes.
+  HARBOR_INTERNAL_REGISTRY: "10.42.0.127"
+  # Harbor endpoint used as the source registry for ECR promotion.
+  # Keep this as the TLS hostname by default to avoid SNI/certificate issues during skopeo copy.
+  HARBOR_ECR_SOURCE_REGISTRY: "harbor.intp.me"
+  HARBOR_PROJECT: "infra"
+  IMAGE_NAME: "model-build-image"
+  MODEL_PROJECT: "models"
+  MODEL_IMAGE_NAME: "predictive-model"
+
+  AWS_REGION: "ap-northeast-2"
+  AWS_DEFAULT_REGION: "ap-northeast-2"
+  AWS_ACCOUNT_ID: "808379768010"
+  AWS_STS_REGIONAL_ENDPOINTS: "regional"
+  ECR_ENDPOINT: "808379768010.dkr.ecr.ap-northeast-2.amazonaws.com"
+  ECR_REPOSITORY: "predictive-model"
+  ECR_REGISTRY_ID: "808379768010"
+  # GitLab CI/CD Variable로 등록: AWS_ROLE_ARN=arn:aws:iam::808379768010:role/gitlab-ecr-promotion-role
+  # AWS_ROLE_ARN은 보안상 YAML 기본값이 아니라 GitLab Variable로 관리한다.
+
+  # Closed-network execution images. These images must already exist in Harbor.
+  TRIVY_IMAGE: "${HARBOR_REGISTRY}/infra/trivy:latest"
+  KANIKO_IMAGE: "${HARBOR_REGISTRY}/infra/kaniko-executor:v1.23.2-debug"
+  ECR_PROMOTION_IMAGE: "${HARBOR_REGISTRY}/infra/ecr-promotion:latest"
+
+  BASTION_CACHE_DIR: "/opt/hybrid-ai/bastion-cache"
+  TRIVY_CACHE_DIR: "/opt/hybrid-ai/bastion-cache/trivy"
+# ==============================================================================
+# Common failure summary template
+# ==============================================================================
+.failure_notification:
+  after_script:
+    - |
+      if [ "$CI_JOB_STATUS" = "failed" ]; then
+        if [ -f ci_error_summary.txt ]; then
+          tail -n 80 ci_error_summary.txt > ci_error_summary.tmp || true
+          mv ci_error_summary.tmp ci_error_summary.txt
+        else
+          {
+            echo "[failure_notification] job failed: ${CI_JOB_NAME:-unknown}"
+            echo "[failure_notification] stage: ${CI_JOB_STAGE:-unknown}"
+            echo "[failure_notification] check GitLab job log for details: ${CI_JOB_URL:-unknown}"
+          } > ci_error_summary.txt
+        fi
+      fi
+
+# ==============================================================================
+# Base image build
+# ==============================================================================
+build-heavy-base:
+  extends: .failure_notification
+  stage: build-base
+  image: $KANIKO_IMAGE
+  tags:
+    - gpu-worker
+  script:
+    - |
+      echo "[build-heavy-base] start base image build" | tee ci_error_summary.txt
+      : "${HARBOR_CA_CERT:?HARBOR_CA_CERT is required}"
+      : "${HARBOR_USER:?HARBOR_USER is required}"
+      : "${HARBOR_PASSWORD:?HARBOR_PASSWORD is required}"
+
+      mkdir -p /kaniko/.docker /kaniko/certs
+      if [ -f "$HARBOR_CA_CERT" ]; then
+        cp "$HARBOR_CA_CERT" /kaniko/certs/ca.crt
+      else
+        printf '%s\n' "$HARBOR_CA_CERT" > /kaniko/certs/ca.crt
+      fi
+
+      mkdir -p "${CI_PROJECT_DIR}/.airgap/pip/wheelhouse"
+      if [ -d "${BASTION_CACHE_DIR}/pip/wheelhouse" ]; then
+        echo "[build-heavy-base] copy wheelhouse from ${BASTION_CACHE_DIR}/pip/wheelhouse" | tee -a ci_error_summary.txt
+        cp -a "${BASTION_CACHE_DIR}/pip/wheelhouse/." "${CI_PROJECT_DIR}/.airgap/pip/wheelhouse/"
+      else
+        echo "[build-heavy-base] wheelhouse cache not found: ${BASTION_CACHE_DIR}/pip/wheelhouse" | tee -a ci_error_summary.txt
+      fi
+
+      AIRGAP_BUILD=false
+      if find "${CI_PROJECT_DIR}/.airgap/pip/wheelhouse" -maxdepth 1 -type f -name '*.whl' -print -quit | grep -q .; then
+        AIRGAP_BUILD=true
+      fi
+      echo "[build-heavy-base] AIRGAP_BUILD=${AIRGAP_BUILD}" | tee -a ci_error_summary.txt
+
+      AUTH="$(printf '%s' "${HARBOR_USER}:${HARBOR_PASSWORD}" | base64 | tr -d '\n')"
+      DEST_REGISTRY="${HARBOR_INTERNAL_REGISTRY:-$HARBOR_REGISTRY}"
+
+      printf '{"auths":{"%s":{"auth":"%s"},"%s":{"auth":"%s"}}}\n' \
+        "$HARBOR_REGISTRY" "$AUTH" "$DEST_REGISTRY" "$AUTH" > /kaniko/.docker/config.json
+
+      set --
+      if [ "$DEST_REGISTRY" != "$HARBOR_REGISTRY" ]; then
+        set -- --insecure-registry="$DEST_REGISTRY"
+      fi
+
+      /kaniko/executor \
+        --context="${CI_PROJECT_DIR}" \
+        --dockerfile="${CI_PROJECT_DIR}/Dockerfile.build" \
+        --build-arg="AIRGAP_BUILD=${AIRGAP_BUILD}" \
+        --destination="${DEST_REGISTRY}/${HARBOR_PROJECT}/${IMAGE_NAME}:latest" \
+        --registry-certificate="${HARBOR_REGISTRY}=/kaniko/certs/ca.crt" \
+        "$@" > kaniko_build.log 2>&1 || {
+          cat kaniko_build.log | tee -a ci_error_summary.txt
+          exit 1
+        }
+
+      cat kaniko_build.log | tee -a ci_error_summary.txt
+  artifacts:
+    when: always
+    paths:
+      - ci_error_summary.txt
+    expire_in: 1 day
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      changes:
+        - Dockerfile.build
+        - model_build.py
+        - .gitlab-ci.yml
+
+# ==============================================================================
+# Base image Trivy scan
+# - push pipeline에서 base image 검사용
+# ==============================================================================
+trivy-scan:
+  extends: .failure_notification
+  stage: security-scan
+  image:
+    name: $TRIVY_IMAGE
+    entrypoint: [""]
+  tags:
+    - gpu-worker
+  needs:
+    - build-heavy-base
+  before_script:
+    - command -v trivy
+    - ': "${HARBOR_CA_CERT:?HARBOR_CA_CERT is required}"'
+    - mkdir -p /usr/local/share/ca-certificates
+    - if [ -f "$HARBOR_CA_CERT" ]; then cp "$HARBOR_CA_CERT" /usr/local/share/ca-certificates/harbor.intp.me.crt; else printf '%s\n' "$HARBOR_CA_CERT" > /usr/local/share/ca-certificates/harbor.intp.me.crt; fi
+    - command -v update-ca-certificates >/dev/null 2>&1 && update-ca-certificates || true
+  script:
+    - |
+      echo "[trivy-scan] start base image vulnerability scan" | tee ci_error_summary.txt
+
+      : "${HARBOR_USER:?HARBOR_USER is required}"
+      : "${HARBOR_PASSWORD:?HARBOR_PASSWORD is required}"
+      : "${TRIVY_CACHE_DIR:?TRIVY_CACHE_DIR is required}"
+
+      test -s "${TRIVY_CACHE_DIR}/db/trivy.db" || {
+        echo "[trivy-scan] missing offline Trivy DB: ${TRIVY_CACHE_DIR}/db/trivy.db" | tee -a ci_error_summary.txt
+        exit 1
+      }
+
+      TRIVY_JOB_CACHE="${CI_PROJECT_DIR}/.trivy-cache"
+      rm -rf "$TRIVY_JOB_CACHE"
+      mkdir -p "$TRIVY_JOB_CACHE"
+      cp -a "${TRIVY_CACHE_DIR}/db" "${TRIVY_JOB_CACHE}/db"
+      test -s "${TRIVY_JOB_CACHE}/db/trivy.db"
+
+      TRIVY_EXIT=0
+      SCAN_REGISTRY="${HARBOR_INTERNAL_REGISTRY:-$HARBOR_REGISTRY}"
+      SCAN_IMAGE="${SCAN_REGISTRY}/${HARBOR_PROJECT}/${IMAGE_NAME}:latest"
+
+      echo "SCAN_IMAGE=${SCAN_IMAGE}" | tee -a ci_error_summary.txt
+
+      TRIVY_USERNAME="$HARBOR_USER" TRIVY_PASSWORD="$HARBOR_PASSWORD" trivy image \
+        --cache-dir "${TRIVY_JOB_CACHE}" \
+        --skip-db-update \
+        --skip-java-db-update \
+        --offline-scan \
+        --insecure \
+        --scanners vuln \
+        --exit-code 1 \
+        --severity CRITICAL,HIGH \
+        "$SCAN_IMAGE" > trivy_log.txt 2>&1 || TRIVY_EXIT=$?
+
+      cat trivy_log.txt | tee -a ci_error_summary.txt || true
+
+      if [ "$TRIVY_EXIT" -ne 0 ] && grep -Eiq 'FATAL|run error:|scan error:|unable to initialize|failed to create cache dir' trivy_log.txt; then
+        exit "$TRIVY_EXIT"
+      fi
+
+      if [ "$TRIVY_EXIT" -ne 0 ]; then
+        echo "[trivy-scan] vulnerabilities detected in base image; build continues" | tee -a ci_error_summary.txt
+      fi
+  artifacts:
+    when: always
+    paths:
+      - ci_error_summary.txt
+    expire_in: 1 day
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      changes:
+        - Dockerfile.build
+        - model_build.py
+        - .gitlab-ci.yml
+
+# ==============================================================================
+# Trigger/API pipeline model image scan
+# - Harbor에 이미 생성된 모델 이미지를 ECR로 보내기 전에 검사
+# - trivy는 infra/trivy 이미지에서만 실행
+# ==============================================================================
+scan-model-image:
+  extends: .failure_notification
+  stage: security-scan
+  image:
+    name: $TRIVY_IMAGE
+    entrypoint: [""]
+  tags:
+    - gpu-worker
+  before_script:
+    - command -v trivy
+    - ': "${HARBOR_CA_CERT:?HARBOR_CA_CERT is required}"'
+    - mkdir -p /usr/local/share/ca-certificates
+    - if [ -f "$HARBOR_CA_CERT" ]; then cp "$HARBOR_CA_CERT" /usr/local/share/ca-certificates/harbor.intp.me.crt; else printf '%s\n' "$HARBOR_CA_CERT" > /usr/local/share/ca-certificates/harbor.intp.me.crt; fi
+    - command -v update-ca-certificates >/dev/null 2>&1 && update-ca-certificates || true
+  script:
+    - |
+      echo "[scan-model-image] start model image vulnerability scan" | tee ci_error_summary.txt
+
+      : "${IMAGE_TAG:?IMAGE_TAG is required}"
+      : "${HARBOR_USER:?HARBOR_USER is required}"
+      : "${HARBOR_PASSWORD:?HARBOR_PASSWORD is required}"
+      : "${TRIVY_CACHE_DIR:?TRIVY_CACHE_DIR is required}"
+
+      SOURCE_PROJECT="${SOURCE_PROJECT:-${MODEL_PROJECT:-${HARBOR_PROJECT}}}"
+      SOURCE_NAME="${SOURCE_NAME:-${MODEL_IMAGE_NAME:-${IMAGE_NAME}}}"
+      SCAN_REGISTRY="${HARBOR_INTERNAL_REGISTRY:-$HARBOR_REGISTRY}"
+      SCAN_IMAGE="${SCAN_REGISTRY}/${SOURCE_PROJECT}/${SOURCE_NAME}:${IMAGE_TAG}"
+
+      echo "SCAN_IMAGE=${SCAN_IMAGE}" | tee -a ci_error_summary.txt
+
+      test -s "${TRIVY_CACHE_DIR}/db/trivy.db" || {
+        echo "[scan-model-image] missing offline Trivy DB: ${TRIVY_CACHE_DIR}/db/trivy.db" | tee -a ci_error_summary.txt
+        exit 1
+      }
+
+      TRIVY_JOB_CACHE="${CI_PROJECT_DIR}/.trivy-cache"
+      rm -rf "$TRIVY_JOB_CACHE"
+      mkdir -p "$TRIVY_JOB_CACHE"
+      cp -a "${TRIVY_CACHE_DIR}/db" "${TRIVY_JOB_CACHE}/db"
+      test -s "${TRIVY_JOB_CACHE}/db/trivy.db"
+
+      TRIVY_EXIT=0
+      TRIVY_USERNAME="$HARBOR_USER" TRIVY_PASSWORD="$HARBOR_PASSWORD" trivy image \
+        --cache-dir "${TRIVY_JOB_CACHE}" \
+        --skip-db-update \
+        --skip-java-db-update \
+        --offline-scan \
+        --insecure \
+        --scanners vuln \
+        --exit-code 1 \
+        --severity CRITICAL,HIGH \
+        --image-src remote \
+        "$SCAN_IMAGE" > trivy_log.txt 2>&1 || TRIVY_EXIT=$?
+
+      cat trivy_log.txt | tee -a ci_error_summary.txt || true
+
+      if [ "$TRIVY_EXIT" -ne 0 ] && grep -Eiq 'FATAL|run error:|scan error:|unable to initialize|failed to create cache dir' trivy_log.txt; then
+        exit "$TRIVY_EXIT"
+      fi
+
+      if [ "$TRIVY_EXIT" -ne 0 ]; then
+        echo "[scan-model-image] vulnerabilities detected in source image" | tee -a ci_error_summary.txt
+      else
+        echo "[scan-model-image] vulnerability scan passed" | tee -a ci_error_summary.txt
+      fi
+  artifacts:
+    when: always
+    paths:
+      - ci_error_summary.txt
+    expire_in: 1 day
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "api"'
+
+# ==============================================================================
+# Harbor -> ECR promotion
+# - trivy 실행 제거
+# - scan-model-image에서 이미 스캔 수행
+# - ecr-promotion 이미지는 aws/skopeo/jq/tar만 있으면 됨
+# ==============================================================================
+sync-harbor-to-ecr:
+  extends: .failure_notification
+  stage: model-package
+  image:
+    name: $ECR_PROMOTION_IMAGE
+    entrypoint: [""]
+  tags:
+    - gpu-worker
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: "sts.amazonaws.com"
+  needs:
+    - job: scan-model-image
+      artifacts: true
+  before_script:
+    - command -v aws && command -v skopeo && command -v jq && command -v tar
+    - export AWS_REGION="${AWS_REGION:-ap-northeast-2}"
+    - export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-$AWS_REGION}"
+    - export AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-808379768010}"
+    - export ECR_ENDPOINT="${ECR_ENDPOINT:-${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com}"
+    - export AWS_STS_REGIONAL_ENDPOINTS="${AWS_STS_REGIONAL_ENDPOINTS:-regional}"
+    - ': "${HARBOR_CA_CERT:?HARBOR_CA_CERT is required}"'
+    - mkdir -p /usr/local/share/ca-certificates
+    - if [ -f "$HARBOR_CA_CERT" ]; then cp "$HARBOR_CA_CERT" /usr/local/share/ca-certificates/harbor.intp.me.crt; else printf '%s\n' "$HARBOR_CA_CERT" > /usr/local/share/ca-certificates/harbor.intp.me.crt; fi
+    - command -v update-ca-certificates >/dev/null 2>&1 && update-ca-certificates || true
+  script:
+    - |
+      echo "[sync-harbor-to-ecr] start harbor to ecr sync" | tee ci_error_summary.txt
+
+      ECR_PROMOTION_ROLE_ARN="${GITLAB_ECR_PROMOTION_ROLE_ARN:-${AWS_ROLE_ARN:-}}"
+      : "${ECR_PROMOTION_ROLE_ARN:?GITLAB_ECR_PROMOTION_ROLE_ARN is required}"
+      : "${GITLAB_OIDC_TOKEN:?GITLAB_OIDC_TOKEN is required}"
+      : "${AWS_REGION:?AWS_REGION is required}"
+      : "${HARBOR_USER:?HARBOR_USER is required}"
+      : "${HARBOR_PASSWORD:?HARBOR_PASSWORD is required}"
+
+      echo "[sync-harbor-to-ecr] assume AWS role with GitLab OIDC" | tee -a ci_error_summary.txt
+
+      aws sts assume-role-with-web-identity \
+        --role-arn "${ECR_PROMOTION_ROLE_ARN}" \
+        --role-session-name "gitlab-ecr-promotion-${CI_PIPELINE_ID}-${CI_JOB_ID}" \
+        --web-identity-token "${GITLAB_OIDC_TOKEN}" \
+        --duration-seconds 3600 \
+        --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' \
+        --output text > aws_oidc_credentials.txt 2> aws_oidc_assume.err || {
+          cat aws_oidc_assume.err | tee -a ci_error_summary.txt
+          exit 1
+        }
+
+      OIDC_CREDENTIALS="$(cat aws_oidc_credentials.txt)"
+      if [ -z "${OIDC_CREDENTIALS:-}" ]; then
+        echo "[sync-harbor-to-ecr] assume-role returned no credentials" | tee -a ci_error_summary.txt
+        exit 1
+      fi
+
+      set -- ${OIDC_CREDENTIALS}
+      export AWS_ACCESS_KEY_ID="$1"
+      export AWS_SECRET_ACCESS_KEY="$2"
+      export AWS_SESSION_TOKEN="$3"
+
+      TARGET_TAG="${IMAGE_TAG:?IMAGE_TAG is required}"
+      SOURCE_PROJECT="${SOURCE_PROJECT:-${MODEL_PROJECT:-${HARBOR_PROJECT}}}"
+      SOURCE_NAME="${SOURCE_NAME:-${MODEL_IMAGE_NAME:-${IMAGE_NAME}}}"
+      COPY_REGISTRY="${HARBOR_ECR_SOURCE_REGISTRY:-$HARBOR_REGISTRY}"
+      ECR_REPOSITORY_RESOLVED="${ECR_REPOSITORY:-${MODEL_IMAGE_NAME}}"
+      ECR_REGISTRY_ID="${ECR_REGISTRY_ID:-$AWS_ACCOUNT_ID}"
+      ECR_REGISTRY_RESOLVED="${ECR_REGISTRY:-${ECR_ENDPOINT:-}}"
+
+      SOURCE_IMAGE="${COPY_REGISTRY}/${SOURCE_PROJECT}/${SOURCE_NAME}:${TARGET_TAG}"
+      TARGET_IMAGE="${ECR_REGISTRY_RESOLVED:?ECR_REGISTRY or ECR_ENDPOINT is required}/${ECR_REPOSITORY_RESOLVED}:${TARGET_TAG}"
+
+      echo "SOURCE_IMAGE=${SOURCE_IMAGE}" | tee -a ci_error_summary.txt
+      echo "TARGET_IMAGE=${TARGET_IMAGE}" | tee -a ci_error_summary.txt
+
+      aws sts get-caller-identity --region "${AWS_REGION}" > aws_identity.log 2>&1 || {
+        cat aws_identity.log | tee -a ci_error_summary.txt
+        exit 1
+      }
+      cat aws_identity.log | tee -a ci_error_summary.txt
+
+      aws ecr describe-repositories \
+        --region "${AWS_REGION}" \
+        --registry-id "${ECR_REGISTRY_ID}" \
+        --repository-names "${ECR_REPOSITORY_RESOLVED}" > ecr_repository.log 2>&1 || {
+          cat ecr_repository.log | tee -a ci_error_summary.txt
+          echo "[sync-harbor-to-ecr] ECR repository does not exist or is not accessible. Repository creation is intentionally not performed by CI." | tee -a ci_error_summary.txt
+          exit 1
+        }
+      cat ecr_repository.log | tee -a ci_error_summary.txt
+
+      ECR_PASSWORD="$(aws ecr get-login-password --region "${AWS_REGION}" 2> aws_ecr_login.err)" || {
+        cat aws_ecr_login.err | tee -a ci_error_summary.txt
+        exit 1
+      }
+      echo "[sync-harbor-to-ecr] ECR login token acquired" | tee -a ci_error_summary.txt
+
+      skopeo copy \
+        --all \
+        --src-tls-verify=false \
+        --src-creds "${HARBOR_USER}:${HARBOR_PASSWORD}" \
+        --dest-creds "AWS:${ECR_PASSWORD}" \
+        "docker://${SOURCE_IMAGE}" \
+        "docker://${TARGET_IMAGE}" > skopeo_copy.log 2>&1 || {
+          cat skopeo_copy.log | tee -a ci_error_summary.txt
+          exit 1
+        }
+      cat skopeo_copy.log | tee -a ci_error_summary.txt
+
+      aws ecr describe-images \
+        --region "${AWS_REGION}" \
+        --registry-id "${ECR_REGISTRY_ID}" \
+        --repository-name "${ECR_REPOSITORY_RESOLVED}" \
+        --image-ids imageTag="${TARGET_TAG}" \
+        --query 'imageDetails[0].{digest:imageDigest,pushedAt:imagePushedAt,tags:imageTags}' \
+        --output json > ecr_image_verify.log 2>&1 || {
+          cat ecr_image_verify.log | tee -a ci_error_summary.txt
+          exit 1
+        }
+      cat ecr_image_verify.log | tee -a ci_error_summary.txt
+  artifacts:
+    when: always
+    paths:
+      - ci_error_summary.txt
+    expire_in: 1 day
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "api"'
+
+notify-success:
+  stage: notify
+  image:
+    name: harbor.intp.me/docker-hub/jeongseungmin/notify-runner:latest
+    entrypoint: [""]
+  needs:
+    - job: build-heavy-base
+      artifacts: true
+      optional: true
+    - job: trivy-scan
+      artifacts: true
+      optional: true
+    - job: scan-model-image
+      artifacts: true
+      optional: true
+    - job: sync-harbor-to-ecr
+      artifacts: true
+      optional: true
+  script:
+    - |
+      if [ "${CI_PIPELINE_SOURCE:-}" = "trigger" ] || [ "${CI_PIPELINE_SOURCE:-}" = "api" ]; then
+        export NOTIFY_SUMMARY="${MODEL_IMAGE_NAME:-unknown} Harbor to ECR push 완료. tag=${IMAGE_TAG:-unknown}"
+      else
+        export NOTIFY_SUMMARY="사설망 베이스 이미지 빌드 및 Trivy 스캔 완료"
+      fi
+      export NOTIFY_STATUS="success"
+      /usr/local/bin/notify.sh
+  when: on_success
+  allow_failure: true
+  tags:
+    - gpu-worker
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      changes:
+        - Dockerfile.build
+        - model_build.py
+        - .gitlab-ci.yml
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "api"'
+      when: on_success
+    - when: never
+
+# ==============================================================================
+# Failure notification
+# ==============================================================================
+notify_failure:
+  stage: notify
+  image:
+    name: harbor.intp.me/docker-hub/jeongseungmin/notify-runner:latest
+    entrypoint: [""]
+  needs:
+    - job: build-heavy-base
+      artifacts: true
+      optional: true
+    - job: trivy-scan
+      artifacts: true
+      optional: true
+    - job: scan-model-image
+      artifacts: true
+      optional: true
+    - job: sync-harbor-to-ecr
+      artifacts: true
+      optional: true
+  script:
+    - NOTIFY_STATUS=failed /usr/local/bin/notify.sh
+  when: on_failure
+  allow_failure: true
+  tags:
+    - gpu-worker

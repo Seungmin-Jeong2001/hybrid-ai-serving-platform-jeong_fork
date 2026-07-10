@@ -1,31 +1,29 @@
-# GPU Worker 기본 리소스
+# GPU Worker Resources
 
-이 디렉터리는 GPU Worker가 cluster에 합류한 뒤 확인해야 할 최소 리소스를 관리합니다.
-OpenStack에서 GPU flavor VM을 만들고, Kubernetes node 등록과 NVIDIA runtime 설치가
-끝난 다음 적용하는 것을 기준으로 합니다.
+이 디렉터리는 GPU worker의 Kubernetes 리소스 기준을 관리합니다.
 
-OpenStack VM 자체의 host dependency는 `openstack/cloud-init/base.yaml.tftpl`에서 자동 설치합니다.
-GPU worker cloud-init은 NVIDIA Container Toolkit을 설치하고, NVIDIA PCI device가 보이면
-`ubuntu-drivers autoinstall`, persistence mode, PCIe performance policy, PCIe link/counter 진단을 수행합니다.
+## 담당 범위
 
-## 적용 순서
+- GPU RuntimeClass 기준
+- NVIDIA device plugin 설치 기준
+- GPU 학습/검증 이미지 프리풀 기준
+- GPU validation job 기준
+- GPU node label/taint 계획
 
-```sh
-kubectl apply -k private/gpu-worker
+## 목표 역할
+
+```text
+GPU worker VM
+  -> CUDA/NVIDIA runtime
+  -> NVIDIA device plugin
+  -> Kubernetes nvidia.com/gpu resource
+  -> GitLab SSH runner execution target
+  -> optional Kubernetes GPU node
 ```
 
-적용 전 확인할 것:
+## 적용 기준
 
-- GPU node에 `accelerator=nvidia` label을 부여합니다.
-- GPU node에 `nvidia.com/gpu=true:NoSchedule` taint를 부여합니다.
-- NVIDIA device plugin은 Helm 또는 GitOps로 설치합니다. Host dependency와 container toolkit은 cloud-init에서 먼저 준비됩니다.
-- `nvidia-device-plugin-values.example.yaml`은 실제 값이 아닌 출발점입니다.
-
-적용 후 `gpu-validation` Job으로 GPU runtime 연결 여부를 확인합니다.
-
-노드 내부에서 host dependency를 확인할 때:
-
-```sh
-sudo /usr/local/sbin/hybrid-ai-dependency-check
-sudo /usr/local/sbin/hybrid-ai-gpu-pcie-tune
-```
+- `nvidia-device-plugin-daemonset`은 `kube-system` namespace에 배포합니다.
+- GPU node에는 `hybrid-ai.io/node-role=gpu-worker`, `hybrid-ai.io/accelerator=nvidia` label이 있어야 합니다.
+- GPU node taint는 `nvidia.com/gpu=true:NoSchedule` 기준이며, plugin과 GPU workload가 toleration으로 통과합니다.
+- `gpu-image-prepuller`는 검증용 CUDA 이미지와 PyTorch `2.7.0-cuda12.8-cudnn9-runtime` 학습 이미지를 GPU node에 미리 당겨 cold start를 줄입니다.

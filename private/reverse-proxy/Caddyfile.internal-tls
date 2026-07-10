@@ -1,0 +1,91 @@
+{
+	email {$HA_CADDY_ACME_EMAIL:admin@intp.me}
+	auto_https off
+}
+
+http://{$HA_OPENSTACK_DOMAIN:openstack.intp.me},
+http://{$HA_K8S_DOMAIN:k8s.intp.me},
+http://{$HA_GRAFANA_DOMAIN:grafana.intp.me},
+http://{$HA_ARGOCD_DOMAIN:argocd.intp.me},
+http://{$HA_GIT_DOMAIN:gitlab.intp.me},
+http://{$HA_HARBOR_DOMAIN:harbor.intp.me},
+http://{$HA_MINIO_DOMAIN:minio.intp.me},
+http://{$HA_MINIO_CONSOLE_DOMAIN:minio-console.intp.me} {
+	redir https://{host}{uri} permanent
+}
+
+{$HA_OPENSTACK_DOMAIN:openstack.intp.me}:443 {
+	tls /etc/hybrid-ai/caddy/intp.me.crt /etc/hybrid-ai/caddy/intp.me.key
+	encode zstd gzip
+	reverse_proxy {$HA_OPENSTACK_HORIZON_UPSTREAM:127.0.0.1:18081} {
+		header_up Host {host}
+		header_up X-Forwarded-Host {host}
+		header_up X-Forwarded-Proto https
+	}
+}
+
+{$HA_K8S_DOMAIN:k8s.intp.me}:443 {
+	tls /etc/hybrid-ai/caddy/intp.me.crt /etc/hybrid-ai/caddy/intp.me.key
+	encode zstd gzip
+	reverse_proxy {$HA_K8S_DASHBOARD_UPSTREAM:127.0.0.1:18082}
+}
+
+{$HA_GRAFANA_DOMAIN:grafana.intp.me}:443 {
+	tls /etc/hybrid-ai/caddy/intp.me.crt /etc/hybrid-ai/caddy/intp.me.key
+	encode zstd gzip
+	reverse_proxy {$HA_GRAFANA_UPSTREAM:127.0.0.1:3000}
+}
+
+{$HA_ARGOCD_DOMAIN:argocd.intp.me}:443 {
+	tls /etc/hybrid-ai/caddy/intp.me.crt /etc/hybrid-ai/caddy/intp.me.key
+	encode zstd gzip
+	reverse_proxy {$HA_ARGOCD_UPSTREAM:127.0.0.1:8080}
+}
+
+{$HA_GIT_DOMAIN:gitlab.intp.me}:443 {
+	tls /etc/hybrid-ai/caddy/intp.me.crt /etc/hybrid-ai/caddy/intp.me.key
+	encode zstd gzip
+	reverse_proxy {$HA_GITLAB_UPSTREAM:127.0.0.1:18083} {
+		header_up Host {host}
+		header_up X-Forwarded-Host {host}
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Ssl on
+		header_up X-Forwarded-Port 443
+	}
+}
+
+{$HA_HARBOR_DOMAIN:harbor.intp.me}:443 {
+	tls /etc/hybrid-ai/caddy/intp.me.crt /etc/hybrid-ai/caddy/intp.me.key
+	encode zstd gzip
+	reverse_proxy {$HA_HARBOR_UPSTREAM:127.0.0.1:18084} {
+		header_up Host {host}
+		header_up X-Forwarded-Host {host}
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Ssl on
+		header_up X-Forwarded-Port 443
+	}
+}
+
+{$HA_MINIO_DOMAIN:minio.intp.me}:443 {
+	tls /etc/hybrid-ai/caddy/intp.me.crt /etc/hybrid-ai/caddy/intp.me.key
+	encode zstd gzip
+	reverse_proxy {$HA_MINIO_API_UPSTREAM:127.0.0.1:19000} {
+		header_up Host {host}
+		header_up X-Forwarded-Host {host}
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Ssl on
+		header_up X-Forwarded-Port 443
+	}
+}
+
+{$HA_MINIO_CONSOLE_DOMAIN:minio-console.intp.me}:443 {
+	tls /etc/hybrid-ai/caddy/intp.me.crt /etc/hybrid-ai/caddy/intp.me.key
+	encode zstd gzip
+	reverse_proxy {$HA_MINIO_CONSOLE_UPSTREAM:127.0.0.1:19090} {
+		header_up Host {host}
+		header_up X-Forwarded-Host {host}
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Ssl on
+		header_up X-Forwarded-Port 443
+	}
+}

@@ -8,9 +8,19 @@ locals {
   )
 
   cloud_init_common = {
-    install_node_dependencies = tostring(var.install_node_dependencies)
-    enable_gpu_bootstrap      = tostring(var.enable_gpu_bootstrap)
-    gpu_driver_autoinstall    = tostring(var.gpu_driver_autoinstall)
+    install_node_dependencies       = tostring(var.install_node_dependencies)
+    gitlab_container_image          = var.gitlab_container_image
+    enable_gpu_bootstrap            = tostring(var.enable_gpu_bootstrap)
+    gpu_driver_autoinstall          = tostring(var.gpu_driver_autoinstall)
+    gpu_driver_package              = var.gpu_driver_package
+    enable_gpu_cuda_bootstrap       = tostring(var.enable_gpu_cuda_bootstrap)
+    gpu_cuda_toolkit_package        = var.gpu_cuda_toolkit_package
+    gpu_cudnn_package               = var.gpu_cudnn_package
+    enable_gpu_training_bootstrap   = tostring(var.enable_gpu_training_bootstrap)
+    gpu_training_venv_path          = var.gpu_training_venv_path
+    gpu_training_pytorch_cuda_index = var.gpu_training_pytorch_cuda_index_url
+    gpu_training_pip_cache_dir      = var.gpu_training_pip_cache_dir
+    gpu_training_python_packages    = var.gpu_training_python_packages
   }
 }
 
@@ -51,8 +61,6 @@ resource "openstack_networking_secgroup_rule_v2" "allow_internal_tcp" {
   direction         = "ingress"
   ethertype         = "IPv4"
   protocol          = "tcp"
-  port_range_min    = 1
-  port_range_max    = 65535
   remote_ip_prefix  = var.private_network_cidr
   security_group_id = openstack_networking_secgroup_v2.private.id
 }
@@ -61,8 +69,6 @@ resource "openstack_networking_secgroup_rule_v2" "allow_internal_udp" {
   direction         = "ingress"
   ethertype         = "IPv4"
   protocol          = "udp"
-  port_range_min    = 1
-  port_range_max    = 65535
   remote_ip_prefix  = var.private_network_cidr
   security_group_id = openstack_networking_secgroup_v2.private.id
 }
@@ -87,6 +93,69 @@ resource "openstack_networking_secgroup_rule_v2" "allow_ssh" {
   security_group_id = openstack_networking_secgroup_v2.private.id
 }
 
+resource "openstack_networking_secgroup_rule_v2" "allow_gitlab_http" {
+  for_each = toset(var.gitlab_count > 0 ? var.gitlab_http_allowed_cidrs : [])
+
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 80
+  port_range_max    = 80
+  remote_ip_prefix  = each.value
+  security_group_id = openstack_networking_secgroup_v2.private.id
+}
+
+resource "openstack_networking_secgroup_rule_v2" "allow_harbor_http" {
+  for_each = var.harbor_count > 0 ? setsubtract(
+    toset(var.harbor_http_allowed_cidrs),
+    toset(var.gitlab_count > 0 ? var.gitlab_http_allowed_cidrs : []),
+  ) : toset([])
+
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 80
+  port_range_max    = 80
+  remote_ip_prefix  = each.value
+  security_group_id = openstack_networking_secgroup_v2.private.id
+}
+
+resource "openstack_networking_secgroup_rule_v2" "allow_harbor_https" {
+  for_each = toset(var.harbor_count > 0 ? var.harbor_http_allowed_cidrs : [])
+
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 443
+  port_range_max    = 443
+  remote_ip_prefix  = each.value
+  security_group_id = openstack_networking_secgroup_v2.private.id
+}
+
+resource "openstack_networking_secgroup_rule_v2" "allow_minio_api_nodeport" {
+  for_each = toset(var.minio_nodeport_allowed_cidrs)
+
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 30900
+  port_range_max    = 30900
+  remote_ip_prefix  = each.value
+  security_group_id = openstack_networking_secgroup_v2.private.id
+}
+
+resource "openstack_networking_secgroup_rule_v2" "allow_minio_console_nodeport" {
+  for_each = toset(var.minio_nodeport_allowed_cidrs)
+
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 30990
+  port_range_max    = 30990
+  remote_ip_prefix  = each.value
+  security_group_id = openstack_networking_secgroup_v2.private.id
+}
+
 resource "openstack_compute_keypair_v2" "admin" {
   name       = var.key_pair_name
   public_key = var.ssh_public_key
@@ -102,6 +171,11 @@ resource "openstack_networking_port_v2" "control_plane" {
 
   fixed_ip {
     subnet_id = openstack_networking_subnet_v2.private.id
+    ip_address = (
+      length(var.control_plane_private_ips) > count.index
+      ? var.control_plane_private_ips[count.index]
+      : null
+    )
   }
 }
 
@@ -114,6 +188,7 @@ resource "openstack_compute_instance_v2" "control_plane" {
   key_pair          = openstack_compute_keypair_v2.admin.name
   availability_zone = var.availability_zone
   user_data         = templatefile("${path.module}/cloud-init/base.yaml.tftpl", merge(local.cloud_init_common, { node_role = "control-plane" }))
+  config_drive      = true
 
   metadata = merge(local.common_metadata, {
     role = "control-plane"
@@ -121,6 +196,23 @@ resource "openstack_compute_instance_v2" "control_plane" {
 
   network {
     port = openstack_networking_port_v2.control_plane[count.index].id
+  }
+
+  lifecycle {
+    ignore_changes = [
+      flavor_name,
+      image_name,
+      user_data,
+      config_drive,
+      key_pair,
+      network,
+    ]
+  }
+
+  timeouts {
+    create = var.compute_instance_create_timeout
+    update = var.compute_instance_update_timeout
+    delete = var.compute_instance_delete_timeout
   }
 }
 
@@ -136,7 +228,10 @@ resource "openstack_networking_floatingip_associate_v2" "control_plane" {
   floating_ip = openstack_networking_floatingip_v2.control_plane[count.index].address
   port_id     = openstack_networking_port_v2.control_plane[count.index].id
 
-  depends_on = [openstack_networking_router_interface_v2.private]
+  depends_on = [
+    openstack_compute_instance_v2.control_plane,
+    openstack_networking_router_interface_v2.private,
+  ]
 }
 
 resource "openstack_networking_port_v2" "build_worker" {
@@ -149,6 +244,11 @@ resource "openstack_networking_port_v2" "build_worker" {
 
   fixed_ip {
     subnet_id = openstack_networking_subnet_v2.private.id
+    ip_address = (
+      length(var.build_worker_private_ips) > count.index
+      ? var.build_worker_private_ips[count.index]
+      : null
+    )
   }
 }
 
@@ -161,6 +261,7 @@ resource "openstack_compute_instance_v2" "build_worker" {
   key_pair          = openstack_compute_keypair_v2.admin.name
   availability_zone = var.availability_zone
   user_data         = templatefile("${path.module}/cloud-init/base.yaml.tftpl", merge(local.cloud_init_common, { node_role = "build-worker" }))
+  config_drive      = true
 
   metadata = merge(local.common_metadata, {
     role = "build-worker"
@@ -168,6 +269,23 @@ resource "openstack_compute_instance_v2" "build_worker" {
 
   network {
     port = openstack_networking_port_v2.build_worker[count.index].id
+  }
+
+  lifecycle {
+    ignore_changes = [
+      flavor_name,
+      image_name,
+      user_data,
+      config_drive,
+      key_pair,
+      network,
+    ]
+  }
+
+  timeouts {
+    create = var.compute_instance_create_timeout
+    update = var.compute_instance_update_timeout
+    delete = var.compute_instance_delete_timeout
   }
 }
 
@@ -183,7 +301,10 @@ resource "openstack_networking_floatingip_associate_v2" "build_worker" {
   floating_ip = openstack_networking_floatingip_v2.build_worker[count.index].address
   port_id     = openstack_networking_port_v2.build_worker[count.index].id
 
-  depends_on = [openstack_networking_router_interface_v2.private]
+  depends_on = [
+    openstack_compute_instance_v2.build_worker,
+    openstack_networking_router_interface_v2.private,
+  ]
 }
 
 resource "openstack_networking_port_v2" "gpu_worker" {
@@ -196,6 +317,11 @@ resource "openstack_networking_port_v2" "gpu_worker" {
 
   fixed_ip {
     subnet_id = openstack_networking_subnet_v2.private.id
+    ip_address = (
+      length(var.gpu_worker_private_ips) > count.index
+      ? var.gpu_worker_private_ips[count.index]
+      : null
+    )
   }
 }
 
@@ -208,6 +334,7 @@ resource "openstack_compute_instance_v2" "gpu_worker" {
   key_pair          = openstack_compute_keypair_v2.admin.name
   availability_zone = var.availability_zone
   user_data         = templatefile("${path.module}/cloud-init/base.yaml.tftpl", merge(local.cloud_init_common, { node_role = "gpu-worker" }))
+  config_drive      = true
 
   metadata = merge(local.common_metadata, {
     role = "gpu-worker"
@@ -215,6 +342,23 @@ resource "openstack_compute_instance_v2" "gpu_worker" {
 
   network {
     port = openstack_networking_port_v2.gpu_worker[count.index].id
+  }
+
+  lifecycle {
+    ignore_changes = [
+      flavor_name,
+      image_name,
+      user_data,
+      config_drive,
+      key_pair,
+      network,
+    ]
+  }
+
+  timeouts {
+    create = var.compute_instance_create_timeout
+    update = var.compute_instance_update_timeout
+    delete = var.compute_instance_delete_timeout
   }
 }
 
@@ -230,5 +374,154 @@ resource "openstack_networking_floatingip_associate_v2" "gpu_worker" {
   floating_ip = openstack_networking_floatingip_v2.gpu_worker[count.index].address
   port_id     = openstack_networking_port_v2.gpu_worker[count.index].id
 
-  depends_on = [openstack_networking_router_interface_v2.private]
+  depends_on = [
+    openstack_compute_instance_v2.gpu_worker,
+    openstack_networking_router_interface_v2.private,
+  ]
+}
+
+resource "openstack_networking_port_v2" "gitlab" {
+  count = var.gitlab_count
+
+  name               = format("%s-gitlab-%02d-port", var.project_name, count.index + 1)
+  network_id         = openstack_networking_network_v2.private.id
+  admin_state_up     = true
+  security_group_ids = [openstack_networking_secgroup_v2.private.id]
+
+  fixed_ip {
+    subnet_id = openstack_networking_subnet_v2.private.id
+    ip_address = (
+      length(var.gitlab_private_ips) > count.index
+      ? var.gitlab_private_ips[count.index]
+      : null
+    )
+  }
+}
+
+resource "openstack_compute_instance_v2" "gitlab" {
+  count = var.gitlab_count
+
+  name              = format("%s-gitlab-%02d", var.project_name, count.index + 1)
+  image_name        = var.gitlab_image_name
+  flavor_name       = var.gitlab_flavor_name
+  key_pair          = openstack_compute_keypair_v2.admin.name
+  availability_zone = var.availability_zone
+  user_data         = templatefile("${path.module}/cloud-init/base.yaml.tftpl", merge(local.cloud_init_common, { node_role = "gitlab" }))
+  config_drive      = true
+
+  metadata = merge(local.common_metadata, {
+    role = "gitlab"
+  })
+
+  network {
+    port = openstack_networking_port_v2.gitlab[count.index].id
+  }
+
+  lifecycle {
+    ignore_changes = [
+      flavor_name,
+      image_name,
+      user_data,
+      config_drive,
+      key_pair,
+      network,
+    ]
+  }
+
+  timeouts {
+    create = var.compute_instance_create_timeout
+    update = var.compute_instance_update_timeout
+    delete = var.compute_instance_delete_timeout
+  }
+}
+
+resource "openstack_networking_floatingip_v2" "gitlab" {
+  count = var.assign_floating_ips ? var.gitlab_count : 0
+
+  pool = var.floating_ip_pool
+}
+
+resource "openstack_networking_floatingip_associate_v2" "gitlab" {
+  count = var.assign_floating_ips ? var.gitlab_count : 0
+
+  floating_ip = openstack_networking_floatingip_v2.gitlab[count.index].address
+  port_id     = openstack_networking_port_v2.gitlab[count.index].id
+
+  depends_on = [
+    openstack_compute_instance_v2.gitlab,
+    openstack_networking_router_interface_v2.private,
+  ]
+}
+
+resource "openstack_networking_port_v2" "harbor" {
+  count = var.harbor_count
+
+  name               = format("%s-harbor-%02d-port", var.project_name, count.index + 1)
+  network_id         = openstack_networking_network_v2.private.id
+  admin_state_up     = true
+  security_group_ids = [openstack_networking_secgroup_v2.private.id]
+
+  fixed_ip {
+    subnet_id = openstack_networking_subnet_v2.private.id
+    ip_address = (
+      length(var.harbor_private_ips) > count.index
+      ? var.harbor_private_ips[count.index]
+      : null
+    )
+  }
+}
+
+resource "openstack_compute_instance_v2" "harbor" {
+  count = var.harbor_count
+
+  name              = format("%s-harbor-%02d", var.project_name, count.index + 1)
+  image_name        = var.harbor_image_name
+  flavor_name       = var.harbor_flavor_name
+  key_pair          = openstack_compute_keypair_v2.admin.name
+  availability_zone = var.availability_zone
+  user_data         = templatefile("${path.module}/cloud-init/base.yaml.tftpl", merge(local.cloud_init_common, { node_role = "harbor" }))
+  config_drive      = true
+
+  metadata = merge(local.common_metadata, {
+    role = "harbor"
+  })
+
+  network {
+    port = openstack_networking_port_v2.harbor[count.index].id
+  }
+
+  lifecycle {
+    ignore_changes = [
+      flavor_name,
+      image_name,
+      user_data,
+      config_drive,
+      key_pair,
+      network,
+    ]
+  }
+
+  timeouts {
+    create = var.compute_instance_create_timeout
+    update = var.compute_instance_update_timeout
+    delete = var.compute_instance_delete_timeout
+  }
+}
+
+resource "openstack_networking_floatingip_v2" "harbor" {
+  count = var.assign_floating_ips ? var.harbor_count : 0
+
+  pool = var.floating_ip_pool
+}
+
+resource "openstack_networking_floatingip_associate_v2" "harbor" {
+  count = var.assign_floating_ips ? var.harbor_count : 0
+
+  floating_ip = openstack_networking_floatingip_v2.harbor[count.index].address
+  port_id     = openstack_networking_port_v2.harbor[count.index].id
+
+  depends_on = [
+    openstack_compute_instance_v2.harbor,
+    openstack_networking_router_interface_v2.private,
+  ]
 }

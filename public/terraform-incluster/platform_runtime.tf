@@ -2,6 +2,10 @@ resource "kubernetes_namespace" "inference" {
   metadata {
     name = "inference"
   }
+  # lifecycle ignore_changes로 ArgoCD가 추가하는 annotation/label 무시
+  lifecycle {
+    ignore_changes = [metadata[0].annotations, metadata[0].labels]
+  }
 }
 
 resource "kubernetes_config_map" "inference_config" {
@@ -10,8 +14,14 @@ resource "kubernetes_config_map" "inference_config" {
     namespace = kubernetes_namespace.inference.metadata[0].name
   }
 
+  depends_on = [kubernetes_namespace.inference]
+
   data = {
-    BOOTSTRAP_SERVERS = data.terraform_remote_state.platform.outputs.msk_bootstrap_brokers
+    BOOTSTRAP_SERVERS       = data.terraform_remote_state.platform.outputs.msk_bootstrap_brokers
+    KAFKA_TLS               = "enable"
+    KAFKA_SECURITY_PROTOCOL = "SSL"
+    DYNAMODB_TABLE_NAME     = data.terraform_remote_state.platform.outputs.dynamodb_table_name
+    ALERT_STATE_TABLE_NAME  = data.terraform_remote_state.platform.outputs.dynamodb_alert_state_table_name
   }
 }
 

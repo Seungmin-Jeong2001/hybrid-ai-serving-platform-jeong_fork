@@ -17,7 +17,7 @@ EQUIPMENT_COUNT = int(os.getenv("EQUIPMENT_COUNT", "100"))
 WINDOW_SIZE = int(os.getenv("WINDOW_SIZE", "1000"))
 INTERVAL_SEC = float(os.getenv("INTERVAL_SEC", "1.0"))
 REQUEST_TIMEOUT_SEC = float(os.getenv("REQUEST_TIMEOUT_SEC", "10"))
-MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", "50"))  # 동시 요청 수 제한
+MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", str(EQUIPMENT_COUNT)))
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -88,38 +88,74 @@ async def send_request_async(client, semaphore, equipment_id, payload):
 async def main():
     df = load_normal_data()
     offsets = create_equipment_offsets(df)
+    equipment_ids = list(offsets.keys())
     semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
+    cadence_sec = INTERVAL_SEC / EQUIPMENT_COUNT
+    in_flight_tasks: set[asyncio.Task] = set()
+    sent_since_log = 0
+    log_started_at = time.perf_counter()
 
     logger.info("loaded data path=%s rows=%s", DATA_PATH, len(df))
     logger.info(
-        "simulator config api_url=%s factory_id=%s equipment_count=%s window_size=%s interval_sec=%s max_concurrency=%s",
+        "simulator config api_url=%s factory_id=%s equipment_count=%s window_size=%s interval_sec=%s cadence_sec=%s max_concurrency=%s target_rps=%s",
         API_URL,
         FACTORY_ID,
         EQUIPMENT_COUNT,
         WINDOW_SIZE,
         INTERVAL_SEC,
+        round(cadence_sec, 4),
         MAX_CONCURRENCY,
+        round(EQUIPMENT_COUNT / INTERVAL_SEC, 2),
     )
 
-    async with httpx.AsyncClient() as client:
+    limits = httpx.Limits(
+        max_connections=MAX_CONCURRENCY,
+        max_keepalive_connections=MAX_CONCURRENCY,
+    )
+    async with httpx.AsyncClient(limits=limits) as client:
+        next_send_at = time.perf_counter()
         while True:
-            start_time = time.time()
 
             # 모든 장비 요청을 병렬로 전송
-            tasks = []
-            for equipment_id, offset in offsets.items():
+            for equipment_id in equipment_ids:
+                while len(in_flight_tasks) >= MAX_CONCURRENCY:
+                    done, _ = await asyncio.wait(
+                        in_flight_tasks,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    in_flight_tasks.difference_update(done)
+
+                now = time.perf_counter()
+                sleep_time = next_send_at - now
+                if sleep_time > 0:
+                    await asyncio.sleep(sleep_time)
+
+                offset = offsets[equipment_id]
                 payload = build_inference_request(df, equipment_id, offset)
-                tasks.append(send_request_async(client, semaphore, equipment_id, payload))
+                task = asyncio.create_task(
+                    send_request_async(client, semaphore, equipment_id, payload)
+                )
+                in_flight_tasks.add(task)
+                sent_since_log += 1
 
                 offsets[equipment_id] += WINDOW_SIZE
                 if offsets[equipment_id] + WINDOW_SIZE >= len(df):
                     offsets[equipment_id] = random.randint(0, len(df) - WINDOW_SIZE)
 
-            await asyncio.gather(*tasks)
+                next_send_at += cadence_sec
 
-            elapsed = time.time() - start_time
-            sleep_time = max(0, INTERVAL_SEC - elapsed)
-            await asyncio.sleep(sleep_time)
+                log_elapsed = time.perf_counter() - log_started_at
+                if log_elapsed >= 1.0:
+                    achieved_rps = round(sent_since_log / log_elapsed, 2)
+                    logger.info(
+                        "steady window sent=%s elapsed_sec=%.3f achieved_rps=%s inflight=%s",
+                        sent_since_log,
+                        log_elapsed,
+                        achieved_rps,
+                        len(in_flight_tasks),
+                    )
+                    sent_since_log = 0
+                    log_started_at = time.perf_counter()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,70 @@
+namespace: model-build
+
+gitlabUrl: https://gitlab.intp.me
+
+secret: gitlab-runner
+certsSecretName: gitlab-runner-certs
+
+image:
+  registry: harbor.intp.me
+  image: docker-hub/gitlab/gitlab-runner
+  tag: alpine-v19.0.1
+
+imagePullSecrets:
+  - name: harbor-kaniko-push
+
+nodeSelector:
+  kubernetes.io/hostname: hybrid-ai-private-build-01
+
+rbac:
+  create: false
+
+serviceAccount:
+  create: false
+  name: model-build-runner
+
+concurrent: 10
+checkInterval: 3
+
+hostAliases:
+  - ip: 100.110.101.77
+    hostnames:
+      - gitlab.intp.me
+
+envVars:
+  - name: GITLAB_RUNNER_DISABLE_SSL_VERIFICATION
+    value: "true"
+
+runners:
+  executor: kubernetes
+  name: private-model-build-runner
+  tags: "gpu-worker,private,ecr-sync,model-build"
+  runUntagged: false
+  locked: false
+  config: |
+    [[runners]]
+      environment = [
+        "HA_PRIVATE_CACHE_DIR=/opt/hybrid-ai/bastion-cache",
+        "PIP_FIND_LINKS=/opt/hybrid-ai/bastion-cache/pip/wheelhouse"
+      ]
+      request_concurrency = 2
+
+      [runners.kubernetes]
+        namespace = "model-build"
+        service_account = "model-build-runner"
+        image = "harbor.intp.me/docker-hub/library/alpine:latest"
+        helper_image = "harbor.intp.me/docker-hub/gitlab/gitlab-runner-helper:x86_64-v19.0.1"
+        privileged = true
+        memory_request = "2Gi"
+        memory_limit = "10Gi"
+        poll_timeout = 900
+        image_pull_secrets = ["harbor-kaniko-push"]
+
+        [runners.kubernetes.node_selector]
+          "kubernetes.io/hostname" = "hybrid-ai-private-build-01"
+
+        [[runners.kubernetes.volumes.host_path]]
+          name = "bastion-cache"
+          mount_path = "/opt/hybrid-ai/bastion-cache"
+          host_path = "/opt/hybrid-ai/bastion-cache"
+          read_only = true

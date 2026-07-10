@@ -16,8 +16,12 @@ spec:
       valuesObject:
         controllerManager:
           replicaCount: 1
+          nodeSelector:
+            workload: general
         dashboard:
           securityMode: true
+          nodeSelector:
+            workload: general
         chaosDaemon:
           runtime: containerd
           socketPath: /run/containerd/containerd.sock

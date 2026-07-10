@@ -8,6 +8,7 @@ KAFKA_SCALA="2.13"
 KAFKA_DIR="/tmp/kafka-${KAFKA_VERSION}"
 KAFKA_TOPICS="${KAFKA_DIR}/bin/kafka-topics.sh"
 KAFKA_CONFIGS="${KAFKA_DIR}/bin/kafka-configs.sh"
+KAFKA_CLIENT_CONFIG="/tmp/kafka-client.properties"
 
 require_env() {
   var_name="$1"
@@ -22,6 +23,9 @@ require_env "MSK_BOOTSTRAP_BROKERS"
 require_env "MSK_TOPIC_REPLICATION_FACTOR"
 require_env "MSK_TOPIC_CONFIGS_JSON"
 require_env "MSK_TOPICS_JSON"
+
+KAFKA_SECURITY_PROTOCOL="${KAFKA_SECURITY_PROTOCOL:-SSL}"
+printf 'security.protocol=%s\n' "$KAFKA_SECURITY_PROTOCOL" > "$KAFKA_CLIENT_CONFIG"
 
 if [ "${MSK_TOPIC_REPLICATION_FACTOR}" -lt 1 ]; then
   echo "MSK_TOPIC_REPLICATION_FACTOR must be at least 1." >&2
@@ -53,6 +57,7 @@ printf '%s' "$MSK_TOPICS_JSON" | jq -r 'to_entries[] | @base64' | while IFS= rea
 
   existing_partitions="$("$KAFKA_TOPICS" \
     --bootstrap-server "$MSK_BOOTSTRAP_BROKERS" \
+    --command-config "$KAFKA_CLIENT_CONFIG" \
     --describe \
     --topic "$topic_name" 2>/dev/null \
     | grep "Topic: $topic_name" \
@@ -62,6 +67,7 @@ printf '%s' "$MSK_TOPICS_JSON" | jq -r 'to_entries[] | @base64' | while IFS= rea
     echo "Creating topic '$topic_name' with $desired_partitions partitions."
     "$KAFKA_TOPICS" \
       --bootstrap-server "$MSK_BOOTSTRAP_BROKERS" \
+      --command-config "$KAFKA_CLIENT_CONFIG" \
       --create \
       --if-not-exists \
       --topic "$topic_name" \
@@ -74,6 +80,7 @@ printf '%s' "$MSK_TOPICS_JSON" | jq -r 'to_entries[] | @base64' | while IFS= rea
     echo "Increasing topic '$topic_name' partitions from $existing_partitions to $desired_partitions."
     "$KAFKA_TOPICS" \
       --bootstrap-server "$MSK_BOOTSTRAP_BROKERS" \
+      --command-config "$KAFKA_CLIENT_CONFIG" \
       --alter \
       --topic "$topic_name" \
       --partitions "$desired_partitions"
@@ -98,6 +105,7 @@ if [ "$has_configs" = "true" ]; then
     echo "Applying configs to topic '$topic_name': $config_str"
     "$KAFKA_CONFIGS" \
       --bootstrap-server "$MSK_BOOTSTRAP_BROKERS" \
+      --command-config "$KAFKA_CLIENT_CONFIG" \
       --alter \
       --entity-type topics \
       --entity-name "$topic_name" \

@@ -1,0 +1,875 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+state_dir=/var/lib/hybrid-ai/gitlab-bootstrap
+status_file="${state_dir}/status.env"
+runner_token_file="${state_dir}/runner-token"
+web_ready=false
+rails_cli_ready=false
+runner_token_ready=false
+image_change_blocked=false
+container_created=false
+
+save_status() {
+  local phase="$1"
+  local message="$2"
+  local container_image=""
+  local container_status=""
+
+  mkdir -p "$state_dir"
+  if command -v docker >/dev/null 2>&1; then
+    container_image="$(docker inspect -f '{{.Config.Image}}' gitlab 2>/dev/null || true)"
+    container_status="$(docker inspect -f '{{.State.Status}}' gitlab 2>/dev/null || true)"
+  fi
+  if [[ -s "$runner_token_file" ]]; then
+    runner_token_ready=true
+  fi
+
+  {
+    printf 'updated_at=%q\n' "$(date -Iseconds)"
+    printf 'phase=%q\n' "$phase"
+    printf 'message=%q\n' "$message"
+    printf 'gitlab_image=%q\n' "${GITLAB_IMAGE:-}"
+    printf 'container_image=%q\n' "$container_image"
+    printf 'container_status=%q\n' "$container_status"
+    printf 'web_ready=%q\n' "$web_ready"
+    printf 'rails_cli_ready=%q\n' "$rails_cli_ready"
+    printf 'runner_token_ready=%q\n' "$runner_token_ready"
+    printf 'image_change_blocked=%q\n' "$image_change_blocked"
+  } > "${status_file}.tmp"
+  chmod 0644 "${status_file}.tmp"
+  mv "${status_file}.tmp" "$status_file"
+}
+
+fail_status() {
+  local status=$?
+  if [[ "$status" -ne 0 ]]; then
+    save_status failed "exit_${status}"
+  fi
+  exit "$status"
+}
+trap fail_status EXIT
+
+stop_periodic_apt() {
+  # Ubuntu's apt-daily / apt-daily-upgrade / unattended-upgrades hold the dpkg
+  # lock right after boot; stop them so this bootstrap's apt calls are not blocked.
+  systemctl disable --now apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
+  systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades.service >/dev/null 2>&1 || true
+}
+
+wait_for_apt_locks() {
+  stop_periodic_apt
+  local deadline=$((SECONDS + 900))
+  local locks=(
+    /var/lib/dpkg/lock
+    /var/lib/dpkg/lock-frontend
+    /var/lib/apt/lists/lock
+    /var/cache/apt/archives/lock
+  )
+  while true; do
+    local busy=0
+    if command -v fuser >/dev/null 2>&1; then
+      for lock in "${locks[@]}"; do
+        if fuser "$lock" >/dev/null 2>&1; then
+          busy=1
+          break
+        fi
+      done
+    fi
+    [[ "$busy" -eq 0 ]] && return 0
+    if (( SECONDS >= deadline )); then
+      echo "Timed out waiting for apt/dpkg locks" >&2
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+wait_for_install_egress() {
+  local deadline=$((SECONDS + 900))
+  local registry_host="registry-1.docker.io"
+  if [[ "${GITLAB_IMAGE}" == */*/* ]]; then
+    registry_host="${GITLAB_IMAGE%%/*}"
+  fi
+
+  while true; do
+    if getent ahostsv4 archive.ubuntu.com >/dev/null 2>&1 \
+      && curl -4 -fsSI --max-time 15 http://archive.ubuntu.com/ubuntu/ >/dev/null 2>&1 \
+      && curl -4 -sSI --max-time 15 "https://${registry_host}/v2/" >/dev/null 2>&1; then
+      return 0
+    fi
+    if (( SECONDS >= deadline )); then
+      echo "Timed out waiting for apt/container registry egress" >&2
+      return 1
+    fi
+    sleep 10
+  done
+}
+
+data_dir_has_gitlab_data() {
+  [[ -d /srv/gitlab/data ]] || return 1
+  find /srv/gitlab/data -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q .
+}
+
+ensure_apt_config() {
+  cat >/etc/apt/apt.conf.d/99hybrid-ai-force-ipv4 <<'EOF'
+Acquire::ForceIPv4 "true";
+Acquire::Retries "5";
+Acquire::http::Timeout "30";
+Acquire::https::Timeout "30";
+Dpkg::Lock::Timeout "900";
+EOF
+}
+
+has_required_packages() {
+  local package
+  for package in ca-certificates curl docker.io openssh-server python3 tzdata; do
+    dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | grep -qx 'ii ' || return 1
+  done
+}
+
+install_local_debs() {
+  local archive_dir="${HYBRID_AI_APT_ARCHIVE_DIR:-}"
+  local debs=()
+
+  [[ -n "$archive_dir" && -d "$archive_dir" ]] || return 1
+  shopt -s nullglob
+  debs=("$archive_dir"/*.deb)
+  shopt -u nullglob
+  ((${#debs[@]} > 0)) || return 1
+
+  echo "Installing GitLab bootstrap packages from ${archive_dir}"
+  wait_for_apt_locks || true
+  if ! dpkg -i "${debs[@]}"; then
+    apt-get \
+      -o Dir::Cache::archives="$archive_dir" \
+      -o Acquire::Retries=0 \
+      -o Dpkg::Lock::Timeout=900 \
+      -f install -y -qq --no-download
+  fi
+  has_required_packages
+}
+
+ensure_packages() {
+  export DEBIAN_FRONTEND=noninteractive
+  export NEEDRESTART_MODE=a
+  export NEEDRESTART_SUSPEND=1
+  local apt_get_common=(
+    -o Acquire::ForceIPv4=true
+    -o Acquire::Retries=5
+    -o Acquire::http::Timeout=30
+    -o Acquire::https::Timeout=30
+    -o Dpkg::Lock::Timeout=900
+  )
+  if ! has_required_packages; then
+    if ! install_local_debs; then
+      wait_for_install_egress
+      # Best-effort lock wait; apt-get itself waits up to Dpkg::Lock::Timeout.
+      wait_for_apt_locks || true
+      apt-get "${apt_get_common[@]}" update -qq
+      apt-get "${apt_get_common[@]}" install -y -qq ca-certificates curl docker.io openssh-server python3 tzdata
+    fi
+  fi
+  systemctl enable --now docker
+}
+
+ensure_swap() {
+  local swap_file=/swapfile
+  local swap_size_gb=4
+  local swap_size_bytes
+  local current_size_bytes=0
+
+  if [[ -n "${GITLAB_SWAP_SIZE_GB:-}" ]]; then
+    swap_size_gb="${GITLAB_SWAP_SIZE_GB}"
+  fi
+  if ! [[ "$swap_size_gb" =~ ^[0-9]+$ ]]; then
+    echo "GITLAB_SWAP_SIZE_GB must be a non-negative integer" >&2
+    return 1
+  fi
+  if (( swap_size_gb == 0 )); then
+    return 0
+  fi
+
+  swap_size_bytes=$((swap_size_gb * 1024 * 1024 * 1024))
+  if [[ -f "$swap_file" ]]; then
+    current_size_bytes="$(stat -c %s "$swap_file")"
+  fi
+  if swapon --noheadings --raw --show=NAME | grep -qx "$swap_file" \
+    && [[ "$current_size_bytes" -eq "$swap_size_bytes" ]]; then
+    return 0
+  fi
+
+  swapoff "$swap_file" >/dev/null 2>&1 || true
+  if [[ "$current_size_bytes" -ne "$swap_size_bytes" ]]; then
+    rm -f "$swap_file"
+    if ! fallocate -l "${swap_size_gb}G" "$swap_file"; then
+      dd if=/dev/zero of="$swap_file" bs=1M count=$((swap_size_gb * 1024)) status=none
+    fi
+  fi
+  chmod 0600 "$swap_file"
+  mkswap "$swap_file" >/dev/null
+  swapon "$swap_file"
+  if grep -qE "^[^#][[:space:]]+${swap_file//\//\\/}[[:space:]]+" /etc/fstab; then
+    sed -i "s|^[^#][[:space:]]\\+${swap_file//\//\\/}[[:space:]].*|${swap_file} none swap sw 0 0|" /etc/fstab
+  elif ! grep -qE "^[^#]*${swap_file//\//\\/}" /etc/fstab; then
+    printf '%s none swap sw 0 0\n' "$swap_file" >> /etc/fstab
+  fi
+}
+
+ensure_gitlab_io_layout() {
+  local logs_tmpfs="${GITLAB_LOGS_TMPFS:-true}"
+  local logs_tmpfs_size="${GITLAB_LOGS_TMPFS_SIZE:-512m}"
+
+  install -d -m 0755 /srv/gitlab/config /srv/gitlab/logs /srv/gitlab/data
+  if [[ "$logs_tmpfs" == "true" ]]; then
+    if ! mountpoint -q /srv/gitlab/logs; then
+      mount -t tmpfs -o "rw,nosuid,nodev,noatime,size=${logs_tmpfs_size},mode=0755" tmpfs /srv/gitlab/logs
+    fi
+    if grep -qE '^[^#][[:space:]]+/srv/gitlab/logs[[:space:]]+tmpfs[[:space:]]+' /etc/fstab; then
+      sed -i "s|^[^#][[:space:]]\\+/srv/gitlab/logs[[:space:]]\\+tmpfs[[:space:]].*|tmpfs /srv/gitlab/logs tmpfs rw,nosuid,nodev,noatime,size=${logs_tmpfs_size},mode=0755 0 0|" /etc/fstab
+    else
+      printf 'tmpfs /srv/gitlab/logs tmpfs rw,nosuid,nodev,noatime,size=%s,mode=0755 0 0\n' "$logs_tmpfs_size" >> /etc/fstab
+    fi
+  fi
+}
+
+write_omnibus_config() {
+  install -d -m 0755 /srv/gitlab/config /srv/gitlab/logs /srv/gitlab/data
+  if [[ -s "${GITLAB_ROOT_PASSWORD_FILE:-}" && ! -s /srv/gitlab/config/root_password ]]; then
+    install -m 0600 -o root -g root "$GITLAB_ROOT_PASSWORD_FILE" /srv/gitlab/config/root_password
+  fi
+
+  cat >/srv/gitlab/config/omnibus_config.rb <<EOF
+external_url '${GITLAB_EXTERNAL_URL}'
+if File.exist?('/etc/gitlab/root_password')
+  gitlab_rails['initial_root_password'] = File.read('/etc/gitlab/root_password').strip
+end
+letsencrypt['enable'] = false
+nginx['listen_port'] = 80
+nginx['listen_https'] = false
+gitlab_rails['gitlab_shell_ssh_port'] = 2222
+gitlab_rails['usage_ping_enabled'] = false
+gitlab_rails['log_level'] = 'warn'
+gitlab_rails['time_zone'] = 'UTC'
+gitlab_rails['env'] = {
+  'TMPDIR' => '/tmp',
+  'TEMP' => '/tmp',
+  'TMP' => '/tmp'
+}
+puma['worker_processes'] = 1
+puma['min_threads'] = 2
+puma['max_threads'] = 3
+sidekiq['concurrency'] = 1
+logging['svlogd_size'] = 10 * 1024 * 1024
+logging['svlogd_num'] = 3
+logging['svlogd_timeout'] = 24 * 60 * 60
+nginx['access_log_enabled'] = false
+nginx['error_log_level'] = 'warn'
+postgresql['shared_buffers'] = '256MB'
+postgresql['checkpoint_timeout'] = '15min'
+postgresql['checkpoint_completion_target'] = 0.9
+postgresql['max_wal_size'] = '1GB'
+postgresql['min_wal_size'] = '80MB'
+postgresql['log_checkpoints'] = false
+postgresql['log_statement'] = 'none'
+postgresql['log_min_duration_statement'] = -1
+redis['loglevel'] = 'warning'
+prometheus_monitoring['enable'] = false
+prometheus['enable'] = false
+alertmanager['enable'] = false
+node_exporter['enable'] = false
+redis_exporter['enable'] = false
+postgres_exporter['enable'] = false
+gitlab_exporter['enable'] = false
+gitlab_kas['enable'] = false
+registry['enable'] = false
+gitlab_pages['enable'] = false
+nginx['proxy_set_headers'] = {
+  "Host" => "\$http_host",
+  "X-Real-IP" => "\$remote_addr",
+  "X-Forwarded-For" => "\$proxy_add_x_forwarded_for",
+  "X-Forwarded-Proto" => "https",
+  "X-Forwarded-Ssl" => "on",
+  "X-Forwarded-Port" => "443"
+}
+EOF
+}
+
+load_gitlab_image_archive() {
+  local archive="${GITLAB_IMAGE_ARCHIVE_FILE:-}"
+  local output=""
+  local loaded_ref=""
+  local loaded_id=""
+
+  [[ -n "$archive" && -s "$archive" ]] || return 1
+  echo "Loading GitLab image archive: ${archive}"
+  if ! output="$(docker load -i "$archive" 2>&1)"; then
+    echo "$output" >&2
+    return 1
+  fi
+  echo "$output"
+  if docker image inspect "$GITLAB_IMAGE" >/dev/null 2>&1; then
+    return 0
+  fi
+  loaded_ref="$(printf '%s\n' "$output" | sed -n 's/^Loaded image: //p' | tail -n 1)"
+  loaded_id="$(printf '%s\n' "$output" | sed -n 's/^Loaded image ID: //p' | tail -n 1)"
+  if [[ -n "$loaded_ref" ]]; then
+    docker tag "$loaded_ref" "$GITLAB_IMAGE" >/dev/null 2>&1 || true
+  fi
+  if ! docker image inspect "$GITLAB_IMAGE" >/dev/null 2>&1 && [[ -n "$loaded_id" ]]; then
+    docker tag "$loaded_id" "$GITLAB_IMAGE" >/dev/null 2>&1 || true
+  fi
+  docker image inspect "$GITLAB_IMAGE" >/dev/null 2>&1
+}
+
+gitlab_rails_tmpfs_enabled() {
+  [[ "${GITLAB_RAILS_TMPFS_ENABLED:-false}" == "true" ]]
+}
+
+container_has_required_io_profile() {
+  local tmpfs_paths
+
+  tmpfs_paths="$(docker inspect -f '{{range $path, $_ := .HostConfig.Tmpfs}}{{println $path}}{{end}}' gitlab 2>/dev/null || true)"
+  grep -qx '/tmp' <<<"$tmpfs_paths" || return 1
+  if gitlab_rails_tmpfs_enabled; then
+    grep -qx '/var/opt/gitlab/gitlab-rails/tmp' <<<"$tmpfs_paths"
+  else
+    if grep -qx '/var/opt/gitlab/gitlab-rails/tmp' <<<"$tmpfs_paths"; then
+      return 1
+    fi
+  fi
+}
+
+ensure_container() {
+  local current_image=""
+  local current_status=""
+  local blkio_weight="${GITLAB_DOCKER_BLKIO_WEIGHT:-300}"
+  local docker_run_args=()
+
+  current_image="$(docker inspect -f '{{.Config.Image}}' gitlab 2>/dev/null || true)"
+  current_status="$(docker inspect -f '{{.State.Status}}' gitlab 2>/dev/null || true)"
+  if [[ -n "$current_image" && "$current_image" != "$GITLAB_IMAGE" && "$(data_dir_has_gitlab_data && echo true || echo false)" == "true" ]]; then
+    image_change_blocked=true
+    echo "Existing GitLab data is present with image ${current_image}; keeping it instead of switching to ${GITLAB_IMAGE}"
+    if [[ "$current_status" != "running" ]]; then
+      docker start gitlab
+    fi
+    return 0
+  fi
+
+  if [[ -n "$current_image" && "$current_image" == "$GITLAB_IMAGE" && "${GITLAB_RECREATE_FOR_IO_PROFILE:-true}" == "true" ]]; then
+    if ! container_has_required_io_profile; then
+      echo "Recreating GitLab container with tmpfs-backed transient IO paths"
+      docker rm -f gitlab >/dev/null 2>&1 || true
+      current_image=""
+      current_status=""
+    fi
+  fi
+
+  if [[ -z "$current_image" || "$current_image" != "$GITLAB_IMAGE" ]]; then
+    docker rm -f gitlab >/dev/null 2>&1 || true
+    if ! load_gitlab_image_archive; then
+      docker pull "$GITLAB_IMAGE"
+    fi
+    docker_run_args=(
+      --detach
+      --hostname "$GITLAB_DOMAIN" \
+      --env GITLAB_OMNIBUS_CONFIG="from_file('/etc/gitlab/omnibus_config.rb')" \
+      --env TMPDIR=/tmp \
+      --env TEMP=/tmp \
+      --env TMP=/tmp \
+      --publish 80:80 \
+      --publish 2222:22 \
+      --name gitlab \
+      --restart unless-stopped \
+      --log-driver local \
+      --log-opt "max-size=${GITLAB_DOCKER_LOG_MAX_SIZE:-10m}" \
+      --log-opt "max-file=${GITLAB_DOCKER_LOG_MAX_FILE:-3}" \
+      --blkio-weight "${blkio_weight}" \
+      --tmpfs "/tmp:rw,nosuid,nodev,size=${GITLAB_TMPFS_SIZE:-1g}" \
+      --volume /srv/gitlab/config:/etc/gitlab \
+      --volume /srv/gitlab/logs:/var/log/gitlab \
+      --volume /srv/gitlab/data:/var/opt/gitlab \
+      --shm-size 256m
+    )
+    if gitlab_rails_tmpfs_enabled; then
+      docker_run_args+=(--tmpfs "/var/opt/gitlab/gitlab-rails/tmp:rw,nosuid,nodev,size=${GITLAB_RAILS_TMPFS_SIZE:-512m}")
+    fi
+    docker run "${docker_run_args[@]}" "$GITLAB_IMAGE"
+    container_created=true
+    return 0
+  fi
+
+  if [[ "$current_status" != "running" ]]; then
+    docker start gitlab
+  fi
+  docker update --blkio-weight "${blkio_weight}" gitlab >/dev/null 2>&1 || true
+}
+
+ensure_container_config_applied() {
+  local checksum_file="${state_dir}/omnibus_config.sha256"
+  local current_checksum=""
+  local previous_checksum=""
+
+  mkdir -p "$state_dir"
+  current_checksum="$(sha256sum /srv/gitlab/config/omnibus_config.rb | awk '{print $1}')"
+  if [[ -s "$checksum_file" ]]; then
+    previous_checksum="$(cat "$checksum_file")"
+  fi
+  if [[ "$current_checksum" == "$previous_checksum" ]]; then
+    return 0
+  fi
+  if [[ -z "$previous_checksum" && "$container_created" == "true" ]]; then
+    printf '%s\n' "$current_checksum" > "$checksum_file"
+    return 0
+  fi
+
+  echo "GitLab omnibus config changed; restarting container to apply runtime defaults"
+  docker restart gitlab >/dev/null
+  printf '%s\n' "$current_checksum" > "$checksum_file"
+}
+
+wait_for_web() {
+  local i=0
+  local wait_seconds="${GITLAB_BOOTSTRAP_WAIT_SECONDS:-5400}"
+  local deadline
+
+  if ! [[ "$wait_seconds" =~ ^[0-9]+$ ]] || (( wait_seconds < 60 )); then
+    wait_seconds=5400
+  fi
+  deadline=$((SECONDS + wait_seconds))
+  web_ready=false
+  while (( SECONDS < deadline )); do
+    i=$((i + 1))
+    if ! docker ps --format '{{.Names}}' | grep -qx gitlab; then
+      docker logs --tail 120 gitlab >&2 || true
+      save_status container_stopped "gitlab_container_not_running"
+      return 1
+    fi
+    if curl -fsS http://127.0.0.1/users/sign_in >/dev/null 2>&1 \
+      || curl -fsS http://127.0.0.1/-/readiness >/dev/null 2>&1; then
+      web_ready=true
+      rm -f /srv/gitlab/config/root_password >/dev/null 2>&1 || true
+      save_status web_ready "gitlab_web_ready"
+      return 0
+    fi
+    if (( i % 6 == 0 )); then
+      docker logs --tail 80 gitlab || true
+    fi
+    save_status booting "waiting_for_gitlab_web"
+    sleep 10
+  done
+  docker logs --tail 200 gitlab >&2 || true
+  save_status failed "gitlab_web_timeout_after_${wait_seconds}s"
+  return 1
+}
+
+apply_root_password() {
+  local container_root_password_file="/root/hybrid-ai-root-password"
+
+  [[ -s "${GITLAB_ROOT_PASSWORD_FILE:-}" ]] || return 0
+
+  docker cp "$GITLAB_ROOT_PASSWORD_FILE" "gitlab:${container_root_password_file}" >/dev/null
+  docker exec gitlab chmod 600 "$container_root_password_file"
+  docker exec -i -e HYBRID_AI_ROOT_PASSWORD_FILE="$container_root_password_file" gitlab /opt/gitlab/embedded/bin/ruby -rbcrypt <<'RUBY'
+require 'open3'
+
+password_file = ENV.fetch('HYBRID_AI_ROOT_PASSWORD_FILE')
+password = File.read(password_file).strip
+abort('root password file is empty') if password.empty?
+
+hash = BCrypt::Password.create(password).to_s
+columns_stdout, columns_stderr, columns_status = Open3.capture3(
+  'gitlab-psql',
+  '-d',
+  'gitlabhq_production',
+  '-tAc',
+  "SELECT column_name FROM information_schema.columns WHERE table_name = 'users'"
+)
+abort(columns_stderr.empty? ? 'failed to inspect users table' : columns_stderr) unless columns_status.success?
+
+columns = columns_stdout.lines.map(&:strip)
+quoted_hash = "'#{hash.gsub("'", "''")}'"
+sets = ["encrypted_password = #{quoted_hash}"]
+optional_sets = {
+  'reset_password_token' => 'NULL',
+  'reset_password_sent_at' => 'NULL',
+  'locked_at' => 'NULL',
+  'failed_attempts' => '0',
+  'unlock_token' => 'NULL',
+  'password_automatically_set' => 'false',
+  'password_expires_at' => 'NULL',
+  'updated_at' => 'NOW()'
+}
+optional_sets.each do |column, value|
+  sets << "#{column} = #{value}" if columns.include?(column)
+end
+
+update_sql = "UPDATE users SET #{sets.join(', ')} WHERE username = 'root' RETURNING id"
+update_stdout, update_stderr, update_status = Open3.capture3(
+  'gitlab-psql',
+  '-d',
+  'gitlabhq_production',
+  '-tAc',
+  update_sql
+)
+abort(update_stderr.empty? ? 'failed to update root password' : update_stderr) unless update_status.success?
+if update_stdout.lines.map(&:strip).none? { |line| line.match?(/\A[0-9]+\z/) }
+  puts 'root_user_absent=true'
+  exit 0
+end
+
+stored_stdout, stored_stderr, stored_status = Open3.capture3(
+  'gitlab-psql',
+  '-d',
+  'gitlabhq_production',
+  '-tAc',
+  "SELECT encrypted_password FROM users WHERE username = 'root' LIMIT 1"
+)
+abort(stored_stderr.empty? ? 'failed to read root password hash' : stored_stderr) unless stored_status.success?
+stored_hash = stored_stdout.strip
+abort('root password hash missing') if stored_hash.empty?
+abort('root password verification failed') unless BCrypt::Password.new(stored_hash) == password
+puts 'root_password_valid=true'
+RUBY
+  docker exec gitlab rm -f "$container_root_password_file" >/dev/null 2>&1 || true
+}
+
+apply_signup_setting() {
+  local signup_value=false
+
+  if [[ "${GITLAB_SIGNUP_ENABLED:-false}" == "true" ]]; then
+    signup_value=true
+  fi
+  docker exec -i -e HYBRID_AI_SIGNUP_ENABLED="$signup_value" gitlab /opt/gitlab/embedded/bin/ruby <<'RUBY'
+require 'open3'
+
+signup_enabled = ENV.fetch('HYBRID_AI_SIGNUP_ENABLED') == 'true' ? 'TRUE' : 'FALSE'
+sql = <<~SQL
+  UPDATE application_settings
+  SET signup_enabled = #{signup_enabled}, updated_at = NOW()
+  WHERE id = (SELECT id FROM application_settings ORDER BY id LIMIT 1)
+  RETURNING id;
+SQL
+stdout, stderr, status = Open3.capture3('gitlab-psql', '-d', 'gitlabhq_production', '-tAc', sql)
+abort(stderr.empty? ? 'failed to update signup setting' : stderr) unless status.success?
+abort('application_settings row not found') if stdout.strip.empty?
+puts 'signup_setting_applied=true'
+RUBY
+}
+
+apply_rails_settings() {
+  [[ "$web_ready" == "true" ]] || return 1
+  apply_root_password
+  apply_signup_setting
+  rails_cli_ready=true
+  save_status rails_ready "gitlab_account_settings_applied"
+}
+
+ensure_runtime_services() {
+  docker exec gitlab gitlab-ctl start sidekiq >/dev/null 2>&1 || true
+}
+
+create_bootstrap_pat() {
+  docker exec -i \
+    -e HYBRID_AI_RUNNER_BOOTSTRAP_PAT="$bootstrap_pat" \
+    -e HYBRID_AI_GITLAB_ADMIN_USERNAME="${GITLAB_ADMIN_USERNAME:-root}" \
+    gitlab /opt/gitlab/embedded/bin/ruby -rjson -rdigest -rbase64 <<'RUBY'
+require 'open3'
+
+def gitlab_psql(sql)
+  stdout, stderr, status = Open3.capture3('gitlab-psql', '-d', 'gitlabhq_production', '-tAc', sql)
+  abort(stderr.empty? ? 'gitlab-psql failed' : stderr) unless status.success?
+  stdout.strip
+end
+
+def sql_quote(value)
+  "'#{value.gsub("'", "''")}'"
+end
+
+token = ENV.fetch('HYBRID_AI_RUNNER_BOOTSTRAP_PAT')
+admin_username = ENV.fetch('HYBRID_AI_GITLAB_ADMIN_USERNAME', 'root')
+secrets = JSON.parse(File.read('/etc/gitlab/gitlab-secrets.json'))
+db_key_base = secrets.fetch('gitlab_rails').fetch('db_key_base')
+token_digest = Base64.strict_encode64(Digest::SHA256.digest(token + db_key_base[0..31]))
+user_fields = gitlab_psql("SELECT id || ',' || organization_id FROM users WHERE username = #{sql_quote(admin_username)} AND admin = TRUE LIMIT 1")
+user_fields = gitlab_psql("SELECT id || ',' || organization_id FROM users WHERE username = 'root' AND admin = TRUE LIMIT 1") if user_fields.empty?
+user_fields = gitlab_psql("SELECT id || ',' || organization_id FROM users WHERE admin = TRUE ORDER BY id LIMIT 1") if user_fields.empty?
+abort('admin user not found') if user_fields.empty?
+user_id, organization_id = user_fields.split(',', 2)
+name = "hybrid-ai-runner-bootstrap-#{Time.now.to_i}"
+scopes = "---\n- api\n- create_runner\n"
+sql = <<~SQL
+  INSERT INTO personal_access_tokens
+    (user_id, name, revoked, expires_at, created_at, updated_at, scopes, impersonation, token_digest,
+     expire_notification_delivered, after_expiry_notification_delivered, organization_id, granular)
+  VALUES
+    (#{user_id}, #{sql_quote(name)}, false, CURRENT_DATE + INTERVAL '1 day', NOW(), NOW(), #{sql_quote(scopes)},
+     false, #{sql_quote(token_digest)}, false, false, #{organization_id}, false)
+  RETURNING id;
+SQL
+abort('bootstrap PAT insert failed') if gitlab_psql(sql).empty?
+puts 'bootstrap_pat_created=true'
+RUBY
+}
+
+revoke_bootstrap_pat() {
+  docker exec -i -e HYBRID_AI_RUNNER_BOOTSTRAP_PAT="$bootstrap_pat" gitlab /opt/gitlab/embedded/bin/ruby -rjson -rdigest -rbase64 <<'RUBY' >/dev/null 2>&1 || true
+require 'open3'
+
+token = ENV.fetch('HYBRID_AI_RUNNER_BOOTSTRAP_PAT')
+secrets = JSON.parse(File.read('/etc/gitlab/gitlab-secrets.json'))
+db_key_base = secrets.fetch('gitlab_rails').fetch('db_key_base')
+token_digest = Base64.strict_encode64(Digest::SHA256.digest(token + db_key_base[0..31]))
+escaped_digest = token_digest.gsub("'", "''")
+Open3.capture3(
+  'gitlab-psql',
+  '-d',
+  'gitlabhq_production',
+  '-c',
+  "UPDATE personal_access_tokens SET revoked = true, updated_at = NOW() WHERE token_digest = '#{escaped_digest}'"
+)
+RUBY
+  rm -f "$response_file"
+}
+
+generate_bootstrap_pat_value() {
+  python3 - <<'PY'
+import secrets
+import string
+
+alphabet = string.ascii_letters + string.digits
+print('glpat-' + ''.join(secrets.choice(alphabet) for _ in range(32)))
+PY
+}
+
+ensure_admin_account() {
+  local admin_username="${GITLAB_ADMIN_USERNAME:-root}"
+  local bootstrap_pat=""
+  local response_file=""
+
+  [[ "$rails_cli_ready" == "true" ]] || return 0
+  [[ -n "$admin_username" && "$admin_username" != "root" ]] || return 0
+  if [[ ! -s "${GITLAB_ROOT_PASSWORD_FILE:-}" ]]; then
+    echo "GITLAB_ROOT_PASSWORD_FILE is required to provision GitLab admin user ${admin_username}" >&2
+    return 1
+  fi
+
+  bootstrap_pat="$(generate_bootstrap_pat_value)"
+  response_file="$(mktemp)"
+  if ! create_bootstrap_pat; then
+    revoke_bootstrap_pat
+    save_status rails_ready "admin_user_pat_create_failed"
+    return 1
+  fi
+
+  if ! HYBRID_AI_GITLAB_ADMIN_USERNAME="$admin_username" \
+    HYBRID_AI_GITLAB_ADMIN_PASSWORD_FILE="$GITLAB_ROOT_PASSWORD_FILE" \
+    HYBRID_AI_GITLAB_DOMAIN="$GITLAB_DOMAIN" \
+    HYBRID_AI_GITLAB_BOOTSTRAP_PAT="$bootstrap_pat" \
+    python3 - "$response_file" <<'PY'
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+response_file = sys.argv[1]
+username = os.environ["HYBRID_AI_GITLAB_ADMIN_USERNAME"]
+password_file = os.environ["HYBRID_AI_GITLAB_ADMIN_PASSWORD_FILE"]
+domain = os.environ.get("HYBRID_AI_GITLAB_DOMAIN", "gitlab.local")
+token = os.environ["HYBRID_AI_GITLAB_BOOTSTRAP_PAT"]
+
+with open(password_file, "r", encoding="utf-8") as handle:
+    password = handle.read().strip()
+if not password:
+    raise SystemExit("GitLab admin password file is empty")
+
+def request(method, path, data=None, expected=(200,)):
+    body = None
+    headers = {"PRIVATE-TOKEN": token}
+    if data is not None:
+        body = urllib.parse.urlencode(data).encode("utf-8")
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    url = f"http://127.0.0.1/api/v4{path}"
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            payload = response.read().decode("utf-8")
+            status = response.status
+    except urllib.error.HTTPError as error:
+        payload = error.read().decode("utf-8", errors="replace")
+        status = error.code
+    with open(response_file, "w", encoding="utf-8") as handle:
+        handle.write(payload)
+    if status not in expected:
+        raise RuntimeError(f"{method} {path} returned HTTP {status}: {payload}")
+    return json.loads(payload) if payload else {}
+
+email = f"{username}@{domain}"
+if "@" in domain:
+    email = f"{username}@gitlab.local"
+
+existing = []
+query = urllib.parse.urlencode({"username": username})
+for _ in range(12):
+    try:
+        existing = request("GET", f"/users?{query}", expected=(200,))
+        break
+    except Exception:
+        time.sleep(5)
+else:
+    existing = request("GET", f"/users?{query}", expected=(200,))
+
+params = {
+    "password": password,
+    "admin": "true",
+    "can_create_group": "true",
+    "projects_limit": "100000",
+    "skip_reconfirmation": "true",
+}
+if existing:
+    user_id = existing[0]["id"]
+    request("PUT", f"/users/{user_id}", params, expected=(200,))
+    try:
+        request("POST", f"/users/{user_id}/unblock", expected=(200, 201, 204, 304, 404))
+    except RuntimeError:
+        pass
+    print(f"gitlab_admin_user_updated={username}")
+else:
+    params.update({
+        "email": email,
+        "username": username,
+        "name": username,
+        "skip_confirmation": "true",
+        "reset_password": "false",
+        "force_random_password": "false",
+        "external": "false",
+    })
+    request("POST", "/users", params, expected=(200, 201))
+    print(f"gitlab_admin_user_created={username}")
+PY
+  then
+    echo "GitLab admin user provisioning failed" >&2
+    cat "$response_file" >&2 || true
+    revoke_bootstrap_pat
+    save_status rails_ready "admin_user_api_failed"
+    return 1
+  fi
+
+  revoke_bootstrap_pat
+  save_status rails_ready "admin_user_ready"
+}
+
+ensure_runner_token() {
+  local bootstrap_pat=""
+  local response_file=""
+  local status=""
+  local i
+
+  [[ "$rails_cli_ready" == "true" ]] || return 0
+  if [[ -s "$runner_token_file" ]]; then
+    chmod 0600 "$runner_token_file"
+    runner_token_ready=true
+    save_status runner_token_ready "existing_runner_token"
+    return 0
+  fi
+
+  bootstrap_pat="$(generate_bootstrap_pat_value)"
+  response_file="$(mktemp)"
+  if ! create_bootstrap_pat; then
+    revoke_bootstrap_pat
+    save_status rails_ready "runner_token_pat_create_failed"
+    return 1
+  fi
+
+  for i in {1..12}; do
+    if status="$(curl -sS -o "$response_file" -w "%{http_code}" \
+      --request POST \
+      --url "http://127.0.0.1/api/v4/user/runners" \
+      --header "PRIVATE-TOKEN: ${bootstrap_pat}" \
+      --data-urlencode "runner_type=instance_type" \
+      --data-urlencode "description=${GITLAB_GPU_RUNNER_NAME_PREFIX:-hybrid-ai-gpu}" \
+      --data-urlencode "tag_list=${GITLAB_GPU_RUNNER_TAGS:-gpu-worker}" \
+      --data-urlencode "run_untagged=false" \
+      --data-urlencode "locked=false")"; then
+      [[ "$status" == "201" ]] && break
+    else
+      status="000"
+    fi
+    sleep 5
+  done
+
+  if [[ "$status" != "201" ]]; then
+    echo "GitLab runner token creation failed with HTTP ${status}" >&2
+    cat "$response_file" >&2
+    revoke_bootstrap_pat
+    save_status rails_ready "runner_token_api_not_ready"
+    return 1
+  fi
+
+  if ! python3 - "$response_file" "$runner_token_file" <<'PY'
+import json
+import os
+import sys
+
+response_file, token_file = sys.argv[1:3]
+with open(response_file, 'r', encoding='utf-8') as handle:
+    payload = json.load(handle)
+token = payload.get('token', '')
+if not token:
+    raise SystemExit('runner token missing from GitLab API response')
+with open(token_file, 'w', encoding='utf-8') as handle:
+    handle.write(token)
+os.chmod(token_file, 0o600)
+PY
+  then
+    revoke_bootstrap_pat
+    save_status rails_ready "runner_token_parse_failed"
+    return 1
+  fi
+  revoke_bootstrap_pat
+  runner_token_ready=true
+  save_status runner_token_ready "runner_token_created"
+}
+
+main() {
+  local short="${GITLAB_DOMAIN%%.*}"
+
+  save_status starting "bootstrap_started"
+  cloud-init status --wait >/dev/null 2>&1 || true
+  hostnamectl set-hostname "$GITLAB_DOMAIN" || true
+  if ! grep -Eq "(^|[[:space:]])${short}([[:space:]]|$)" /etc/hosts; then
+    printf '127.0.1.1 %s %s\n' "$GITLAB_DOMAIN" "$short" >>/etc/hosts
+  fi
+  ensure_apt_config
+  ensure_packages
+  ensure_swap
+  ensure_gitlab_io_layout
+  for package in gitlab-ce gitlab-ee; do
+    local package_status=""
+    package_status="$(dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null || true)"
+    if [[ -n "$package_status" && "$package_status" != "ii " ]]; then
+      dpkg --remove --force-remove-reinstreq "$package" >/dev/null 2>&1 || true
+    fi
+  done
+  rm -rf /opt/gitlab /etc/gitlab /var/opt/gitlab /var/log/gitlab
+  write_omnibus_config
+  ensure_container
+  ensure_container_config_applied
+  wait_for_web
+  ensure_runtime_services
+  apply_rails_settings
+  ensure_admin_account
+  ensure_runner_token
+  if [[ "$web_ready" == "true" && "$rails_cli_ready" == "true" && "$runner_token_ready" == "true" ]]; then
+    save_status complete "bootstrap_complete"
+  else
+    save_status failed "gitlab_bootstrap_incomplete"
+    return 1
+  fi
+}
+
+main "$@"

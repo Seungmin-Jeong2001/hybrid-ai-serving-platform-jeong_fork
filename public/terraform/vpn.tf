@@ -57,10 +57,56 @@ resource "aws_vpn_connection_route" "sites" {
   vpn_connection_id      = aws_vpn_connection.sites[each.value.site].id
 }
 
+# ── 전용 VPN 게이트웨이 (MacMini bastion 등 — customer_gateways와 분리, 동일 VGW 공유) ──
+resource "aws_customer_gateway" "vpn_gateways" {
+  for_each = var.enable_site_to_site_vpn ? var.vpn_gateways : {}
+
+  bgp_asn    = each.value.bgp_asn
+  ip_address = each.value.ip
+  type       = "ipsec.1"
+
+  tags = merge(local.common_tags, {
+    Name = "${var.project_name}-cgw-${each.key}"
+  })
+}
+
+resource "aws_vpn_connection" "vpn_gateways" {
+  for_each = var.enable_site_to_site_vpn ? var.vpn_gateways : {}
+
+  customer_gateway_id = aws_customer_gateway.vpn_gateways[each.key].id
+  vpn_gateway_id      = aws_vpn_gateway.main[0].id
+  type                = "ipsec.1"
+  static_routes_only  = var.vpn_static_routes_only
+
+  tags = merge(local.common_tags, {
+    Name = "${var.project_name}-vpn-${each.key}"
+  })
+}
+
+locals {
+  vpn_gateway_static_routes = var.enable_site_to_site_vpn && var.vpn_static_routes_only ? flatten([
+    for site, cidrs in var.vpn_gateway_static_route_cidrs : [
+      for cidr in cidrs : {
+        site = site
+        cidr = cidr
+      }
+    ]
+  ]) : []
+}
+
+resource "aws_vpn_connection_route" "vpn_gateways" {
+  for_each = {
+    for r in local.vpn_gateway_static_routes : "${r.site}/${r.cidr}" => r
+  }
+
+  destination_cidr_block = each.value.cidr
+  vpn_connection_id      = aws_vpn_connection.vpn_gateways[each.value.site].id
+}
+
 # 라우트 전파 - 프라이빗 라우팅 테이블
 resource "aws_vpn_gateway_route_propagation" "private" {
-  count = var.enable_site_to_site_vpn ? 1 : 0
+  count = var.enable_site_to_site_vpn ? length(aws_route_table.private) : 0
 
   vpn_gateway_id = aws_vpn_gateway.main[0].id
-  route_table_id = aws_route_table.private.id
+  route_table_id = aws_route_table.private[count.index].id
 }

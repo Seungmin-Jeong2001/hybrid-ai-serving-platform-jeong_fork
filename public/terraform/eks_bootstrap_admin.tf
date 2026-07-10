@@ -59,6 +59,29 @@ resource "aws_iam_role_policy" "eks_bootstrap_admin_tfstate_access" {
   policy = data.aws_iam_policy_document.eks_bootstrap_admin_tfstate_access.json
 }
 
+data "aws_iam_policy_document" "eks_bootstrap_admin_image_updater_github_app_parameters" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "ssm:GetParameter",
+      "ssm:GetParameters",
+    ]
+    resources = [
+      format(
+        "arn:aws:ssm:%s:%s:parameter/hasp/argocd/image-updater/github-app/*",
+        var.aws_region,
+        data.aws_caller_identity.current.account_id,
+      ),
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "eks_bootstrap_admin_image_updater_github_app_parameters" {
+  name   = "${var.project_name}-eks-bootstrap-admin-image-updater-github-app-parameters"
+  role   = aws_iam_role.eks_bootstrap_admin.id
+  policy = data.aws_iam_policy_document.eks_bootstrap_admin_image_updater_github_app_parameters.json
+}
+
 data "aws_iam_policy_document" "eks_node_group_assume_bootstrap_admin" {
   statement {
     effect    = "Allow"

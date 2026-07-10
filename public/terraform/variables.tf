@@ -54,11 +54,6 @@ variable "msk_private_subnet_cidrs" {
   ]
 }
 
-variable "nat_gateway_az_index" {
-  description = "Availability zone index (0=AZ-a, 1=AZ-b, 2=AZ-c) for the single NAT gateway"
-  type        = number
-  default     = 1
-}
 
 # ECR 리포지토리 변수
 variable "ecr_repositories" {
@@ -80,7 +75,8 @@ variable "eks_public_access_cidrs" {
   default = [
     "221.150.194.220/32", # choi
     "125.243.10.39/32",   # shin
-    "218.39.98.40/32"     # kim
+    "218.39.98.40/32",    # kim 1
+    "218.39.98.124/32"    # kim 2
   ]
 }
 
@@ -94,6 +90,7 @@ variable "eks_node_groups" {
   description = "Per-workload EKS managed node group configuration"
   type = map(object({
     instance_types = list(string)
+    capacity_type  = string
     az_count       = number # how many AZs to span (1..3); subnets are taken from eks_private in order
     desired_size   = number
     min_size       = number
@@ -106,23 +103,36 @@ variable "eks_node_groups" {
     }))
   }))
   default = {
-    inference = {
-      instance_types = ["t3.medium"] # 임시 비용 절감, 원래 값: m7i-flex.large (t3.small은 최대 파드 11개 한계로 변경)
+    inference_ondemand = {
+      instance_types = ["m7i-flex.xlarge"] # 임시 비용 절감, 원래 값: m7i-flex.large (t3.small은 최대 파드 11개 한계로 변경) / t3.medium 파드 부족으로 변경 (06-22)
+      capacity_type  = "ON_DEMAND"
       az_count       = 3
-      desired_size   = 1 # ★ 원래 값 : 2 (나중에 복구) ★
-      min_size       = 1
-      max_size       = 10
-      labels         = { workload = "inference" }
+      desired_size   = 3
+      min_size       = 3
+      max_size       = 3
+      labels         = { workload = "inference", capacity = "ondemand" }
+      taints         = []
+    }
+    inference_spot = {
+      instance_types = ["m7i-flex.xlarge"]
+      capacity_type  = "SPOT"
+      az_count       = 3
+      desired_size   = 0
+      min_size       = 0
+      max_size       = 7
+      labels         = { workload = "inference", capacity = "spot" }
       taints         = []
     }
     general = {
       # system(ArgoCD, KEDA, cert-manager) + monitoring(Prometheus, Grafana, Loki) + app(dashboard) 통합
       # KEDA(제어부)와 inference(실행부) 장애 전파 격리 목적
-      # 원래 값: system=m7i-flex.large, monitoring=m7i-flex.large (나중에 복구)
-      instance_types = ["m7i-flex.large"] # 임시 비용 절감, 원래 값: m7i-flex.large
-      az_count       = 2
-      desired_size   = 1 # ★ 원래 값: 2 (나중에 복구) ★
-      min_size       = 1
+      # ★ 운영 전환 시: m7i-flex.large × 2 (8GB × 2, 비용 동일 + HA 확보)
+      # ★   → instance_types = ["m7i-flex.large"], desired_size = 2, min_size = 2
+      instance_types = ["m7i-flex.xlarge"] # 데모: 4vCPU / 16GB — general 워크로드 전체 수용
+      capacity_type  = "ON_DEMAND"
+      az_count       = 3
+      desired_size   = 3
+      min_size       = 3
       max_size       = 5
       labels         = { workload = "general" }
       taints         = []
@@ -148,13 +158,13 @@ variable "msk_broker_instance_type" {
 variable "msk_number_of_broker_nodes" {
   description = "Number of broker nodes for the MSK cluster"
   type        = number
-  default     = 2 # 임시 비용 절감 (서브넷 2개 최소 요구사항 맞춤), 원래 값: 3 (나중에 복구)
+  default     = 3
 }
 
 variable "msk_ebs_volume_size" {
   description = "Broker EBS volume size in GiB for the MSK cluster"
   type        = number
-  default     = 100 # ★ 원래 값: 1000 GiB (나중에 복구) ★
+  default     = 100
 }
 
 variable "manage_msk_topics" {
@@ -166,14 +176,14 @@ variable "manage_msk_topics" {
 variable "msk_topic_replication_factor" {
   description = "Replication factor to use when creating MSK topics"
   type        = number
-  default     = 1 # ★ 원래 값: 3 (나중에 복구) ★
+  default     = 3
 }
 
 variable "msk_topic_configs" {
   description = "Topic-level MSK configuration properties to apply when creating or updating topics"
   type        = map(string)
   default = {
-    "min.insync.replicas" = "1" # ★ 원래 값: 2 (나중에 복구) ★
+    "min.insync.replicas" = "2"
   }
 }
 
@@ -204,7 +214,7 @@ variable "artifacts_s3_force_destroy" {
 variable "private_cloud_cidrs" {
   description = "Private Cloud 사이트 CIDR (VPCE 경유로 ECR/S3/STS 등 AWS 서비스 접근 허용)"
   type        = list(string)
-  default     = []
+  default     = ["10.42.0.0/24"]
 }
 
 variable "edge_network_cidrs" {
@@ -220,6 +230,18 @@ variable "argocd_chart_version" {
   default     = "7.8.23"
 }
 
+variable "alb_certificate_arn" {
+  description = "Optional override for the ACM certificate ARN used by the internal ALB ingress resources; when empty Terraform auto-discovers a matching ACM certificate"
+  type        = string
+  default     = ""
+}
+
+variable "alb_certificate_domain" {
+  description = "Primary ACM certificate domain name to discover automatically for the internal ALB ingress resources"
+  type        = string
+  default     = "*.sgs-hasp.click"
+}
+
 variable "additional_eks_admin_role_arns" {
   description = "Additional IAM role ARNs that should receive EKS cluster admin access"
   type        = list(string)
@@ -230,6 +252,12 @@ variable "additional_eks_admin_role_arns" {
 
 variable "enable_site_to_site_vpn" {
   description = "Whether to create the Site-to-Site VPN resources"
+  type        = bool
+  default     = true
+}
+
+variable "enable_s3_interface_endpoint" {
+  description = "S3 인터페이스 엔드포인트 생성 여부 (온프레미스 VPN→S3 직접 접근=ECR-over-VPN에 필요, 비용 발생)"
   type        = bool
   default     = true
 }
@@ -253,4 +281,45 @@ variable "vpn_static_route_cidrs" {
   description = "Static route CIDR blocks per site for the Site-to-Site VPN connections"
   type        = map(list(string))
   default     = {}
+}
+
+# MacMini bastion 등 전용 VPN 게이트웨이 (customer_gateways와 분리 관리, 동일 VGW에 연결)
+variable "vpn_gateways" {
+  description = "Map of dedicated VPN gateways (e.g. MacMini bastion) keyed by name; each creates its own customer gateway + VPN connection on the shared VGW"
+  type = map(object({
+    ip      = string
+    bgp_asn = number
+  }))
+  default = {}
+}
+
+variable "vpn_gateway_static_route_cidrs" {
+  description = "Static route CIDR blocks per vpn_gateways entry (edge customer_gateways의 CIDR과 중복 금지)"
+  type        = map(list(string))
+  default     = {}
+}
+
+variable "dlq_alert_slack_webhook_url" {
+  description = "Slack incoming webhook URL for DLQ alerts; leave empty to skip Lambda webhook delivery"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "dlq_alert_topic_name" {
+  description = "MSK topic name that stores failed inference requests"
+  type        = string
+  default     = "inference-dlq"
+}
+
+variable "incident_copilot_bedrock_model_id" {
+  description = "Amazon Bedrock model ID used by the inference incident copilot Lambda"
+  type        = string
+  default     = "anthropic.claude-3-haiku-20240307-v1:0"
+}
+
+variable "incident_copilot_monitoring_url" {
+  description = "Optional monitoring dashboard URL shown in Incident Copilot Slack alerts"
+  type        = string
+  default     = ""
 }

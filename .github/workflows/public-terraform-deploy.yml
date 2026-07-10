@@ -9,19 +9,38 @@ on:
         default: apply
         type: choice
         options:
+          - plan
           - apply
           - destroy
+          - repair-vpn-state
+          - force-unlock
+      lock_id:
+        description: Lock ID to release when action=force-unlock (terraform state lock UUID)
+        required: false
+        default: ""
+        type: string
+      trigger_bastion_vpn:
+        description: After apply, push the TF output to the bastion repo and dispatch its VPN render/apply (no public egress data plane)
+        required: false
+        default: false
+        type: boolean
+      trigger_private:
+        description: Ask the bastion to chain-trigger the private cloud re-apply once the VPN tunnel is up
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   id-token: write
+  contents: write
 
 env:
   AWS_REGION: ap-northeast-2
   EKS_CLUSTER_NAME: sgs-hasp-eks
   SSM_BOOTSTRAP_TAG_KEY: Name
   SSM_BOOTSTRAP_TAG_VALUE: sgs-hasp-general
-  SSM_WAIT_ATTEMPTS: 120
-  SSM_WAIT_INTERVAL_SECONDS: 10
+  SSM_WAIT_ATTEMPTS: 180
+  SSM_WAIT_INTERVAL_SECONDS: 15
 
 concurrency:
   group: run-public-terraform-${{ github.ref }}
@@ -53,13 +72,22 @@ jobs:
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           echo "value=arn:aws:iam::${ACCOUNT_ID}:role/sgs-hasp-eks-bootstrap-admin" >> "$GITHUB_OUTPUT"
 
-      - name: Write optional secret tfvars override
+      - name: Write optional tfvars override (non-sensitive variable)
         env:
-          TFVARS_CONTENT: ${{ secrets.PUBLIC_TERRAFORM_TFVARS }}
+          TFVARS_CONTENT: ${{ vars.PUBLIC_TERRAFORM_TFVARS || secrets.PUBLIC_TERRAFORM_TFVARS }}
         working-directory: public/terraform
         run: |
           if [[ -n "$TFVARS_CONTENT" ]]; then
             printf '%s\n' "$TFVARS_CONTENT" > zz-secret.auto.tfvars
+          fi
+
+      - name: Write DLQ Slack webhook secret override
+        env:
+          DLQ_SLACK_WEBHOOK_URL: ${{ secrets.INFRA_ALERTS }}
+        working-directory: public/terraform
+        run: |
+          if [[ -n "$DLQ_SLACK_WEBHOOK_URL" ]]; then
+            python -c "import json, os; open('zz-dlq-alert.auto.tfvars', 'w', encoding='utf-8').write('dlq_alert_slack_webhook_url = ' + json.dumps(os.environ['DLQ_SLACK_WEBHOOK_URL']) + '\\n')"
           fi
 
       - name: Terraform fmt check
@@ -70,17 +98,375 @@ jobs:
         working-directory: public/terraform
         run: terraform init
 
+      - name: Force-unlock Terraform state
+        if: ${{ inputs.action == 'force-unlock' }}
+        working-directory: public/terraform
+        env:
+          LOCK_ID: ${{ inputs.lock_id }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${LOCK_ID}" ]]; then
+            echo "::error::lock_id input is required for force-unlock"
+            exit 1
+          fi
+          terraform force-unlock -force "${LOCK_ID}"
+          echo "Released state lock ${LOCK_ID}."
+
+      - name: Repair MacMini VPN Terraform state
+        if: ${{ inputs.action == 'repair-vpn-state' }}
+        working-directory: public/terraform
+        run: |
+          set -euo pipefail
+
+          echo "State before repair:"
+          terraform state list | grep -E 'aws_(customer_gateway|vpn_connection|vpn_connection_route)\.' || true
+
+          terraform state rm 'aws_customer_gateway.vpn_gateways["macmini"]' || true
+          terraform state rm 'aws_vpn_connection.vpn_gateways["macmini"]' || true
+
+          if terraform state show 'aws_customer_gateway.sites["edge"]' >/dev/null 2>&1; then
+            if terraform state show 'aws_customer_gateway.sites["macmini"]' >/dev/null 2>&1; then
+              echo 'aws_customer_gateway.sites["macmini"] already exists; skipping customer gateway move.'
+            else
+              terraform state mv 'aws_customer_gateway.sites["edge"]' 'aws_customer_gateway.sites["macmini"]'
+            fi
+          fi
+
+          if terraform state show 'aws_vpn_connection.sites["edge"]' >/dev/null 2>&1; then
+            if terraform state show 'aws_vpn_connection.sites["macmini"]' >/dev/null 2>&1; then
+              echo 'aws_vpn_connection.sites["macmini"] already exists; skipping VPN connection move.'
+            else
+              terraform state mv 'aws_vpn_connection.sites["edge"]' 'aws_vpn_connection.sites["macmini"]'
+            fi
+          fi
+
+          echo "State after repair:"
+          terraform state list | grep -E 'aws_(customer_gateway|vpn_connection|vpn_connection_route)\.' || true
+
       - name: Terraform validate
         working-directory: public/terraform
         run: terraform validate
 
-      - name: Terraform plan
-        if: ${{ inputs.action == 'apply' }}
+      - name: Disable Bedrock action groups before destroy
+        if: ${{ inputs.action == 'destroy' }}
+        timeout-minutes: 3
         working-directory: public/terraform
-        run: terraform plan -out=tfplan
+        run: |
+          echo "Starting Bedrock action group disable check for destroy"
+          export AWS_REGION
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          import time
+
+          region = os.environ["AWS_REGION"]
+
+          def aws_json(*args):
+              print("Running:", "aws", *args, "--region", region, "--output", "json", flush=True)
+              proc = subprocess.run(
+                  ["aws", *args, "--region", region, "--output", "json"],
+                  check=False,
+                  capture_output=True,
+                  text=True,
+                  timeout=30,
+              )
+              if proc.returncode != 0:
+                  raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or f"aws {' '.join(args)} failed")
+              return json.loads(proc.stdout or "{}")
+
+          agents = aws_json("bedrock-agent", "list-agents")
+          matches = [
+              (summary["agentId"], summary.get("agentName", ""))
+              for summary in agents.get("agentSummaries", [])
+              if summary.get("agentName", "").endswith("-incident-copilot")
+          ]
+          if not matches:
+              print("No Bedrock incident copilot agents found; skipping disable step.")
+              sys.exit(0)
+
+          print("Matched Bedrock agents:", ", ".join(name or agent_id for agent_id, name in matches), flush=True)
+
+          for agent_id, agent_name in matches:
+              action_groups = aws_json(
+                  "bedrock-agent",
+                  "list-agent-action-groups",
+                  "--agent-id",
+                  agent_id,
+                  "--agent-version",
+                  "DRAFT",
+              ).get("actionGroupSummaries", [])
+              if not action_groups:
+                  print(f"No DRAFT action groups found for agent {agent_name}; skipping agent.")
+                  continue
+
+              for summary in action_groups:
+                  action_group_id = summary["actionGroupId"]
+                  details = aws_json(
+                      "bedrock-agent",
+                      "get-agent-action-group",
+                      "--agent-id",
+                      agent_id,
+                      "--agent-version",
+                      "DRAFT",
+                      "--action-group-id",
+                      action_group_id,
+                  )["agentActionGroup"]
+
+                  current_state = details.get("actionGroupState")
+                  action_group_name = details["actionGroupName"]
+                  if current_state == "DISABLED":
+                      print(f"Action group {action_group_name} is already disabled.")
+                      continue
+
+                  payload = {
+                      "agentId": agent_id,
+                      "agentVersion": "DRAFT",
+                      "actionGroupId": action_group_id,
+                      "actionGroupName": action_group_name,
+                      "actionGroupState": "DISABLED",
+                  }
+                  for key in (
+                      "description",
+                      "parentActionGroupSignature",
+                      "parentActionGroupSignatureParams",
+                      "actionGroupExecutor",
+                      "apiSchema",
+                      "functionSchema",
+                  ):
+                      value = details.get(key)
+                      if value not in (None, "", {}, []):
+                          payload[key] = value
+
+                  with open("bedrock-disable-action-group.json", "w", encoding="utf-8") as fp:
+                      json.dump(payload, fp)
+
+                  print(f"Disabling action group {action_group_name} on agent {agent_name}...", flush=True)
+                  subprocess.run(
+                      [
+                          "aws",
+                          "bedrock-agent",
+                          "update-agent-action-group",
+                          "--region",
+                          region,
+                          "--cli-input-json",
+                          "file://bedrock-disable-action-group.json",
+                      ],
+                      check=True,
+                      timeout=60,
+                  )
+
+                  for attempt in range(1, 21):
+                      refreshed = aws_json(
+                          "bedrock-agent",
+                          "get-agent-action-group",
+                          "--agent-id",
+                          agent_id,
+                          "--agent-version",
+                          "DRAFT",
+                          "--action-group-id",
+                          action_group_id,
+                      )["agentActionGroup"]
+                      state = refreshed.get("actionGroupState")
+                      print(f"{action_group_name} state after disable request ({attempt}/20): {state}")
+                      if state == "DISABLED":
+                          break
+                      time.sleep(3)
+                  else:
+                      raise RuntimeError(f"Timed out waiting for action group {action_group_name} to become DISABLED")
+
+          print("Bedrock action groups are ready for Terraform removal.")
+          PY
+
+      - name: Terraform plan
+        if: ${{ inputs.action == 'apply' || inputs.action == 'plan' }}
+        working-directory: public/terraform
+        run: terraform plan -lock-timeout=5m -out=tfplan
+
+      - name: Disable Bedrock action groups when apply will remove them
+        if: ${{ inputs.action == 'apply' }}
+        id: disable_bedrock_apply
+        timeout-minutes: 4
+        working-directory: public/terraform
+        run: |
+          echo "Checking whether apply plan removes Bedrock action groups"
+
+          python - <<'PY'
+          import json
+          import subprocess
+          import sys
+
+          proc = subprocess.run(
+              ["terraform", "show", "-json", "tfplan"],
+              check=True,
+              capture_output=True,
+              text=True,
+          )
+          plan = json.loads(proc.stdout)
+          changes = plan.get("resource_changes", [])
+
+          targets = []
+          for change in changes:
+              if change.get("type") != "aws_bedrockagent_agent_action_group":
+                  continue
+              actions = change.get("change", {}).get("actions", [])
+              if any(action in ("delete", "replace") for action in actions):
+                  targets.append(change.get("address", "<unknown>"))
+
+          if not targets:
+              print("No Bedrock action groups scheduled for removal in apply plan.")
+              with open("bedrock-disable-needed.txt", "w", encoding="utf-8") as fp:
+                  fp.write("false\n")
+              sys.exit(0)
+
+          print("Bedrock action groups scheduled for removal:")
+          for target in targets:
+              print(target)
+
+          with open("bedrock-disable-needed.txt", "w", encoding="utf-8") as fp:
+              fp.write("true\n")
+          PY
+
+          if [[ "$(cat bedrock-disable-needed.txt)" != "true" ]]; then
+            echo "disabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          export AWS_REGION
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          import time
+
+          region = os.environ["AWS_REGION"]
+
+          def aws_json(*args):
+              print("Running:", "aws", *args, "--region", region, "--output", "json", flush=True)
+              proc = subprocess.run(
+                  ["aws", *args, "--region", region, "--output", "json"],
+                  check=False,
+                  capture_output=True,
+                  text=True,
+                  timeout=30,
+              )
+              if proc.returncode != 0:
+                  raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or f"aws {' '.join(args)} failed")
+              return json.loads(proc.stdout or "{}")
+
+          agents = aws_json("bedrock-agent", "list-agents")
+          matches = [
+              (summary["agentId"], summary.get("agentName", ""))
+              for summary in agents.get("agentSummaries", [])
+              if summary.get("agentName", "").endswith("-incident-copilot")
+          ]
+          if not matches:
+              raise RuntimeError("Apply plan wants to remove Bedrock action groups, but no incident copilot agents were found.")
+
+          print("Matched Bedrock agents:", ", ".join(name or agent_id for agent_id, name in matches), flush=True)
+
+          for agent_id, agent_name in matches:
+              action_groups = aws_json(
+                  "bedrock-agent",
+                  "list-agent-action-groups",
+                  "--agent-id",
+                  agent_id,
+                  "--agent-version",
+                  "DRAFT",
+              ).get("actionGroupSummaries", [])
+              if not action_groups:
+                  print(f"No DRAFT action groups found for agent {agent_name}; skipping agent.")
+                  continue
+
+              for summary in action_groups:
+                  action_group_id = summary["actionGroupId"]
+                  details = aws_json(
+                      "bedrock-agent",
+                      "get-agent-action-group",
+                      "--agent-id",
+                      agent_id,
+                      "--agent-version",
+                      "DRAFT",
+                      "--action-group-id",
+                      action_group_id,
+                  )["agentActionGroup"]
+
+                  current_state = details.get("actionGroupState")
+                  action_group_name = details["actionGroupName"]
+                  if current_state == "DISABLED":
+                      print(f"Action group {action_group_name} is already disabled.")
+                      continue
+
+                  payload = {
+                      "agentId": agent_id,
+                      "agentVersion": "DRAFT",
+                      "actionGroupId": action_group_id,
+                      "actionGroupName": action_group_name,
+                      "actionGroupState": "DISABLED",
+                  }
+                  for key in (
+                      "description",
+                      "parentActionGroupSignature",
+                      "parentActionGroupSignatureParams",
+                      "actionGroupExecutor",
+                      "apiSchema",
+                      "functionSchema",
+                  ):
+                      value = details.get(key)
+                      if value not in (None, "", {}, []):
+                          payload[key] = value
+
+                  with open("bedrock-disable-action-group.json", "w", encoding="utf-8") as fp:
+                      json.dump(payload, fp)
+
+                  print(f"Disabling action group {action_group_name} on agent {agent_name}...", flush=True)
+                  subprocess.run(
+                      [
+                          "aws",
+                          "bedrock-agent",
+                          "update-agent-action-group",
+                          "--region",
+                          region,
+                          "--cli-input-json",
+                          "file://bedrock-disable-action-group.json",
+                      ],
+                      check=True,
+                      timeout=60,
+                  )
+
+                  for attempt in range(1, 21):
+                      refreshed = aws_json(
+                          "bedrock-agent",
+                          "get-agent-action-group",
+                          "--agent-id",
+                          agent_id,
+                          "--agent-version",
+                          "DRAFT",
+                          "--action-group-id",
+                          action_group_id,
+                      )["agentActionGroup"]
+                      state = refreshed.get("actionGroupState")
+                      print(f"{action_group_name} state after disable request ({attempt}/20): {state}")
+                      if state == "DISABLED":
+                          break
+                      time.sleep(3)
+                  else:
+                      raise RuntimeError(f"Timed out waiting for action group {action_group_name} to become DISABLED")
+
+          print("Bedrock action groups are ready for Terraform removal.")
+          PY
+
+          echo "disabled=true" >> "$GITHUB_OUTPUT"
+
+      - name: Rebuild Terraform plan after Bedrock disable
+        if: ${{ inputs.action == 'apply' && steps.disable_bedrock_apply.outputs.disabled == 'true' }}
+        working-directory: public/terraform
+        run: terraform plan -lock-timeout=5m -out=tfplan
 
       - name: Upload tfplan artifact
-        if: ${{ inputs.action == 'apply' }}
+        if: ${{ inputs.action == 'apply' || inputs.action == 'plan' }}
         uses: actions/upload-artifact@v4
         with:
           name: run-public-terraform-tfplan
@@ -89,10 +475,11 @@ jobs:
       - name: Terraform apply
         if: ${{ inputs.action == 'apply' }}
         working-directory: public/terraform
-        run: terraform apply -auto-approve tfplan
+        run: terraform apply -lock-timeout=5m -auto-approve tfplan
 
       - name: Resolve SSM bootstrap instance
         id: resolve_instance
+        if: ${{ inputs.action == 'apply' || inputs.action == 'destroy' }}
         run: |
           RUNNING_INSTANCE_IDS=$(aws ec2 describe-instances \
             --region "${AWS_REGION}" \
@@ -149,6 +536,7 @@ jobs:
           fi
 
           export MSK_BOOTSTRAP_BROKERS="$(terraform output -raw msk_bootstrap_brokers)"
+          export KAFKA_SECURITY_PROTOCOL="SSL"
           export MSK_TOPIC_REPLICATION_FACTOR="$(terraform output -raw msk_topic_replication_factor)"
           export MSK_TOPIC_CONFIGS_JSON="$(terraform output -json msk_topic_configs)"
           export MSK_TOPICS_JSON="$(terraform output -json msk_topics)"
@@ -162,6 +550,7 @@ jobs:
               f"echo '{os.environ['SCRIPT_B64']}' | base64 -d > /tmp/sync-msk-topics.sh",
               "chmod +x /tmp/sync-msk-topics.sh",
               f"export MSK_BOOTSTRAP_BROKERS='{os.environ['MSK_BOOTSTRAP_BROKERS']}'",
+              f"export KAFKA_SECURITY_PROTOCOL='{os.environ['KAFKA_SECURITY_PROTOCOL']}'",
               f"export MSK_TOPIC_REPLICATION_FACTOR='{os.environ['MSK_TOPIC_REPLICATION_FACTOR']}'",
               f"export MSK_TOPIC_CONFIGS_JSON='{os.environ['MSK_TOPIC_CONFIGS_JSON']}'",
               f"export MSK_TOPICS_JSON='{os.environ['MSK_TOPICS_JSON']}'",
@@ -231,7 +620,39 @@ jobs:
           echo "MSK topics sync timed out."
           exit 1
 
-      - name: Delete ArgoCD apps before destroy
+      - name: Sync Terraform output to bastion and dispatch VPN render
+        if: ${{ inputs.action == 'apply' && inputs.trigger_bastion_vpn }}
+        working-directory: public/terraform
+        env:
+          GH_TOKEN: ${{ secrets.BASTION_DISPATCH_TOKEN }}
+          BASTION_REPO: ${{ vars.BASTION_REPO || 'SGS-Strategy/bastion-host' }}
+          BASTION_PROVISION_REF: ${{ vars.BASTION_PROVISION_REF || 'main' }}
+          TRIGGER_PRIVATE: ${{ inputs.trigger_private }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::BASTION_DISPATCH_TOKEN secret (Actions:write + Secrets:write on ${BASTION_REPO}) is required to drive the bastion VPN chain"
+            exit 1
+          fi
+          # terraform output -json carries the *sensitive* VPN pre-shared keys that
+          # `bh render` consumes. Never let it touch logs or a plain artifact: pipe it
+          # straight into an encrypted Actions secret on the bastion repo. The bastion
+          # then reaches AWS only over the IPsec tunnel — no public egress data plane.
+          umask 077
+          terraform output -json > "${RUNNER_TEMP}/public-tf-output.json"
+          gh secret set PUBLIC_TF_OUTPUT_JSON \
+            --repo "${BASTION_REPO}" \
+            < "${RUNNER_TEMP}/public-tf-output.json"
+          rm -f "${RUNNER_TEMP}/public-tf-output.json"
+          gh workflow run provision.yml \
+            --repo "${BASTION_REPO}" \
+            --ref "${BASTION_PROVISION_REF}" \
+            -f mode=vpn \
+            -f run_vpn_bootstrap=true \
+            -f trigger_private="${TRIGGER_PRIVATE}"
+          echo "Dispatched ${BASTION_REPO} provision (mode=vpn, trigger_private=${TRIGGER_PRIVATE})."
+
+      - name: Pre-destroy Kubernetes cleanup
         if: ${{ inputs.action == 'destroy' && steps.resolve_instance.outputs.value != '' }}
         id: delete_argocd_apps
         env:
@@ -245,23 +666,24 @@ jobs:
               "set -euo pipefail",
               "if ! command -v kubectl >/dev/null 2>&1; then curl -fsSLo /tmp/kubectl https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl && chmod +x /tmp/kubectl && sudo mv /tmp/kubectl /usr/local/bin/kubectl; fi",
               "export KUBECONFIG=/tmp/eks-kubeconfig",
-              f"ASSUME_ROLE_OUTPUT=$(aws sts assume-role --role-arn {os.environ['BOOTSTRAP_ROLE_ARN']} --role-session-name argocd-cleanup --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text)",
-              "if [ -z \"$ASSUME_ROLE_OUTPUT\" ] || [ \"$ASSUME_ROLE_OUTPUT\" = \"None\" ]; then echo 'Failed to assume bootstrap role.'; exit 1; fi",
-              "read AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN <<< \"$ASSUME_ROLE_OUTPUT\"",
-              "export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN",
-              f"aws eks update-kubeconfig --region {os.environ['AWS_REGION']} --name {os.environ['EKS_CLUSTER_NAME']} --kubeconfig /tmp/eks-kubeconfig",
-              "kubectl delete ingress --all -n inference --wait --timeout=60s || true",
-              "sleep 15",
+              f"aws eks update-kubeconfig --region {os.environ['AWS_REGION']} --name {os.environ['EKS_CLUSTER_NAME']} --role-arn {os.environ['BOOTSTRAP_ROLE_ARN']} --kubeconfig /tmp/eks-kubeconfig",
+              "kubectl get apiservice v1beta1.external.metrics.k8s.io >/dev/null 2>&1 && kubectl delete apiservice v1beta1.external.metrics.k8s.io || true",
+              "kubectl delete application platform-addons -n argocd --ignore-not-found=true --wait=false || true",
               "kubectl get application -n argocd -o name | xargs -I{} kubectl patch {} -n argocd -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge || true",
-              "kubectl delete application --all -n argocd --wait --timeout=120s || true",
+              "kubectl delete application --all -n argocd --ignore-not-found=true --wait=false || true",
+              "kubectl delete secret -n argocd -l argocd.argoproj.io/secret-type=repository --ignore-not-found=true --wait=false || true",
+              "kubectl delete ingress --all -n inference --ignore-not-found=true --wait=false || true",
+              "kubectl delete ingress --all -n app --ignore-not-found=true --wait=false || true",
               "kubectl get inferenceservice -n inference -o name 2>/dev/null | xargs -I{} kubectl patch {} -n inference -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge || true",
-              "kubectl delete inferenceservice --all -n inference --force --grace-period=0 || true",
-              "for resource in $(kubectl api-resources --verbs=list --namespaced -o name 2>/dev/null); do kubectl get $resource -n inference -o name 2>/dev/null | xargs -I{} kubectl patch {} -n inference -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge 2>/dev/null || true; done",
-              "kubectl delete pvc --all -n inference --wait --timeout=60s || true",
-              "kubectl delete all --all -n inference --force --grace-period=0 || true",
-              "kubectl patch namespace inference -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge || true",
-              "kubectl delete namespace inference --force --grace-period=0 || true",
-              "sleep 30",
+              "kubectl delete inferenceservice --all -n inference --ignore-not-found=true --wait=false || true",
+              "kubectl delete deploy --all -n app --ignore-not-found=true --wait=false || true",
+              "kubectl delete svc --all -n app --ignore-not-found=true --wait=false || true",
+              "kubectl delete pvc --all -n inference --ignore-not-found=true --wait=false || true",
+              "kubectl delete all --all -n inference --ignore-not-found=true --wait=false || true",
+              "for ns in app inference argocd monitoring logging kserve keda cert-manager chaos-testing; do kubectl delete namespace $ns --ignore-not-found=true --wait=false || true; done",
+              "sleep 5",
+              "for ns in app inference argocd monitoring logging kserve keda cert-manager chaos-testing; do kubectl patch namespace $ns -p '{\"metadata\":{\"finalizers\":[]}}' --type=merge 2>/dev/null || true; done",
+              "kubectl get ns || true",
           ]
 
           with open("argocd-cleanup-commands.json", "w") as fp:
@@ -272,20 +694,23 @@ jobs:
             --region "${AWS_REGION}" \
             --instance-ids "${TARGET_INSTANCE_ID}" \
             --document-name "AWS-RunShellScript" \
-            --comment "Delete ArgoCD apps before destroy" \
+            --comment "Pre-destroy Kubernetes cleanup" \
             --parameters file://argocd-cleanup-commands.json \
             --query 'Command.CommandId' \
             --output text)
 
           echo "command_id=${COMMAND_ID}" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for ArgoCD cleanup
+      - name: Wait briefly for pre-destroy Kubernetes cleanup
         if: ${{ inputs.action == 'destroy' && steps.resolve_instance.outputs.value != '' }}
+        continue-on-error: true
+        timeout-minutes: 3
         env:
           COMMAND_ID: ${{ steps.delete_argocd_apps.outputs.command_id }}
           TARGET_INSTANCE_ID: ${{ steps.resolve_instance.outputs.value }}
         run: |
-          for ((i=1; i<=SSM_WAIT_ATTEMPTS; i++)); do
+          MAX_ATTEMPTS=12
+          for ((i=1; i<=MAX_ATTEMPTS; i++)); do
             STATUS=$(aws ssm get-command-invocation \
               --region "${AWS_REGION}" \
               --command-id "${COMMAND_ID}" \
@@ -293,7 +718,7 @@ jobs:
               --query 'Status' \
               --output text)
 
-            echo "ArgoCD cleanup status (${i}/${SSM_WAIT_ATTEMPTS}): ${STATUS}"
+            echo "Pre-destroy cleanup status (${i}/${SSM_WAIT_ATTEMPTS}): ${STATUS}"
 
             if [[ "${STATUS}" == "Success" ]]; then
               break
@@ -306,11 +731,13 @@ jobs:
                 --instance-id "${TARGET_INSTANCE_ID}" \
                 --query 'StandardErrorContent' \
                 --output text || true
-              exit 1
+              exit 0
             fi
 
-            sleep "${SSM_WAIT_INTERVAL_SECONDS}"
+            sleep 5
           done
+
+          echo "Pre-destroy cleanup is still running; continuing to in-cluster destroy."
 
       - name: Send in-cluster Terraform command through SSM
         if: ${{ steps.resolve_instance.outputs.value != '' }}
@@ -340,11 +767,13 @@ jobs:
               "if [ -z \"$ASSUME_ROLE_OUTPUT\" ] || [ \"$ASSUME_ROLE_OUTPUT\" = \"None\" ]; then echo 'Failed to assume bootstrap role.'; exit 1; fi",
               "read AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN <<< \"$ASSUME_ROLE_OUTPUT\"",
               "export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN",
-              f"aws eks update-kubeconfig --region {os.environ['AWS_REGION']} --name {os.environ['EKS_CLUSTER_NAME']} --kubeconfig /tmp/eks-kubeconfig",
+              f"aws eks update-kubeconfig --region {os.environ['AWS_REGION']} --name {os.environ['EKS_CLUSTER_NAME']} --role-arn {os.environ['BOOTSTRAP_ROLE_ARN']} --kubeconfig /tmp/eks-kubeconfig",
               "rm -rf /tmp/hasp-bootstrap && mkdir -p /tmp/hasp-bootstrap",
               f"echo {os.environ['INCLUSTER_TF_B64']} | base64 -d > /tmp/hasp-bootstrap/terraform-incluster.tar.gz",
               "tar -xzf /tmp/hasp-bootstrap/terraform-incluster.tar.gz -C /tmp/hasp-bootstrap",
               "terraform -chdir=/tmp/hasp-bootstrap/terraform-incluster init",
+              # destroy 시 namespace finalizer로 인한 타임아웃 방지: namespace finalizer 제거 후 state에서 제거
+              "if [ '{}' = 'destroy' ]; then kubectl get apiservice v1beta1.external.metrics.k8s.io >/dev/null 2>&1 && kubectl delete apiservice v1beta1.external.metrics.k8s.io || true; for ns in app inference argocd; do kubectl patch namespace $ns -p '{{\"metadata\":{{\"finalizers\":[]}}}}' --type=merge 2>/dev/null || true; kubectl delete namespace $ns --ignore-not-found=true 2>/dev/null || true; done; sleep 10; terraform -chdir=/tmp/hasp-bootstrap/terraform-incluster state rm kubernetes_namespace.argocd kubernetes_namespace.inference 2>/dev/null || true; fi".format(tf_action),
               tf_command,
           ]
 
@@ -365,6 +794,8 @@ jobs:
 
       - name: Wait for in-cluster Terraform result
         if: ${{ steps.resolve_instance.outputs.value != '' }}
+        continue-on-error: true
+        timeout-minutes: 30
         env:
           COMMAND_ID: ${{ steps.send_incluster.outputs.command_id }}
           TARGET_INSTANCE_ID: ${{ steps.resolve_instance.outputs.value }}
@@ -427,6 +858,67 @@ jobs:
             --query 'StandardOutputContent' \
             --output text || true
 
+      - name: Write runtime values into Git manifests
+        if: ${{ inputs.action == 'apply' }}
+        working-directory: public/terraform
+        run: |
+          export INFERENCE_WORKER_ROLE_ARN="$(terraform output -raw inference_worker_role_arn)"
+          export DASHBOARD_BACKEND_ROLE_ARN="$(terraform output -raw dashboard_backend_role_arn)"
+          export ALB_CERTIFICATE_ARN="$(terraform output -raw alb_certificate_arn)"
+          [[ -n "${ALB_CERTIFICATE_ARN}" ]] || { echo "alb_certificate_arn is empty"; exit 1; }
+
+          python - <<'PY'
+          import os
+          import re
+          import json
+          from pathlib import Path
+
+          root = Path.cwd().parent.parent
+          updates = [
+              (
+                  root / "public/k8s/apps/inference-worker/serviceaccount.yaml",
+                  r"(eks\.amazonaws\.com/role-arn:\s*).*$",
+                  rf"\1{os.environ['INFERENCE_WORKER_ROLE_ARN']}",
+              ),
+              (
+                  root / "public/k8s/apps/dashboard-backend/service-account.yaml",
+                  r"(eks\.amazonaws\.com/role-arn:\s*).*$",
+                  rf"\1{os.environ['DASHBOARD_BACKEND_ROLE_ARN']}",
+              ),
+              (
+                  root / "public/k8s/apps/inference-api/ingress.yaml",
+                  r'(alb\.ingress\.kubernetes\.io/certificate-arn:\s*).*$',
+                  r"\1" + json.dumps(os.environ["ALB_CERTIFICATE_ARN"]),
+              ),
+              (
+                  root / "public/k8s/apps/dashboard-frontend/ingress.yaml",
+                  r'(alb\.ingress\.kubernetes\.io/certificate-arn:\s*).*$',
+                  r"\1" + json.dumps(os.environ["ALB_CERTIFICATE_ARN"]),
+              ),
+          ]
+
+          for path, pattern, replacement in updates:
+              text = path.read_text(encoding="utf-8")
+              updated = re.sub(pattern, replacement, text, flags=re.MULTILINE)
+              path.write_text(updated, encoding="utf-8")
+          PY
+
+      - name: Commit runtime manifest values
+        if: ${{ inputs.action == 'apply' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/k8s/apps/inference-worker/serviceaccount.yaml \
+            public/k8s/apps/dashboard-backend/service-account.yaml \
+            public/k8s/apps/inference-api/ingress.yaml \
+            public/k8s/apps/dashboard-frontend/ingress.yaml
+          if git diff --cached --quiet; then
+            echo "No runtime manifest changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: refresh public runtime manifest values"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
       - name: Clean up ENIs before destroy
         if: ${{ inputs.action == 'destroy' }}
         run: |
@@ -445,23 +937,51 @@ jobs:
 
           ENI_IDS=$(aws ec2 describe-network-interfaces \
             --region "${AWS_REGION}" \
-            --filters \
-              "Name=vpc-id,Values=${VPC_ID}" \
-              "Name=status,Values=available" \
-            --query "NetworkInterfaces[].NetworkInterfaceId" \
+            --filters "Name=vpc-id,Values=${VPC_ID}" \
+            --query "NetworkInterfaces[].[NetworkInterfaceId,Status,Attachment.AttachmentId,RequesterManaged,Description,Attachment.DeviceIndex,InterfaceType]" \
             --output text)
 
           if [[ -z "${ENI_IDS}" || "${ENI_IDS}" == "None" ]]; then
-            echo "No available ENIs found."
+            echo "No ENIs found."
             exit 0
           fi
 
-          for ENI_ID in ${ENI_IDS}; do
+          while IFS=$'\t' read -r ENI_ID STATUS ATTACHMENT_ID REQUESTER_MANAGED DESCRIPTION DEVICE_INDEX INTERFACE_TYPE; do
+            echo "Processing ENI ${ENI_ID} (status: ${STATUS}, type: ${INTERFACE_TYPE}, requesterManaged: ${REQUESTER_MANAGED}, deviceIndex: ${DEVICE_INDEX})..."
+
+            if [[ "${REQUESTER_MANAGED}" == "True" ]]; then
+              echo "Skipping requester-managed ENI ${ENI_ID}."
+              continue
+            fi
+
+            if [[ "${ATTACHMENT_ID}" == ela-attach-* ]]; then
+              echo "Skipping ELA-managed attachment for ENI ${ENI_ID}."
+              continue
+            fi
+
+            if [[ "${DEVICE_INDEX}" == "0" ]]; then
+              echo "Skipping primary network interface ${ENI_ID}."
+              continue
+            fi
+
+            if [[ "${DESCRIPTION}" != *ELB* && "${DESCRIPTION}" != *k8s* && "${DESCRIPTION}" != *amazon-eks* ]]; then
+              echo "Skipping ENI ${ENI_ID} because description does not look like a load-balancer/controller ENI: ${DESCRIPTION}"
+              continue
+            fi
+
+            if [[ "${STATUS}" == "in-use" && -n "${ATTACHMENT_ID}" && "${ATTACHMENT_ID}" != "None" ]]; then
+              echo "Detaching ENI ${ENI_ID} (attachment: ${ATTACHMENT_ID})..."
+              aws ec2 detach-network-interface \
+                --region "${AWS_REGION}" \
+                --attachment-id "${ATTACHMENT_ID}" \
+                --force || true
+              sleep 3
+            fi
             echo "Deleting ENI ${ENI_ID}..."
             aws ec2 delete-network-interface \
               --region "${AWS_REGION}" \
               --network-interface-id "${ENI_ID}" || true
-          done
+          done <<< "${ENI_IDS}"
 
       - name: Force unlock Terraform state before destroy
         if: ${{ inputs.action == 'destroy' }}
@@ -472,7 +992,7 @@ jobs:
       - name: Terraform destroy plan
         if: ${{ inputs.action == 'destroy' }}
         working-directory: public/terraform
-        run: terraform plan -destroy -out=tfdestroy
+        run: terraform plan -lock-timeout=5m -destroy -refresh=false -out=tfdestroy
 
       - name: Upload destroy plan artifact
         if: ${{ inputs.action == 'destroy' }}
@@ -484,4 +1004,4 @@ jobs:
       - name: Terraform destroy
         if: ${{ inputs.action == 'destroy' }}
         working-directory: public/terraform
-        run: terraform apply -auto-approve tfdestroy
+        run: terraform apply -lock-timeout=5m -auto-approve tfdestroy

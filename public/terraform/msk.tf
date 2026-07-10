@@ -5,11 +5,19 @@ resource "aws_security_group" "msk" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description = "Allow Kafka traffic from within the VPC"
-    from_port   = 0
-    to_port     = 65535
+    description = "Allow broker-to-broker and Lambda event source mapping traffic within the MSK security group"
+    from_port   = 9092
+    to_port     = 9098
     protocol    = "tcp"
-    cidr_blocks = [var.vpc_cidr]
+    self        = true
+  }
+
+  ingress {
+    description = "Allow Kafka TLS traffic from EKS private subnets"
+    from_port   = 9094
+    to_port     = 9094
+    protocol    = "tcp"
+    cidr_blocks = var.eks_private_subnet_cidrs
   }
 
   egress {
@@ -32,7 +40,7 @@ resource "aws_msk_cluster" "main" {
 
   broker_node_group_info {
     instance_type   = var.msk_broker_instance_type
-    client_subnets  = slice(aws_subnet.msk_private[*].id, 0, 2) # 임시 비용 절감 (브로커 1개, AWS 최소 2개 서브넷 요구), 원래 값: aws_subnet.msk_private[*].id (3 AZ, 나중에 복구)
+    client_subnets  = aws_subnet.msk_private[*].id
     security_groups = [aws_security_group.msk.id]
 
     storage_info {
@@ -44,7 +52,7 @@ resource "aws_msk_cluster" "main" {
 
   encryption_info {
     encryption_in_transit {
-      client_broker = "TLS_PLAINTEXT"
+      client_broker = "TLS"
       in_cluster    = true
     }
   }

@@ -1,0 +1,65 @@
+# Cloudflare Tunnel (in-cluster) — *.intp.me 단일 진입점
+# 표준+무SPOF: cloudflared Deployment(replicas=2, hostNetwork) → Cloudflare 엣지(HA)
+# 시크릿(tunnel-creds)은 git에 넣지 않음 — README.md 참고로 별도 생성.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cloudflared
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudflared-config
+  namespace: cloudflared
+data:
+  config.yml: |
+    tunnel: acfaacab-0d94-47cf-89d3-9a05008d04ee
+    credentials-file: /etc/cloudflared/creds/credentials.json
+    ingress:
+      - hostname: minio.intp.me
+        service: http://minio.minio-tenant.svc.cluster.local:80
+      - hostname: minio-console.intp.me
+        service: http://minio-console.minio-tenant.svc.cluster.local:9090
+      - hostname: gitlab.intp.me
+        service: http://10.42.0.61:80
+      - hostname: harbor.intp.me
+        service: http://10.42.0.127:80
+      - hostname: openstack.intp.me
+        service: http://192.168.0.250:80
+      - service: http_status:404
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+  namespace: cloudflared
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cloudflared
+  template:
+    metadata:
+      labels:
+        app: cloudflared
+    spec:
+      # hostNetwork: Pod CIDR(192.168.0.0/16)이 LAN과 겹쳐 일반 파드는 호스트 VIP(192.168.0.250) 못 닿음.
+      # 노드 네트워크를 써야 ClusterIP/노드IP/호스트VIP 전부 도달.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:2024.10.0
+          args: ["tunnel", "--config", "/etc/cloudflared/config/config.yml", "--no-autoupdate", "run"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/cloudflared/config
+            - name: creds
+              mountPath: /etc/cloudflared/creds
+      volumes:
+        - name: config
+          configMap:
+            name: cloudflared-config
+        - name: creds
+          secret:
+            secretName: tunnel-creds
