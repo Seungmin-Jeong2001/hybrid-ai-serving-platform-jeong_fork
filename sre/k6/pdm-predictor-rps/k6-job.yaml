@@ -20,6 +20,13 @@ spec:
               value: http://pdm-predictor.inference.svc.cluster.local
             - name: PREDICT_PATH
               value: /v1/models/pdm:predict
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 200m
+              memory: 512Mi
           volumeMounts:
             - name: k6-scripts
               mountPath: /scripts

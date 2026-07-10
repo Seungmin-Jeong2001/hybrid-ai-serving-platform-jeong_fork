@@ -21,17 +21,21 @@ export const options = {
       timeUnit: "1s",
 
       // Pre-allocate enough VUs for lower stages.
-      preAllocatedVUs: 20,
+      preAllocatedVUs: 50,
 
       // Allow k6 to add more VUs when the arrival rate increases.
-      maxVUs: 200,
+      maxVUs: 600,
 
       // Raise the target every minute and observe where latency or errors break.
       stages: [
-        { target: 60, duration: "1m" },
-        { target: 80, duration: "1m" },
+        { target: 60,  duration: "1m" },
         { target: 100, duration: "1m" },
-        { target: 120, duration: "1m" }
+        { target: 150, duration: "1m" },
+        { target: 200, duration: "1m" },
+        { target: 250, duration: "1m" },
+        { target: 300, duration: "1m" },
+        { target: 350, duration: "1m" },
+        { target: 400, duration: "1m" }
       ]
     }
   },

@@ -88,6 +88,8 @@ spec:
         kube-state-metrics:
           nodeSelector:
             workload: general
+          extraArgs:
+            - --metric-labels-allowlist=nodes=[workload,eks.amazonaws.com/capacityType]
           resources:
             requests:
               cpu: 50m

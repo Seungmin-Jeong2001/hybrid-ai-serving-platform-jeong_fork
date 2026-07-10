@@ -1,0 +1,229 @@
+{
+  "annotations": { "list": [] },
+  "description": "AI 서빙 플랫폼 서비스 레이어 모니터링 | 담당: 신민석",
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+
+    { "type": "row", "title": "SERVICE HEALTH", "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "id": 1 },
+
+    { "id": 10, "title": "E2E P95 Current",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "(histogram_quantile(0.95, sum(rate(end_to_end_latency_seconds_bucket[5m])) by (le)) * 1000) or vector(0)", "legendFormat": "E2E P95", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "none", "graphMode": "none" }
+    },
+
+    { "id": 11, "title": "E2E P99 Current",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "(histogram_quantile(0.99, sum(rate(end_to_end_latency_seconds_bucket[5m])) by (le)) * 1000) or vector(0)", "legendFormat": "E2E P99", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "none", "graphMode": "none" }
+    },
+
+    { "id": 12, "title": "E2E TPS",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 8, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "sum(rate(inference_pipeline_completed_total[1m])) or vector(0)", "legendFormat": "E2E TPS", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "none", "graphMode": "none" }
+    },
+
+    { "id": 13, "title": "Error Rate",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 11, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "(slo:http_error_rate:ratio_rate5m or vector(0)) * 100", "legendFormat": "에러율", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "percent", "thresholds": { "mode": "absolute", "steps": [{ "color": "#73BF69", "value": null }, { "color": "#F2CC0C", "value": 0.05 }, { "color": "#F2495C", "value": 0.1 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" }
+    },
+
+    { "id": 14, "title": "Availability",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 14, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "max(slo:service_availability:ratio) * 100", "legendFormat": "가용성", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "percent", "thresholds": { "mode": "absolute", "steps": [{ "color": "#F2495C", "value": null }, { "color": "#F2CC0C", "value": 99 }, { "color": "#73BF69", "value": 99.9 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" }
+    },
+
+    { "id": 15, "title": "SLO Compliance",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 17, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "clamp_max(max(slo:service_availability:ratio) / 0.999, 1) * 100", "legendFormat": "SLO 준수율", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 0,
+        "thresholds": { "mode": "absolute", "steps": [{ "color": "#F2495C", "value": null }, { "color": "#F2CC0C", "value": 99 }, { "color": "#73BF69", "value": 100 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" }
+    },
+
+    { "id": 16, "title": "Error Budget Remaining",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 21, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "max(slo:error_budget_remaining:ratio) * 100", "legendFormat": "잔여 에러 버짓", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 0,
+        "color": { "mode": "thresholds" },
+        "thresholds": { "mode": "absolute", "steps": [{ "color": "#F2495C", "value": null }, { "color": "#F2CC0C", "value": 20 }, { "color": "#73BF69", "value": 50 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" }
+    },
+
+    { "type": "row", "title": "THROUGHPUT", "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 }, "id": 2 },
+
+    { "id": 20, "title": "Request RPS (Ingress)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "color": { "fixedColor": "#5794F2", "mode": "fixed" }, "custom": { "lineWidth": 2, "fillOpacity": 12 } } },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [{ "expr": "sum(rate(http_request_duration_highr_seconds_count{namespace=\"inference\", pod=~\".*inference-api.*\"}[1m]))", "legendFormat": "Ingress RPS (전체 유입)", "refId": "A" }]
+    },
+
+    { "id": 21, "title": "Inference TPS (처리 완료)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "color": { "fixedColor": "#73BF69", "mode": "fixed" }, "custom": { "lineWidth": 2, "fillOpacity": 12 } } },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [{ "expr": "sum(rate(http_request_duration_highr_seconds_count{namespace=\"inference\", pod=~\".*pdm.*\"}[1m]))", "legendFormat": "Inference TPS (처리 완료)", "refId": "A" }]
+    },
+
+    { "id": 22, "title": "E2E TPS (DB 적재 완료)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "color": { "fixedColor": "#F9934E", "mode": "fixed" }, "custom": { "lineWidth": 2, "fillOpacity": 8 } } },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [{ "expr": "sum(rate(inference_pipeline_completed_total[1m])) or vector(0)", "legendFormat": "E2E TPS (DB 적재)", "refId": "A" }]
+    },
+
+    { "type": "row", "title": "LATENCY", "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 }, "id": 3 },
+
+    { "id": 30, "title": "E2E P95 Trend",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "fieldConfig": { "defaults": { "unit": "ms", "color": { "fixedColor": "#73BF69", "mode": "fixed" }, "custom": { "lineWidth": 2, "fillOpacity": 10 },
+        "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 300 }, { "color": "red", "value": 500 }] } } },
+      "options": { "tooltip": { "mode": "single" } },
+      "targets": [{ "expr": "(histogram_quantile(0.95, sum(rate(end_to_end_latency_seconds_bucket[5m])) by (le)) * 1000) or vector(0)", "legendFormat": "E2E P95", "refId": "A" }]
+    },
+
+    { "id": 31, "title": "E2E P99 Trend",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "fieldConfig": { "defaults": { "unit": "ms", "color": { "fixedColor": "#FF9900", "mode": "fixed" }, "custom": { "lineWidth": 2, "fillOpacity": 10 },
+        "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 500 }, { "color": "red", "value": 1000 }] } } },
+      "options": { "tooltip": { "mode": "single" } },
+      "targets": [{ "expr": "(histogram_quantile(0.99, sum(rate(end_to_end_latency_seconds_bucket[5m])) by (le)) * 1000) or vector(0)", "legendFormat": "E2E P99", "refId": "A" }]
+    },
+
+    { "id": 32, "title": "Inference P95 Trend",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "fieldConfig": { "defaults": { "unit": "ms", "color": { "fixedColor": "#5794F2", "mode": "fixed" }, "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "options": { "tooltip": { "mode": "single" } },
+      "targets": [{ "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_highr_seconds_bucket{namespace=\"inference\", pod=~\".*inference-api.*\"}[5m])) by (le)) * 1000", "legendFormat": "Inference P95", "refId": "A" }]
+    },
+
+    { "id": 33, "title": "Inference P99 Trend",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "fieldConfig": { "defaults": { "unit": "ms", "color": { "fixedColor": "#B877D9", "mode": "fixed" }, "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "options": { "tooltip": { "mode": "single" } },
+      "targets": [{ "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_highr_seconds_bucket{namespace=\"inference\", pod=~\".*inference-api.*\"}[5m])) by (le)) * 1000", "legendFormat": "Inference P99", "refId": "A" }]
+    },
+
+    { "type": "row", "title": "MESSAGE PIPELINE", "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 }, "id": 4 },
+
+    { "id": 40, "title": "Kafka Consumer Lag",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 10, "x": 0, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "fixedColor": "#5794F2", "mode": "fixed" }, "custom": { "lineWidth": 2, "fillOpacity": 15 },
+        "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 100 }, { "color": "red", "value": 500 }] } } },
+      "options": { "tooltip": { "mode": "multi" } },
+      "targets": [{ "expr": "sum by (consumergroup) (kafka_consumergroup_lag{topic=\"inference-request\"})", "legendFormat": "{{ consumergroup }}", "refId": "A" }]
+    },
+
+    { "id": 41, "title": "Retry Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 10, "x": 10, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "color": { "fixedColor": "#FF9900", "mode": "fixed" }, "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "options": { "tooltip": { "mode": "single" } },
+      "targets": [{ "expr": "sum(rate(inference_retry_published_total[5m])) or vector(0)", "legendFormat": "Retry Rate", "refId": "A" }]
+    },
+
+    { "id": 42, "title": "DLQ Count",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 4, "x": 20, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "sum(increase(inference_dlq_published_total[5m])) or vector(0)", "legendFormat": "DLQ (5m)", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" }
+    },
+
+    { "type": "row", "title": "BURN RATE", "collapsed": true,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 35 }, "id": 5,
+      "panels": [
+        {
+          "id": 50, "title": "Error Budget 번 레이트 (1h / 6h / 24h)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 41 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+          "fieldConfig": {
+            "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 8 } },
+            "overrides": [
+              { "matcher": { "id": "byName", "options": "Critical 임계값 (1h 소진)" },
+                "properties": [
+                  { "id": "custom.lineStyle", "value": { "dash": [10, 10], "fill": "dash" } },
+                  { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }
+                ]},
+              { "matcher": { "id": "byName", "options": "Warning 임계값 (6h 소진)" },
+                "properties": [
+                  { "id": "custom.lineStyle", "value": { "dash": [10, 10], "fill": "dash" } },
+                  { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }
+                ]}
+            ]
+          },
+          "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] } },
+          "targets": [
+            { "expr": "slo:error_budget_burn_rate:1h",  "legendFormat": "1h 번 레이트",  "refId": "A" },
+            { "expr": "slo:error_budget_burn_rate:6h",  "legendFormat": "6h 번 레이트",  "refId": "B" },
+            { "expr": "slo:error_budget_burn_rate:24h", "legendFormat": "24h 번 레이트", "refId": "C" },
+            { "expr": "vector(14.4)", "legendFormat": "Critical 임계값 (1h 소진)", "refId": "D" },
+            { "expr": "vector(6)",    "legendFormat": "Warning 임계값 (6h 소진)",  "refId": "E" }
+          ]
+        }
+      ]
+    }
+
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["sre", "service", "ai-serving"],
+  "templating": {
+    "list": [
+      { "current": {}, "hide": 0, "label": "Prometheus (Public)", "multi": false, "name": "DS_PUBLIC", "options": [], "query": "prometheus", "refresh": 1, "type": "datasource" }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "Asia/Seoul",
+  "title": "AI Serving Platform - Service",
+  "uid": "sre-service-v1",
+  "version": 2
+}

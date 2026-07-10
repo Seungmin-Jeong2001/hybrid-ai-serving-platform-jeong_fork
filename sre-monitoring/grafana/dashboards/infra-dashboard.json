@@ -1,0 +1,192 @@
+{
+  "annotations": { "list": [] },
+  "description": "AI 서빙 플랫폼 인프라 레이어 모니터링 (노드/Pod/CA/KEDA) | 담당: 신민석",
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+
+    { "type": "row", "title": "INFRASTRUCTURE HEALTH", "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "id": 10 },
+
+    { "id": 11, "title": "Running Pods",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "sum(kube_pod_status_phase{phase=\"Running\",namespace=~\"$namespace\"})", "legendFormat": "Running", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none", "justifyMode": "center", "textMode": "value" }
+    },
+
+    { "id": 12, "title": "Pod Restarts (5m)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "sum(rate(kube_pod_container_status_restarts_total{namespace=~\"$namespace\"}[5m])) * 300", "legendFormat": "Restarts", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none", "justifyMode": "center", "textMode": "value" }
+    },
+
+    { "id": 13, "title": "Prometheus Targets Up",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [
+        { "expr": "count(up == 1)", "legendFormat": "Up", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] } }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none", "justifyMode": "center", "textMode": "value" }
+    },
+
+    { "type": "row", "title": "CLUSTER HEALTH", "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 }, "id": 20 },
+
+    { "id": 14, "title": "Node CPU Utilization",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "sre:node_cpu_utilization:rate5m * 100", "legendFormat": "{{ instance }}", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100,
+        "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 85 }] },
+        "custom": { "lineWidth": 2, "fillOpacity": 15 } } },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } }
+    },
+
+    { "id": 15, "title": "Node Memory Utilization",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "sre:node_memory_utilization:ratio * 100", "legendFormat": "{{ instance }}", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100,
+        "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 75 }, { "color": "red", "value": 90 }] },
+        "custom": { "lineWidth": 2, "fillOpacity": 15 } } },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } }
+    },
+
+    { "id": 17, "title": "Core System Deployment Availability",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "sre:deployment_availability:ratio{deployment=~\"aws-load-balancer-controller|cert-manager|kube-prometheus-stack-grafana|kube-prometheus-stack-operator|kube-state-metrics|prometheus-node-exporter|keda-operator|keda-operator-metrics-apiserver|keda-admission-webhooks|cluster-autoscaler\"} * 100", "refId": "A", "instant": true, "format": "table" }],
+      "transformations": [{ "id": "organize", "options": {
+        "excludeByName": { "Time": false, "container": true, "endpoint": true, "instance": true, "job": true, "pod": true, "service": true },
+        "renameByName": { "namespace": "Namespace", "deployment": "Deployment", "Value": "Availability %" }
+      }}],
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "max": 100 },
+        "overrides": [{ "matcher": { "id": "byName", "options": "Availability %" },
+          "properties": [
+            { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 50 }, { "color": "green", "value": 100 }] } },
+            { "id": "custom.displayMode", "value": "color-background" }
+          ]}]
+      },
+      "options": { "filterable": true }
+    },
+
+    { "type": "row", "title": "Node Autoscaling", "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 }, "id": 60 },
+
+    { "id": 61, "title": "Ready Nodes",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 15 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [
+        { "expr": "count by (label_workload) (\n  kube_node_labels{label_workload=~\"inference|general\"}\n  * on(node) group_left()\n  kube_node_status_condition{condition=\"Ready\", status=\"true\"}\n)", "legendFormat": "{{ label_workload }}", "refId": "A" },
+        { "expr": "count(kube_node_status_condition{condition=\"Ready\",status=\"true\"})", "legendFormat": "전체", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "custom": { "lineWidth": 2, "fillOpacity": 8, "spanNulls": false } } },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] } }
+    },
+
+    { "id": 62, "title": "Pending Pods",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 15 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [
+        { "expr": "sum(kube_pod_status_phase{phase=\"Pending\", namespace!~\"kube-system|monitoring\"}) or vector(0)", "legendFormat": "Pending Pods", "refId": "A" },
+        { "expr": "cluster_autoscaler_unschedulable_pods_count or vector(0)", "legendFormat": "Unschedulable (CA 감지)", "refId": "B" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "min": 0, "custom": { "lineWidth": 2, "fillOpacity": 15 }, "color": { "mode": "palette-classic" } },
+        "overrides": [{ "matcher": { "id": "byName", "options": "Unschedulable (CA 감지)" },
+          "properties": [{ "id": "color", "value": { "fixedColor": "#ff1744", "mode": "fixed" } }] }]
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] } }
+    },
+
+    { "id": 63, "title": "CA Scale Events",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 15 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [
+        { "expr": "increase(cluster_autoscaler_scaled_up_nodes_total[30m]) or vector(0)", "legendFormat": "스케일업 (노드 추가)", "refId": "A" },
+        { "expr": "increase(cluster_autoscaler_scaled_down_nodes_total[30m]) or vector(0)", "legendFormat": "스케일다운 (노드 제거)", "refId": "B" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "min": 0, "custom": { "lineWidth": 2, "fillOpacity": 20, "drawStyle": "bars", "barAlignment": 0 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "스케일업 (노드 추가)" }, "properties": [{ "id": "color", "value": { "fixedColor": "#00e676", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "스케일다운 (노드 제거)" }, "properties": [{ "id": "color", "value": { "fixedColor": "#ffd600", "mode": "fixed" } }] }
+        ]
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum", "lastNotNull"] } }
+    },
+
+    { "type": "row", "title": "Pod Autoscaling", "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 }, "id": 40 },
+
+    { "id": 41, "title": "Worker Replicas (KEDA)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [
+        { "expr": "kube_deployment_status_replicas_available{namespace=\"inference\", deployment=\"inference-worker\"}", "legendFormat": "현재 레플리카", "refId": "A" },
+        { "expr": "kube_deployment_spec_replicas{namespace=\"inference\", deployment=\"inference-worker\"}", "legendFormat": "목표 레플리카", "refId": "B" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "min": 0, "custom": { "lineWidth": 2, "fillOpacity": 8 } },
+        "overrides": [{ "matcher": { "id": "byFrameRefID", "options": "B" },
+          "properties": [{ "id": "custom.lineStyle", "value": { "dash": [5, 5], "fill": "dash" } },
+                         { "id": "color", "value": { "fixedColor": "#F2CC0C", "mode": "fixed" } }] }]
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] } }
+    },
+
+    { "id": 42, "title": "PdM Replicas (KServe)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [
+        { "expr": "kube_deployment_status_replicas_available{namespace=\"inference\", deployment=~\".*pdm.*\"}", "legendFormat": "현재 레플리카", "refId": "A" },
+        { "expr": "kube_deployment_spec_replicas{namespace=\"inference\", deployment=~\".*pdm.*\"}", "legendFormat": "목표 레플리카", "refId": "B" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "min": 0, "custom": { "lineWidth": 2, "fillOpacity": 8 } },
+        "overrides": [{ "matcher": { "id": "byFrameRefID", "options": "B" },
+          "properties": [{ "id": "custom.lineStyle", "value": { "dash": [5, 5], "fill": "dash" } },
+                         { "id": "color", "value": { "fixedColor": "#F2CC0C", "mode": "fixed" } }] }]
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] } }
+    }
+
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["sre", "infra", "ai-serving"],
+  "templating": {
+    "list": [
+      { "current": {}, "hide": 0, "label": "Prometheus (Public)", "multi": false, "name": "DS_PUBLIC", "options": [], "query": "prometheus", "refresh": 1, "type": "datasource" },
+      { "current": {}, "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+        "definition": "label_values(kube_pod_info, namespace)", "hide": 0, "includeAll": true, "allValue": ".*",
+        "label": "Namespace", "multi": true, "name": "namespace",
+        "query": { "query": "label_values(kube_pod_info, namespace)", "refId": "A" }, "refresh": 2, "type": "query" }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "Asia/Seoul",
+  "title": "AI Serving Platform - Infrastructure",
+  "uid": "sre-infra-v1",
+  "version": 2
+}
