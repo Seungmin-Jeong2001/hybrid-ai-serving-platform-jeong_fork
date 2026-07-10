@@ -1,0 +1,43 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pdm-predictor-rps-test
+  namespace: inference
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: k6
+          image: grafana/k6:latest
+          args:
+            - run
+            - /scripts/pdm-predictor-rps-test.js
+          env:
+            - name: BASE_URL
+              value: http://pdm-predictor.inference.svc.cluster.local
+            - name: PREDICT_PATH
+              value: /v1/models/pdm:predict
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 200m
+              memory: 512Mi
+          volumeMounts:
+            - name: k6-scripts
+              mountPath: /scripts
+      volumes:
+        - name: k6-scripts
+          configMap:
+            name: pdm-predictor-rps-scripts
+---
+# Create the ConfigMap from the tracked test assets before running the job:
+#
+# kubectl create configmap pdm-predictor-rps-scripts \
+#   --from-file=pdm-predictor-rps-test.js=sre/k6/pdm-predictor-rps/pdm-predictor-rps-test.js \
+#   --from-file=pdm-predictor-payload.json=sre/k6/pdm-predictor-rps/pdm-predictor-payload.json \
+#   -n inference

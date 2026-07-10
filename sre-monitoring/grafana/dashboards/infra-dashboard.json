@@ -1,0 +1,230 @@
+{
+  "annotations": { "list": [] },
+  "description": "AI 서빙 플랫폼 인프라 레이어 모니터링 (노드/Pod/CA/KEDA) | 담당: 신민석",
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+
+    { "type": "row", "title": "인프라 상태 (EKS 노드 / Pod)", "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "id": 10 },
+
+    { "id": 11, "title": "Running Pods 수",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "sum(kube_pod_status_phase{phase=\"Running\",namespace=~\"$namespace\"})", "legendFormat": "Running", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" }
+    },
+
+    { "id": 12, "title": "Pod 재시작 (5m)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "sum(rate(kube_pod_container_status_restarts_total{namespace=~\"$namespace\"}[5m])) * 300", "legendFormat": "재시작 횟수", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 }] } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
+    },
+
+    { "id": 13, "title": "Prometheus 수집 대상 상태",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [
+        { "expr": "count(up == 1)", "legendFormat": "Up", "refId": "A" },
+        { "expr": "count(up == 0)", "legendFormat": "Down", "refId": "B" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": [{ "matcher": { "id": "byName", "options": "Down" },
+          "properties": [{ "id": "thresholds", "value": { "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }] }]
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "orientation": "horizontal" }
+    },
+
+    { "id": 14, "title": "노드 CPU 사용률",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "sre:node_cpu_utilization:rate5m * 100", "legendFormat": "{{ instance }}", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100,
+        "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 85 }] },
+        "custom": { "lineWidth": 2, "fillOpacity": 15 } } },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } }
+    },
+
+    { "id": 15, "title": "노드 메모리 사용률",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "sre:node_memory_utilization:ratio * 100", "legendFormat": "{{ instance }}", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100,
+        "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 75 }, { "color": "red", "value": 90 }] },
+        "custom": { "lineWidth": 2, "fillOpacity": 15 } } },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } }
+    },
+
+    { "id": 16, "title": "Pod 재시작 현황 (네임스페이스별)",
+      "type": "table",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "sum by (namespace, pod, container) (increase(kube_pod_container_status_restarts_total[1h])) > 0", "legendFormat": "{{ namespace }} / {{ pod }}", "refId": "A", "instant": true }],
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": [{ "matcher": { "id": "byName", "options": "Value" },
+          "properties": [
+            { "id": "displayName", "value": "재시작 횟수 (1h)" },
+            { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 }] } },
+            { "id": "custom.displayMode", "value": "color-background" }
+          ]}]
+      },
+      "options": { "sortBy": [{ "displayName": "재시작 횟수 (1h)", "desc": true }] }
+    },
+
+    { "id": 17, "title": "Deployment 가용성",
+      "type": "table",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "sre:deployment_availability:ratio{namespace=~\"$namespace\"} * 100", "refId": "A", "instant": true, "format": "table" }],
+      "transformations": [{ "id": "organize", "options": {
+        "excludeByName": { "Time": false, "container": true, "endpoint": true, "instance": true, "job": true, "pod": true, "service": true },
+        "renameByName": { "namespace": "네임스페이스", "deployment": "Deployment", "Value": "가용성 %" }
+      }}],
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "max": 100 },
+        "overrides": [{ "matcher": { "id": "byName", "options": "가용성 %" },
+          "properties": [
+            { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 50 }, { "color": "green", "value": 100 }] } },
+            { "id": "custom.displayMode", "value": "color-background" }
+          ]}]
+      },
+      "options": { "filterable": true }
+    },
+
+    { "type": "row", "title": "Predictor / ML Pod Performance", "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 }, "id": 20 },
+
+    { "id": 21, "title": "Predictor RPS",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 21 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "sum(rate(http_requests_total{job=~\"inference/pdm-predictor|.*pdm-predictor.*|.*predictor.*\"}[1m]))", "legendFormat": "Predictor RPS", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "lineWidth": 2, "fillOpacity": 0 } } }
+    },
+
+    { "id": 22, "title": "Predictor Error Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 21 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "(sum(rate(http_requests_total{job=~\"inference/pdm-predictor|.*pdm-predictor.*|.*predictor.*\",status=~\"5..\"}[5m])) or vector(0)) / clamp_min(sum(rate(http_requests_total{job=~\"inference/pdm-predictor|.*pdm-predictor.*|.*predictor.*\"}[5m])) or vector(1), 1)", "legendFormat": "Predictor 5xx", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 5 }] } } }
+    },
+
+    { "id": 23, "title": "Predictor P99 Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 21 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_highr_seconds_bucket{job=~\"inference/pdm-predictor|.*pdm-predictor.*|.*predictor.*\"}[5m])) by (le)) * 1000", "legendFormat": "Predictor P99", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "ms", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 3000 }, { "color": "red", "value": 5000 }] } } }
+    },
+
+    { "type": "row", "title": "노드 오토스케일링 (Cluster Autoscaler)", "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 }, "id": 60 },
+
+    { "id": 61, "title": "Ready 노드 수 (워크로드별)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [
+        { "expr": "count by (label_workload) (\n  kube_node_labels{label_workload=~\"inference|general\"}\n  * on(node) group_left()\n  kube_node_status_condition{condition=\"Ready\", status=\"true\"}\n)", "legendFormat": "{{ label_workload }}", "refId": "A" },
+        { "expr": "count(kube_node_status_condition{condition=\"Ready\",status=\"true\"})", "legendFormat": "전체", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "custom": { "lineWidth": 2, "fillOpacity": 8, "spanNulls": false } } },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] } }
+    },
+
+    { "id": 62, "title": "Pending Pod 수 (CA 스케일아웃 트리거)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [
+        { "expr": "sum(kube_pod_status_phase{phase=\"Pending\", namespace!~\"kube-system|monitoring\"}) or vector(0)", "legendFormat": "Pending Pods", "refId": "A" },
+        { "expr": "cluster_autoscaler_unschedulable_pods_count or vector(0)", "legendFormat": "Unschedulable (CA 감지)", "refId": "B" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "min": 0, "custom": { "lineWidth": 2, "fillOpacity": 15 }, "color": { "mode": "palette-classic" } },
+        "overrides": [{ "matcher": { "id": "byName", "options": "Unschedulable (CA 감지)" },
+          "properties": [{ "id": "color", "value": { "fixedColor": "#ff1744", "mode": "fixed" } }] }]
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] } }
+    },
+
+    { "id": 63, "title": "CA 스케일링 이벤트 (30분 누적)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [
+        { "expr": "increase(cluster_autoscaler_scaled_up_nodes_total[30m]) or vector(0)", "legendFormat": "스케일업 (노드 추가)", "refId": "A" },
+        { "expr": "increase(cluster_autoscaler_scaled_down_nodes_total[30m]) or vector(0)", "legendFormat": "스케일다운 (노드 제거)", "refId": "B" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "min": 0, "custom": { "lineWidth": 2, "fillOpacity": 20, "drawStyle": "bars", "barAlignment": 0 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "스케일업 (노드 추가)" }, "properties": [{ "id": "color", "value": { "fixedColor": "#00e676", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "스케일다운 (노드 제거)" }, "properties": [{ "id": "color", "value": { "fixedColor": "#ffd600", "mode": "fixed" } }] }
+        ]
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum", "lastNotNull"] } }
+    },
+
+    { "type": "row", "title": "KEDA 오토스케일링", "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 40 }, "id": 40 },
+
+    { "id": 41, "title": "Deployment 레플리카 수 (네임스페이스별)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 14, "x": 0, "y": 41 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [
+        { "expr": "kube_deployment_status_replicas_available{namespace=~\"$namespace\"}", "legendFormat": "{{ namespace }}/{{ deployment }}", "refId": "A" },
+        { "expr": "kube_deployment_spec_replicas{namespace=~\"$namespace\"}", "legendFormat": "{{ deployment }} (목표)", "refId": "B" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "min": 0, "custom": { "lineWidth": 2, "fillOpacity": 0 } },
+        "overrides": [{ "matcher": { "id": "byFrameRefID", "options": "B" },
+          "properties": [{ "id": "custom.lineStyle", "value": { "dash": [5, 5], "fill": "dash" } }] }]
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] } }
+    },
+
+    { "id": 42, "title": "HPA 현황",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 10, "x": 14, "y": 41 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+      "targets": [{ "expr": "kube_horizontalpodautoscaler_status_current_replicas{namespace=~\"$namespace\"}", "legendFormat": "{{ namespace }}/{{ horizontalpodautoscaler }}", "refId": "A", "instant": true }],
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": [{ "matcher": { "id": "byName", "options": "Value" }, "properties": [{ "id": "displayName", "value": "현재 레플리카" }] }]
+      }
+    }
+
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["sre", "infra", "ai-serving"],
+  "templating": {
+    "list": [
+      { "current": {}, "hide": 0, "label": "Prometheus (Public)", "multi": false, "name": "DS_PUBLIC", "options": [], "query": "prometheus", "refresh": 1, "type": "datasource" },
+      { "current": {}, "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
+        "definition": "label_values(kube_pod_info, namespace)", "hide": 0, "includeAll": true, "allValue": ".*",
+        "label": "Namespace", "multi": true, "name": "namespace",
+        "query": { "query": "label_values(kube_pod_info, namespace)", "refId": "A" }, "refresh": 2, "type": "query" }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "Asia/Seoul",
+  "title": "AI Serving Platform - Infrastructure",
+  "uid": "sre-infra-v1",
+  "version": 2
+}

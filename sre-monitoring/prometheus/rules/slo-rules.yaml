@@ -94,32 +94,31 @@ spec:
       interval: 30s
       rules:
 
-        # inference-api 5xx 에러율 (Istio istio_requests_total 기반)
+        # inference-api 5xx 에러율 (BentoML http_requests_total 기반)
+        # clamp_min 대신 > 0 필터 사용: 트래픽 없을 때 0/1 오류 방지
         - record: slo:http_error_rate:ratio_rate5m
           expr: |
-            sum(rate(istio_requests_total{
-              reporter="destination",
-              response_code=~"5..",
-              destination_service=~"inference-api.*"
-            }[5m]))
+            (
+              sum(rate(http_requests_total{
+                job=~"inference/inference-api",
+                status=~"5.."
+              }[5m])) or vector(0)
+            )
             /
-            clamp_min(
-              sum(rate(istio_requests_total{
-                reporter="destination",
-                destination_service=~"inference-api.*"
-              }[5m])),
-              1
+            (
+              sum(rate(http_requests_total{
+                job=~"inference/inference-api"
+              }[5m])) > 0
             )
 
-        # inference-api P99 레이턴시 (Istio 히스토그램 기반, 초 단위)
+        # inference-api P99 레이턴시 (BentoML 히스토그램 기반, 초 단위)
         - record: slo:http_latency_p99:5m
           expr: |
             histogram_quantile(0.99,
-              sum(rate(istio_request_duration_milliseconds_bucket{
-                reporter="destination",
-                destination_service=~"inference-api.*"
+              sum(rate(http_request_duration_highr_seconds_bucket{
+                job=~"inference/inference-api"
               }[5m])) by (le)
-            ) / 1000
+            )
 
         # HTTP 기반 가용성 SLO (pod-based SLO 대체)
         - record: slo:service_availability:ratio
@@ -138,25 +137,17 @@ spec:
       interval: 30s
       rules:
 
-        # TODO(통합 #2): [⑤ 김세원 완성 후] vector(0) → 아래 주석 표현식으로 교체
         - record: slo:kafka_dlq_rate:ratio_rate5m
-          expr: vector(0)
-          labels:
-            note: "placeholder"
+          expr: |
+            sum(rate(kafka_consumergroup_lag{topic=~".*dlq.*"}[5m]))
+            /
+            clamp_min(sum(rate(kafka_consumergroup_lag[5m])), 1)
 
-        # Kafka Exporter 연동 후 아래로 교체:
-        # - record: slo:kafka_dlq_rate:ratio_rate5m
-        #   expr: |
-        #     sum(rate(kafka_consumergroup_lag{topic=~".*dlq.*"}[5m]))
-        #     /
-        #     clamp_min(sum(rate(kafka_consumergroup_lag[5m])), 1)
-
-        # Consumer Lag 5분 평균
-        # - record: slo:kafka_consumer_lag:avg5m
-        #   expr: |
-        #     avg by (consumergroup, topic) (
-        #       kafka_consumergroup_lag
-        #     )
+        - record: slo:kafka_consumer_lag:avg5m
+          expr: |
+            avg by (consumergroup, topic) (
+              kafka_consumergroup_lag
+            )
 
     # ============================================================
     # 인프라 상태 요약 Recording Rules
