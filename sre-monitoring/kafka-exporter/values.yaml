@@ -1,0 +1,30 @@
+replicaCount: 1
+
+kafkaServer:
+{{KAFKA_BROKERS}}
+
+tls:
+  enabled: true
+  insecureSkipVerify: false
+
+sasl:
+  enabled: false
+
+service:
+  port: 9308
+
+prometheus:
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    interval: 30s
+    additionalLabels:
+      release: kube-prometheus-stack
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi

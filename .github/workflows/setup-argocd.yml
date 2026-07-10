@@ -43,6 +43,10 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
+      - name: Terraform init for output rendering
+        working-directory: public/terraform
+        run: terraform init -input=false
+
       - name: Resolve bootstrap admin role ARN
         id: bootstrap_role
         run: |
@@ -116,6 +120,29 @@ jobs:
                 selfHeal: true
           EOF
 
+      - name: Build kafka-exporter application manifest
+        working-directory: public/terraform
+        run: |
+          MSK_BOOTSTRAP_BROKERS="$(terraform output -raw msk_bootstrap_brokers)"
+          export MSK_BOOTSTRAP_BROKERS
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          brokers_raw = os.environ["MSK_BOOTSTRAP_BROKERS"].strip()
+          brokers = [value.strip() for value in brokers_raw.split(",") if value.strip()]
+          if not brokers:
+              raise SystemExit("No brokers found in terraform output msk_bootstrap_brokers")
+
+          template_path = Path.cwd().parent.parent / "public" / "k8s" / "argocd" / "apps" / "kafka-exporter-app.template.yaml"
+          output_path = Path.cwd().parent.parent / "kafka-exporter-app.yaml"
+          template = template_path.read_text(encoding="utf-8")
+          broker_lines = "\n".join(f"          - {broker}" for broker in brokers)
+          rendered = template.replace("{{KAFKA_BROKER_LINES}}", broker_lines)
+          output_path.write_text(rendered, encoding="utf-8")
+          print(f"rendered {output_path}")
+          PY
+
       - name: Resolve SSM bootstrap instance
         id: resolve_instance
         run: |
@@ -161,7 +188,9 @@ jobs:
           BOOTSTRAP_ROLE_ARN: ${{ steps.bootstrap_role.outputs.value }}
         run: |
           ROOT_APP_YAML_B64=$(base64 -w 0 argocd-root-app.yaml)
+          KAFKA_EXPORTER_APP_YAML_B64=$(base64 -w 0 kafka-exporter-app.yaml)
           export ROOT_APP_YAML_B64
+          export KAFKA_EXPORTER_APP_YAML_B64
           python - <<'PY'
           import json
           import os
@@ -211,7 +240,9 @@ jobs:
               ),
               "unset GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY",
               f"echo {os.environ['ROOT_APP_YAML_B64']} | base64 -d | kubectl apply -f -",
+              f"echo {os.environ['KAFKA_EXPORTER_APP_YAML_B64']} | base64 -d | kubectl apply -f -",
               f"kubectl get application platform-addons -n {os.environ['ARGOCD_NAMESPACE']} -o yaml",
+              f"kubectl get application kafka-exporter -n {os.environ['ARGOCD_NAMESPACE']} -o yaml",
           ]
 
           with open("commands.json", "w", encoding="utf-8") as fp:

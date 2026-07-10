@@ -15,7 +15,7 @@ import httpx
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
 from kafka import KafkaConsumer, KafkaProducer, TopicPartition
 from kafka.errors import KafkaError
-from prometheus_client import Histogram, start_http_server
+from prometheus_client import Counter, Histogram, start_http_server
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -28,6 +28,18 @@ END_TO_END_LATENCY_SECONDS = Histogram(
     "end_to_end_latency_seconds",
     "End-to-end latency from edge request creation to DynamoDB persistence.",
     buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300),
+)
+PIPELINE_COMPLETED_TOTAL = Counter(
+    "inference_pipeline_completed_total",
+    "Total number of inference requests fully completed and persisted to DynamoDB.",
+)
+RETRY_PUBLISHED_TOTAL = Counter(
+    "inference_retry_published_total",
+    "Total number of retry messages published by inference worker.",
+)
+DLQ_PUBLISHED_TOTAL = Counter(
+    "inference_dlq_published_total",
+    "Total number of DLQ messages published by inference worker.",
 )
 
 
@@ -281,6 +293,18 @@ def _observe_end_to_end_latency(requested_at: int, completed_at: int) -> None:
     END_TO_END_LATENCY_SECONDS.observe((completed_at - requested_at) / 1000)
 
 
+def _observe_pipeline_completed() -> None:
+    PIPELINE_COMPLETED_TOTAL.inc()
+
+
+def _observe_retry_published() -> None:
+    RETRY_PUBLISHED_TOTAL.inc()
+
+
+def _observe_dlq_published() -> None:
+    DLQ_PUBLISHED_TOTAL.inc()
+
+
 def _start_metrics_server() -> None:
     port = _metrics_port()
     start_http_server(port)
@@ -297,6 +321,10 @@ def _publish(
     key = key or request_id
     try:
         producer.send(topic, key=key, value=payload).get(timeout=_kafka_publish_timeout_seconds())
+        if topic == _retry_topic():
+            _observe_retry_published()
+        elif topic == _dlq_topic():
+            _observe_dlq_published()
     except KafkaError as exc:
         if topic == _retry_topic():
             error_type = ErrorType.RETRY_PUBLISH_ERROR
@@ -419,6 +447,7 @@ def _run_worker_loop(worker_index: int) -> None:
                             requested_at=payload.get("timestamp", 0),
                         )
                         _observe_end_to_end_latency(payload.get("timestamp", 0), completed_at)
+                        _observe_pipeline_completed()
 
                         consumer.commit()
                         logger.info(

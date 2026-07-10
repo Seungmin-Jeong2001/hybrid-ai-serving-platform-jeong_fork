@@ -1,0 +1,49 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kafka-exporter
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: prometheus-kafka-exporter
+    targetRevision: 2.13.0
+    helm:
+      releaseName: kafka-exporter
+      valuesObject:
+        replicaCount: 1
+        kafkaServer:
+{{KAFKA_BROKER_LINES}}
+        tls:
+          enabled: true
+          insecureSkipVerify: false
+        sasl:
+          enabled: false
+        service:
+          port: 9308
+        prometheus:
+          serviceMonitor:
+            enabled: true
+            namespace: monitoring
+            interval: 30s
+            additionalLabels:
+              release: kube-prometheus-stack
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
