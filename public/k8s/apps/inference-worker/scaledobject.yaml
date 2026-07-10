@@ -13,9 +13,9 @@ spec:
   triggers:
     - type: kafka
       metadata:
+        bootstrapServers: "b-1.sgshaspmsk.cx9yns.c2.kafka.ap-northeast-2.amazonaws.com:9094,b-2.sgshaspmsk.cx9yns.c2.kafka.ap-northeast-2.amazonaws.com:9094,b-3.sgshaspmsk.cx9yns.c2.kafka.ap-northeast-2.amazonaws.com:9094"
         consumerGroup: inference-worker-group
         topic: inference-request
         lagThreshold: "20"  # Scale up when lag reaches 20 per partition.
         offsetResetPolicy: latest
-      authenticationRef:
-        name: inference-kafka-auth
+        tls: enable
