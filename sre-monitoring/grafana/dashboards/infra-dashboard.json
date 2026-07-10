@@ -102,33 +102,6 @@
       "options": { "filterable": true }
     },
 
-    { "type": "row", "title": "Predictor / ML Pod Performance", "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 }, "id": 20 },
-
-    { "id": 21, "title": "Predictor TPS (처리 완료)",
-      "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 21 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
-      "targets": [{ "expr": "sum(rate(http_request_duration_highr_seconds_count{namespace=\"inference\", pod=~\".*pdm.*\"}[1m]))", "legendFormat": "Predictor TPS", "refId": "A" }],
-      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "lineWidth": 2, "fillOpacity": 0 } } }
-    },
-
-    { "id": 22, "title": "Predictor Error Rate",
-      "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 21 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
-      "targets": [{ "expr": "(sum(rate(http_requests_total{namespace=\"inference\", pod=~\".*pdm-predictor.*\", status=~\"5..\"}[5m])) or vector(0)) / (sum(rate(http_requests_total{namespace=\"inference\", pod=~\".*pdm-predictor.*\"}[5m])) > 0)", "legendFormat": "Predictor 5xx", "refId": "A" }],
-      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.05 }] } } }
-    },
-
-    { "id": 23, "title": "Predictor P99 Latency",
-      "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 21 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
-      "targets": [{ "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_highr_seconds_bucket{job=~\"inference/pdm-predictor|.*pdm-predictor.*|.*predictor.*\"}[5m])) by (le)) * 1000", "legendFormat": "Predictor P99", "refId": "A" }],
-      "fieldConfig": { "defaults": { "unit": "ms", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 3000 }, { "color": "red", "value": 5000 }] } } }
-    },
-
     { "type": "row", "title": "노드 오토스케일링 (Cluster Autoscaler)", "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 }, "id": 60 },
 

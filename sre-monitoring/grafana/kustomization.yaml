@@ -4,7 +4,6 @@ namespace: monitoring
 configMapGenerator:
   - name: grafana-sre-dashboards
     files:
-      - dashboards/sre-platform.json
       - dashboards/service-dashboard.json
       - dashboards/infra-dashboard.json
     options:
