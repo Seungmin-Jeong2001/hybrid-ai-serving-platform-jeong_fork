@@ -82,11 +82,11 @@
     },
 
     { "type": "row", "title": "Node Autoscaling", "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 }, "id": 60 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 }, "id": 60 },
 
     { "id": 61, "title": "Ready Nodes",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 31 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 21 },
       "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
       "targets": [
         { "expr": "count by (label_workload) (\n  kube_node_labels{label_workload=~\"inference|general\"}\n  * on(node) group_left()\n  kube_node_status_condition{condition=\"Ready\", status=\"true\"}\n)", "legendFormat": "{{ label_workload }}", "refId": "A" },
@@ -98,7 +98,7 @@
 
     { "id": 62, "title": "Pending Pods",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 31 },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 21 },
       "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
       "targets": [
         { "expr": "sum(kube_pod_status_phase{phase=\"Pending\", namespace!~\"kube-system|monitoring\"}) or vector(0)", "legendFormat": "Pending Pods", "refId": "A" },
@@ -114,7 +114,7 @@
 
     { "id": 63, "title": "CA Scale Events",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 31 },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 21 },
       "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
       "targets": [
         { "expr": "increase(cluster_autoscaler_scaled_up_nodes_total[30m]) or vector(0)", "legendFormat": "스케일업 (노드 추가)", "refId": "A" },
@@ -131,11 +131,11 @@
     },
 
     { "type": "row", "title": "Pod Autoscaling", "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 40 }, "id": 40 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 29 }, "id": 40 },
 
     { "id": 41, "title": "Worker Replicas (KEDA)",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 41 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 30 },
       "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
       "targets": [
         { "expr": "kube_deployment_status_replicas_available{namespace=\"inference\", deployment=\"inference-worker\"}", "legendFormat": "현재 레플리카", "refId": "A" },
@@ -152,7 +152,7 @@
 
     { "id": 42, "title": "PdM Replicas (KServe)",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 41 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 30 },
       "datasource": { "type": "prometheus", "uid": "${DS_PUBLIC}" },
       "targets": [
         { "expr": "kube_deployment_status_replicas_available{namespace=\"inference\", deployment=~\".*pdm.*\"}", "legendFormat": "현재 레플리카", "refId": "A" },
