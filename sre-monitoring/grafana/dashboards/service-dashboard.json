@@ -176,7 +176,7 @@
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" }
     },
 
-    { "type": "row", "title": "BURN RATE (추후 검토)", "collapsed": true,
+    { "type": "row", "title": "BURN RATE", "collapsed": true,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 35 }, "id": 5,
       "panels": [
         {
