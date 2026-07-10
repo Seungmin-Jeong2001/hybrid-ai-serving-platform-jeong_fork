@@ -12,6 +12,10 @@ spec:
     metadata:
       labels:
         app: inference-worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "9090"
     spec:
       serviceAccountName: inference-worker
       securityContext:
@@ -68,8 +72,8 @@ spec:
               value: inference-worker-group
             - name: WORKER_CONCURRENCY
               value: "4"
-            - name: RESULT_WRITE_CONCURRENCY
-              value: "8"
+            - name: METRICS_PORT
+              value: "9090"
             - name: DYNAMODB_TABLE_NAME
               valueFrom:
                 configMapKeyRef:
@@ -83,6 +87,9 @@ spec:
               value: "1"
             - name: PREDICTOR_ENDPOINT
               value: "/v1/models/pdm:predict"
+          ports:
+            - name: metrics
+              containerPort: 9090
           resources:
             requests:
               cpu: "500m"

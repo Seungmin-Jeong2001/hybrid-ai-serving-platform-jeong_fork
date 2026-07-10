@@ -15,12 +15,20 @@ import httpx
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
 from kafka import KafkaConsumer, KafkaProducer, TopicPartition
 from kafka.errors import KafkaError
+from prometheus_client import Histogram, start_http_server
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 logger = logging.getLogger("inference-worker")
+
+
+END_TO_END_LATENCY_SECONDS = Histogram(
+    "end_to_end_latency_seconds",
+    "End-to-end latency from edge request creation to DynamoDB persistence.",
+    buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300),
+)
 
 
 class ErrorType(StrEnum):
@@ -140,6 +148,10 @@ def _worker_concurrency() -> int:
     return max(1, int(os.getenv("WORKER_CONCURRENCY", "4")))
 
 
+def _metrics_port() -> int:
+    return int(os.getenv("METRICS_PORT", "9090"))
+
+
 def _create_results_table():
     return boto3.resource("dynamodb", region_name=os.getenv("AWS_REGION")).Table(
         _results_table_name()
@@ -228,6 +240,10 @@ def _now_epoch() -> int:
     return int(time.time())
 
 
+def _now_epoch_ms() -> int:
+    return int(time.time() * 1000)
+
+
 def _compute_next_attempt_at(retry_count: int) -> int:
     schedule = _retry_backoff_schedule_seconds()
     delay_index = min(max(retry_count - 1, 0), len(schedule) - 1)
@@ -243,7 +259,8 @@ def _save_result(
     equipment_id: str,
     prediction: str,
     requested_at: int,
-) -> None:
+) -> int:
+    completed_at = _now_epoch_ms()
     results_table.put_item(
         Item={
             "request_id": request_id,
@@ -251,10 +268,23 @@ def _save_result(
             "equipment_id": equipment_id,
             "prediction": prediction,
             "requested_at": requested_at,
-            "completed_at": _now_epoch() * 1000,
+            "completed_at": completed_at,
             "ttl": _now_epoch() + _results_ttl_seconds(),
         }
     )
+    return completed_at
+
+
+def _observe_end_to_end_latency(requested_at: int, completed_at: int) -> None:
+    if requested_at <= 0 or completed_at < requested_at:
+        return
+    END_TO_END_LATENCY_SECONDS.observe((completed_at - requested_at) / 1000)
+
+
+def _start_metrics_server() -> None:
+    port = _metrics_port()
+    start_http_server(port)
+    logger.info("worker metrics server listening port=%s", port)
 
 
 def _publish(
@@ -380,7 +410,7 @@ def _run_worker_loop(worker_index: int) -> None:
                         result = _process_message(payload, predict_client)
                         prediction = result["predictions"][0]["class_name"]
 
-                        _save_result(
+                        completed_at = _save_result(
                             results_table,
                             request_id=request_id,
                             factory_id=payload.get("factory_id", ""),
@@ -388,6 +418,7 @@ def _run_worker_loop(worker_index: int) -> None:
                             prediction=prediction,
                             requested_at=payload.get("timestamp", 0),
                         )
+                        _observe_end_to_end_latency(payload.get("timestamp", 0), completed_at)
 
                         consumer.commit()
                         logger.info(
@@ -513,12 +544,6 @@ def _run_worker_loop(worker_index: int) -> None:
                 if not should_continue_polling:
                     break
     finally:
-        for future in pending_result_writes:
-            try:
-                future.result()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("async result write failed during shutdown error=%s", exc)
-        result_write_executor.shutdown(wait=True)
         consumer.close()
         predict_client.close()
         producer.flush()
@@ -528,6 +553,7 @@ def _run_worker_loop(worker_index: int) -> None:
 def run() -> None:
     concurrency = _worker_concurrency()
     logger.info("starting inference-worker concurrency=%s", concurrency)
+    _start_metrics_server()
     if concurrency == 1:
         _run_worker_loop(0)
         return
