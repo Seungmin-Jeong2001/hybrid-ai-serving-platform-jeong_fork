@@ -423,8 +423,8 @@ jobs:
           OPENSTACK_IMAGE_CACHE_DRIVER_PACKAGE: ${{ vars.GPU_DRIVER_PACKAGE || vars.OPENSTACK_IMAGE_CACHE_DRIVER_PACKAGE || 'nvidia-driver-595-open' }}
           ECR_ENDPOINT: ${{ secrets.ECR_ENDPOINT }}
           GITLAB_ECR_PROMOTION_ROLE_ARN: ${{ vars.GITLAB_ECR_PROMOTION_ROLE_ARN || vars.AWS_ROLE_ARN_GITLAB || '' }}
-          HARBOR_USER: ${{ secrets.HARBOR_USER_GITLAB }}
-          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD_GITLAB }}
+          HARBOR_USER_GITLAB: ${{ secrets.HARBOR_USER_GITLAB }}
+          HARBOR_PASSWORD_GITLAB: ${{ secrets.HARBOR_PASSWORD_GITLAB }}
 
       - name: Run remote ha command
         run: |
