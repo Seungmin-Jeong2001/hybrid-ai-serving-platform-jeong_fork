@@ -9,6 +9,7 @@ KAFKA_DIR="/tmp/kafka-${KAFKA_VERSION}"
 KAFKA_TOPICS="${KAFKA_DIR}/bin/kafka-topics.sh"
 KAFKA_CONFIGS="${KAFKA_DIR}/bin/kafka-configs.sh"
 KAFKA_CLIENT_CONFIG="/tmp/kafka-client.properties"
+KAFKA_ARCHIVE_NAME="kafka_${KAFKA_SCALA}-${KAFKA_VERSION}.tgz"
 
 require_env() {
   var_name="$1"
@@ -37,9 +38,22 @@ if [ ! -f "$KAFKA_TOPICS" ]; then
   if ! java -version >/dev/null 2>&1; then
     sudo yum install -y java-17-amazon-corretto-headless
   fi
-  curl -fsSL \
-    "https://downloads.apache.org/kafka/${KAFKA_VERSION}/kafka_${KAFKA_SCALA}-${KAFKA_VERSION}.tgz" \
-    -o /tmp/kafka.tgz
+  kafka_downloaded="false"
+  for kafka_base_url in \
+    "https://downloads.apache.org/kafka/${KAFKA_VERSION}" \
+    "https://archive.apache.org/dist/kafka/${KAFKA_VERSION}"
+  do
+    kafka_url="${kafka_base_url}/${KAFKA_ARCHIVE_NAME}"
+    echo "Downloading Kafka CLI from ${kafka_url}"
+    if curl -fsSL "$kafka_url" -o /tmp/kafka.tgz; then
+      kafka_downloaded="true"
+      break
+    fi
+  done
+  if [ "$kafka_downloaded" != "true" ]; then
+    echo "Failed to download Kafka CLI archive ${KAFKA_ARCHIVE_NAME}." >&2
+    exit 1
+  fi
   tar -xzf /tmp/kafka.tgz -C /tmp
   mv "/tmp/kafka_${KAFKA_SCALA}-${KAFKA_VERSION}" "$KAFKA_DIR"
   rm /tmp/kafka.tgz
